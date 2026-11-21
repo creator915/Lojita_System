@@ -5,7 +5,8 @@ open import Agda.Builtin.Char using (primCharEquality)
 open import Agda.Builtin.String using (primStringEquality)
 open import Data.Bool.Base using (Bool; true; false; not; _∨_; _∧_)
 open import Data.Char.Base using (Char; isSpace; toℕ)
-open import Data.List.Base using (List; []; _∷_; all)
+open import Data.List.Base using (List; []; _∷_; all; any)
+open import Data.Maybe.Base using (Maybe; just; nothing)
 open import Data.String.Base using (String; toList)
 open import Data.String.Properties using (_≟_)
 open import Data.List.Membership.DecPropositional _≟_ using (_∈?_; _∉_)
@@ -26,8 +27,17 @@ firstSegment (n ∷ _) = n
 
 -- A QName segment must fit in one filename component. In particular a
 -- constructed Code cannot use a dotted segment to hide a reserved prefix.
+unsafePart : String → Bool
+unsafePart s = primStringEquality s "TrustMe" ∨ primStringEquality s "Unsafe"
+
+firstUnsafePath : List ModulePath → Maybe ModulePath
+firstUnsafePath [] = nothing
+firstUnsafePath (path ∷ paths) with any unsafePart path
+... | true = just path
+... | false = firstUnsafePath paths
+
 validPart : String → Bool
-validPart s = not (primStringEquality s "") ∧ all allowed (toList s)
+validPart s = not (primStringEquality s "") ∧ not (unsafePart s) ∧ all allowed (toList s)
   where
   allowed : Char → Bool
   allowed c = not (isSpace c ∨ (toℕ c <ᵇ 32) ∨ primCharEquality c '.' ∨

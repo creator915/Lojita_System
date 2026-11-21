@@ -211,25 +211,83 @@ shaFile path = readProcessAt "" 30000 "sha256sum" (path ∷ []) "" >>= λ where
   (procResult zero out _) → IO.return (firstWord (words out))
   (procResult _ out err) → failIO ("sha256sum failed: " ++ˢ out ++ˢ err)
 
-exportCodes : String → String → List Code → IO.IO String
-exportCodes ws tree [] = IO.return ""
-exportCodes ws tree (c ∷ cs) = putCode (ws ++ˢ "/store/objects") c >>= λ canonical →
-  sha256 (render c) >>= λ source → exportCodes ws tree cs >>= λ rest →
+viewText : List (Code × String) → Code → String
+viewText views c = maybe′ (λ text → text) (render c) (authoredSurface views c)
+
+publishedViews : String → String → IO.IO (List (Code × String))
+publishedViews ws tree = let store = ws ++ˢ "/store" in
+  CAS.readRef store (treeRef tree) >>= λ where
+    nothing → IO.return []
+    (just key) → CAS.commitSurfaces store key >>= λ where
+      nothing → failIO "invalid pinned source presentation"
+      (just views) → IO.return views
+
+writeViews : String → List (Code × String) → List Code → IO.IO ⊤
+writeViews dir views [] = IO.return tt
+writeViews dir views (c ∷ cs) = do
+  mkdirP (dir ++ˢ "/" ++ˢ parentPath (full (modName c)))
+  F.writeFile (dir ++ˢ "/" ++ˢ modulePath c) (viewText views c)
+  writeViews dir views cs
+
+exportCodes : String → String → List (Code × String) → List Code → IO.IO String
+exportCodes ws tree views [] = IO.return ""
+exportCodes ws tree views (c ∷ cs) = putCode (ws ++ˢ "/store/objects") c >>= λ canonical →
+  sha256 (viewText views c) >>= λ source → exportCodes ws tree views cs >>= λ rest →
   IO.return ("module\t" ++ˢ tree ++ˢ "/" ++ˢ intersperse "." (full (modName c)) ++ˢ "\t" ++ˢ canonical ++ˢ "\t" ++ˢ source ++ˢ "\n" ++ˢ rest)
 
--- Check existing public names before changing either the tree ref or exports.
+-- A sealed tree pins both its semantic home and its own source spellings.
+-- Legacy export folders can only attest to the bytes they contain.
+private
+  SealedExports = List (Code × String)
+
+  lookupExport : String → SealedExports → Maybe (Code × String)
+  lookupExport rel [] = nothing
+  lookupExport rel ((c , src) ∷ cs) = if rel ==ˢ modulePath c then just (c , src) else lookupExport rel cs
+
+  pinnedExports : String → String → IO.IO (Maybe SealedExports)
+  pinnedExports ws n = fileExists (dir ++ˢ "/refs/" ++ˢ treeRef n) >>= λ present →
+    if present then (load >>= λ where
+      nothing → failIO ("invalid sealed exports: " ++ˢ n)
+      (just cs) → IO.return (just cs))
+    else IO.return nothing
+    where
+      dir = ws ++ˢ "/store"
+      load : IO.IO (Maybe SealedExports)
+      load = CAS.readRef dir (treeRef n) CAS.>>=? λ key → CAS.getCommit dir key CAS.>>=? λ commit →
+        if CAS.epoch commit ==ˢ n then (CAS.newCommitHomeReader dir >>= λ read → read commit CAS.>>=? λ where
+          (sh , h) → CAS.commitSurfaces dir key CAS.>>=? λ views →
+            let cs = NT.exported (freezeHome sh (dropModel (homeNoChan sh) h))
+            in IO.return (Data.Maybe.when (consistentCodes cs) (map (λ c → c , viewText views c) (uniqueCodes cs))))
+        else IO.return nothing
+
+-- Compare an overlapping implementation with that tree's own verified IR
+-- and source, including the canonical spelling of a synthesized export.
 exportsAgree : String → String → List Code → IO.IO Bool
 exportsAgree ws tree cs = successfulTrees ws >>= trees
   where
-    files : String → List Code → IO.IO Bool
-    files dir [] = IO.return true
-    files dir (c ∷ rest) = let path = dir ++ˢ "/" ++ˢ modulePath c in fileExists path >>= λ exists →
-      if exists then (F.readFile path >>= λ text → if text ==ˢ render c then files dir rest else IO.return false)
-      else files dir rest
+    overlaps : String → List Code → IO.IO (List Code)
+    overlaps dir [] = IO.return []
+    overlaps dir (c ∷ rest) = fileExists (dir ++ˢ "/" ++ˢ modulePath c) >>= λ present →
+      overlaps dir rest >>= λ more → IO.return (if present then c ∷ more else more)
+
+    matches : Maybe SealedExports → Code → String → Bool
+    matches nothing c text = text ==ˢ render c
+    matches (just xs) c text with lookupExport (modulePath c) xs
+    ... | nothing = false
+    ... | just (old , expected) = (text ==ˢ expected) ∧ eqCode (surfaceCode c) (surfaceCode old)
+
+    files : String → Maybe SealedExports → List Code → IO.IO Bool
+    files dir pinned [] = IO.return true
+    files dir pinned (c ∷ rest) = F.readFile (dir ++ˢ "/" ++ˢ modulePath c) >>= λ src →
+      if matches pinned c src then files dir pinned rest else IO.return false
+
     trees : List String → IO.IO Bool
     trees [] = IO.return true
     trees (n ∷ ns) = if n ==ˢ tree then trees ns else
-      files (ws ++ˢ "/generated/" ++ˢ n) cs >>= λ ok → if ok then trees ns else IO.return false
+      (let dir = ws ++ˢ "/generated/" ++ˢ n in overlaps dir cs >>= λ where
+        [] → trees ns
+        shared → pinnedExports ws n >>= λ pinned → files dir pinned shared >>= λ ok →
+          if ok then trees ns else IO.return false)
 
 moduleSummary : Code → String
 moduleSummary c = render (record c { decls = filterᵇ signature (decls c) }) ++ˢ childNote
@@ -299,28 +357,54 @@ endsWith suffix text = charPrefix (Data.List.reverse (toList suffix)) (Data.List
 sourcesIn : String → IO.IO (List String)
 sourcesIn dir = filesBelow dir >>= λ fs → IO.return (filterᵇ (endsWith ".agda") fs)
 
--- Each export is a complete tree. Agda rejects even byte-identical modules
--- on two include paths, so present shared exports once to scripts and Main.
+-- Agda needs one file per module path. A different spelling is accepted only
+-- when both sealed trees attest to their bytes and to the same frontend IR.
 withOpenIncludes : ∀ {A : Set} → String → String → (List String → IO.IO A) → IO.IO A
-withOpenIncludes repo ws use = withTempDirectory (ws ++ˢ "/tmp/export-view") λ dir →
-  successfulTrees ws >>= collect dir >> use (dir ∷ repo ∷ "/usr/share/agda-stdlib" ∷ [])
+withOpenIncludes repo ws use = withTempDirectory (ws ++ˢ "/tmp/export-view") λ dir → do
+  cache ← newIORef []
+  successfulTrees ws >>= collect cache dir []
+  use (dir ∷ repo ∷ "/usr/share/agda-stdlib" ∷ [])
   where
-    copyFiles : String → String → List String → IO.IO ⊤
-    copyFiles src dst [] = IO.return tt
-    copyFiles src dst (file ∷ fs) = do
+    lookup : ∀ {A : Set} → String → List (String × A) → Maybe A
+    lookup name [] = nothing
+    lookup name ((n , x) ∷ xs) = if name ==ˢ n then just x else lookup name xs
+
+    Cache = IORef (List (String × Maybe SealedExports))
+    Owners = List (String × String)
+
+    pinned : Cache → String → IO.IO (Maybe SealedExports)
+    pinned cache n = readIORef cache >>= λ entries → maybe′ IO.return
+      (pinnedExports ws n >>= λ xs → writeIORef cache ((n , xs) ∷ entries) >> IO.return xs) (lookup n entries)
+
+    verified : Cache → String → String → String → IO.IO (Maybe Code)
+    verified cache n rel text = pinned cache n CAS.>>=? λ exports → IO.return
+      (lookupExport rel exports Data.Maybe.>>= λ { (c , src) → Data.Maybe.when (text ==ˢ src) (surfaceCode c) })
+
+    sameModule : Cache → String → String → String → String → String → IO.IO Bool
+    sameModule cache rel n old text other = do
+      match ← verified cache n rel text CAS.>>=? λ c → verified cache old rel other CAS.>>=? λ d → IO.return (just (eqCode c d))
+      IO.return (maybe′ (λ b → b) false match)
+
+    copyFiles : Cache → String → String → String → Owners → List String → IO.IO Owners
+    copyFiles cache n src dst seen [] = IO.return seen
+    copyFiles cache n src dst seen (file ∷ fs) = do
       let relative = fromList (Data.List.drop (suc (length (toList src))) (toList file))
           to = dst ++ˢ "/" ++ˢ relative
           parent = parentPath (wordsBy ('/' Char.≟_) relative)
       text ← F.readFile file
-      present ← fileExists to
-      if present then (F.readFile to >>= λ other → if text ==ˢ other then IO.return tt else
-        failIO ("ambiguous exported module: " ++ˢ relative)) else
-        (mkdirP (dst ++ˢ "/" ++ˢ parent) >> F.writeFile to text)
-      copyFiles src dst fs
-    collect : String → List String → IO.IO ⊤
-    collect dst [] = IO.return tt
-    collect dst (n ∷ ns) = let src = ws ++ˢ "/generated/" ++ˢ n in
-      sourcesIn src >>= copyFiles src dst >> collect dst ns
+      owners ← caseOwner relative to parent text (lookup relative seen)
+      copyFiles cache n src dst owners fs
+      where
+        caseOwner : String → String → String → String → Maybe String → IO.IO Owners
+        caseOwner rel to parent text nothing = mkdirP (dst ++ˢ "/" ++ˢ parent) >> F.writeFile to text >> IO.return ((rel , n) ∷ seen)
+        caseOwner rel to parent text (just old) = F.readFile to >>= λ other →
+          if text ==ˢ other then IO.return seen else (sameModule cache rel n old text other >>= λ ok →
+            if ok then IO.return seen else failIO ("ambiguous exported module: " ++ˢ rel))
+
+    collect : Cache → String → Owners → List String → IO.IO ⊤
+    collect cache dst seen [] = IO.return tt
+    collect cache dst seen (n ∷ ns) = let src = ws ++ˢ "/generated/" ++ˢ n in
+      sourcesIn src >>= copyFiles cache n src dst seen >>= λ next → collect cache dst next ns
 
 treeManifestFiles : String → IO.IO (List String)
 treeManifestFiles ws = entries (ws ++ˢ "/trees") >>= collect

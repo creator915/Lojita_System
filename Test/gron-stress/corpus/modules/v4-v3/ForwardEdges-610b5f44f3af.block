@@ -1,0 +1,66 @@
+{-# OPTIONS --guardedness #-}
+module ForwardEdges where
+
+open import Data.List using (List; []; _∷_)
+open import Data.Nat.Show renaming (show to showNat)
+open import Data.Product using (_,_; proj₂)
+open import Data.String using (String; show; _++_)
+open import Data.Unit using (⊤; tt)
+import IO.Primitive as IO
+import IO.Primitive.Finite as F
+open import Ownership using (St; Dir; Chan; Srv; Prog; withEphemeral; mkdir; open′; call; stop; rmdir; done; _>>_; _>>=_)
+open import OwnershipIO.FFI using (procResult)
+open import SessionEnv
+
+record Case : Set where
+  constructor trial
+  field
+    label : String
+    args : List String
+    input : String
+
+cases : List Case
+cases =
+  trial "bracket-prefix" []
+    "{\"-?\":4,\"- \":2,\"-!\":3,\"-\":1,\"a$\":5,\"a\":{\"-?\":6},\"A\":7}" ∷
+  trial "bracket-prefix-pairs" ("-j" ∷ [])
+    "{\"-?\":4,\"- \":2,\"-!\":3,\"-\":1,\"a$\":5,\"a\":{\"-?\":6},\"A\":7}" ∷
+  trial "pair-escaping" ("-j" ∷ [])
+    "{\"x\\u000b\\u2028\\u0085\":\"\\u000b\\u001f\\u007f\\u0085\\u2028\\u2029<&>/\"}" ∷
+  trial "decoded-duplicate" []
+    "{\"a\":1,\"\\u0061\":{\"z\":3},\"b\":2}" ∷
+  trial "stream-blank" ("-s" ∷ []) "true\n\nfalse\n" ∷
+  trial "stream-prefix" ("-s" ∷ "-j" ∷ []) " 12xyz\ntrue false\r\n" ∷
+  trial "stream-empty" ("-s" ∷ "-j" ∷ []) "" ∷
+  trial "stream-crlf-only" ("-s" ∷ []) "1\r\n\r\n2\r\n" ∷
+  trial "escape-and-duplicate" [] "[\"\\ud800X\\udc00\",\"\\ud800\\ud801\\udc00\",{\"q\":false,\"q\":true}]" ∷
+  trial "duplicate-invalid" [] "{\"a\":1,\"\\u0061\":nulx}" ∷
+  trial "scalar-later" [] "{\"same\":1,\"same\":2}" ∷
+  trial "scalar-earlier" [] "{\"same\":2,\"same\":1}" ∷
+  trial "container-later" [] "{\"same\":{\"a\":1},\"same\":{\"b\":2}}" ∷
+  trial "container-null" [] "{\"same\":{\"a\":1},\"same\":null}" ∷
+  trial "array-later" [] "{\"same\":[1,2],\"same\":[3]}" ∷ []
+
+
+Live : St
+Live = Dir (("procExec" , Chan (Srv ProcReq ProcOut (Dir []))) ∷ [])
+
+observe : List Case → Prog SessionΨ Live Live (List String)
+observe [] = done []
+observe (trial label args input ∷ rest) =
+  call "procExec" (procReq "ref" args input) >>= λ where
+    (procResult code out err) → observe rest >>= λ replies →
+      done ((label ++ " input=" ++ show input ++ " exit=" ++ showNat code
+             ++ " stdout=" ++ show out ++ " stderr=" ++ show err) ∷ replies)
+
+probe : Prog SessionΨ (Dir []) (Dir []) (List String)
+probe = withEphemeral "forward"
+  (mkdir "procExec" >> open′ "procExec" >> observe cases >>= λ result →
+   stop "procExec" >> rmdir "procExec" >> done result)
+
+report : List String → IO.IO ⊤
+report [] = F.putStr ""
+report (line ∷ rest) = F.putStrLn line IO.>>= λ _ → report rest
+
+main : IO.IO ⊤
+main = evalIO sessionEnv probe tt IO.>>= λ result → report (proj₂ result)

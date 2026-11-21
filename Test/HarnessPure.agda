@@ -97,8 +97,8 @@ refuteSubmission = showSExpr (list (sym "submission" ∷ list (sym "kind" ∷ sy
   ∷ list (sym "refute" ∷ str "refute" ∷ []) ∷ []))
 
 nextReply : List String → AIReq → AIReply × List String
-nextReply [] (propose _ _) = aiReply "" "pure" , []
-nextReply (r ∷ rs) (propose _ _) = aiReply r "pure" , rs
+nextReply [] (propose _ _ _) = aiReply "" "pure" , []
+nextReply (r ∷ rs) (propose _ _ _) = aiReply r "pure" , rs
 nextReply rs _ = aiReply "accepted" "pure" , rs
 
 scriptedAI : List String → Server [] AIReq AIReply [] (Dir [])

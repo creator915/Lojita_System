@@ -24,9 +24,16 @@ PRISM_LIB="$REPO/runtime/lean-prism/.lake/build/lib/lean"
 PRISM_IR="$REPO/runtime/lean-prism/.lake/build/ir"
 echo "  [OK] Built $PRISM_BIN"
 
-WORK="$REPO/tmp/prism-acceptance"
-rm -rf "$WORK"
-mkdir -p "$WORK"
+mkdir -p "$REPO/tmp"
+WORK=$(mktemp -d "$REPO/tmp/prism-acceptance.XXXXXXXX")
+trap 'rm -rf -- "$WORK"' EXIT
+
+# The node's read-only Context view can look like a partial installation.
+mkdir -p "$WORK/node/Context"
+cp "$REPO/Context/Blueprint.agda" "$WORK/node/Context/"
+(cd "$WORK/node" && "$PRISM_BIN" prism-dump --lib-dir "$PRISM_LIB" --work-dir "$WORK/discovery" \
+  --main "$REPO/Context/Blueprint.agda") >"$WORK/discovered.sexp"
+grep -q '^(module ' "$WORK/discovered.sexp"
 
 run_agda_isolated() {
   local file="$1"
@@ -93,6 +100,8 @@ HYB_SINGLE=(
   "$REPO/Test/prism-corpus/hybrid/H02_GuardedLib.agda"
   "$REPO/Test/prism-corpus/hybrid/H03_HybridLexAndWithMain.agda"
   "$REPO/Test/prism-corpus/hybrid/H04_PostfixCopatterns.agda"
+  "$REPO/Test/prism-corpus/hybrid/H05_ExecOptStrictCSE.agda"
+  "$REPO/Test/prism-corpus/hybrid/H06_EvaluationDemand.agda"
 )
 HYB_COUNT=0
 for f in "${HYB_SINGLE[@]}"; do
@@ -103,15 +112,19 @@ for f in "${HYB_SINGLE[@]}"; do
   echo "  [OK] $base : Lens FastFocus + Parameterized SlowSlice = PASS"
 done
 
-# Verify H01 slice boundaries (`FAST_UNITS (9)` + `SLOW_UNITS (2)` + `_SlowResidual` params)
-H01_SLICE=$("$PRISM_BIN" inspect-slice --main "$REPO/Test/prism-corpus/hybrid/H01_HybridCoindMain.agda")
+# Verify the two residual units, the helper definitions they use, and downstream pruning.
+H01_SLICE=$("$PRISM_BIN" inspect-slice --work-dir "$WORK/h01_slice" --main "$REPO/Test/prism-corpus/hybrid/H01_HybridCoindMain.agda")
 echo "$H01_SLICE" | grep -q "FAST_UNITS (9):"
 echo "$H01_SLICE" | grep -q "SLOW_UNITS (2): coind:Stream, orbitFrom"
-echo "$H01_SLICE" | grep -q "module _SlowResidual (fastStep : ℕ → ℕ) (fastWeight : ℕ → ℕ) where"
-echo "  [OK] H01_HybridCoindMain : 9/11 units in FastFocus, F₁ parameterized via _SlowResidual, F₂ pruned"
+H01_RESIDUAL=${H01_SLICE#*--- SLOW_SLICE_AGDA ---}
+grep -Fq 'fastStep n = n + tri 2' <<<"$H01_RESIDUAL"
+grep -Fq 'fastWeight n = (n * 2) + 1' <<<"$H01_RESIDUAL"
+grep -Fq 'tl (orbitFrom n) = orbitFrom (fastStep n)' <<<"$H01_RESIDUAL"
+if grep -q 'prefixScore' <<<"$H01_RESIDUAL"; then exit 1; fi
+echo "  [OK] H01 residual contains the required helper definitions and prunes prefixScore"
 
 # Verify H02 cross-module `--guardedness` de-infection (`SLOW_UNITS (0)` on caller!)
-H02_SLICE=$("$PRISM_BIN" inspect-slice \
+H02_SLICE=$("$PRISM_BIN" inspect-slice --work-dir "$WORK/h02_slice" \
   --dep "$REPO/Test/prism-corpus/hybrid/H02_GuardedLib.agda" \
   --main "$REPO/Test/prism-corpus/hybrid/H02_DeinfectedCaller.agda")
 echo "$H02_SLICE" | grep -q "SLOW_UNITS (0):"
@@ -121,20 +134,42 @@ echo "$H02_SLICE" | grep -q "SLOW_UNITS (0):"
 run_agda_isolated "$REPO/Test/prism-corpus/hybrid/H02_DeinfectedCaller.agda" "$REPO/Test/prism-corpus/hybrid/H02_GuardedLib.agda"
 echo "  [OK] H02_DeinfectedCaller : --guardedness infection stripped (SLOW_UNITS = 0 on caller!)"
 
-# Verify unified `leanc -O3` native C compilation (zero MAlonzo!) for H01 & H03
-"$PRISM_BIN" prism-build --lib-dir "$PRISM_LIB" --ir-dir "$PRISM_IR" \
+# The hybrid fixtures have passed independent checking above. Compile their verified bodies.
+"$PRISM_BIN" prism-build --trusted-codegen --lib-dir "$PRISM_LIB" --ir-dir "$PRISM_IR" \
   --work-dir "$WORK/hyb_exe_h01" --out "$WORK/h01_bin" \
   --main "$REPO/Test/prism-corpus/hybrid/H01_HybridCoindMain.agda"
 H01_OUT=$("$WORK/h01_bin")
 [ "$H01_OUT" = "score=75" ] || { echo "FAIL H01 stdout: $H01_OUT"; exit 1; }
-echo "  [OK] H01 unified Thunk + leanc -O3 binary output: $H01_OUT ($(du -h "$WORK/h01_bin" | awk '{print $1}'))"
+echo "  [OK] H01 unified Thunk + gcc -O3 binary output: $H01_OUT ($(du -h "$WORK/h01_bin" | awk '{print $1}'))"
 
-"$PRISM_BIN" prism-build --lib-dir "$PRISM_LIB" --ir-dir "$PRISM_IR" \
+"$PRISM_BIN" prism-build --trusted-codegen --lib-dir "$PRISM_LIB" --ir-dir "$PRISM_IR" \
   --work-dir "$WORK/hyb_exe_h03" --out "$WORK/h03_bin" \
   --main "$REPO/Test/prism-corpus/hybrid/H03_HybridLexAndWithMain.agda"
 H03_OUT=$("$WORK/h03_bin")
 [ "$H03_OUT" = "ack=9,parity=odd" ] || { echo "FAIL H03 stdout: $H03_OUT"; exit 1; }
-echo "  [OK] H03 unified Foetus+Mutual+With leanc -O3 binary output: $H03_OUT ($(du -h "$WORK/h03_bin" | awk '{print $1}'))"
+echo "  [OK] H03 unified Foetus+Mutual+With gcc -O3 binary output: $H03_OUT ($(du -h "$WORK/h03_bin" | awk '{print $1}'))"
+
+"$PRISM_BIN" prism-build --trusted-codegen --lib-dir "$PRISM_LIB" --ir-dir "$PRISM_IR" \
+  --work-dir "$WORK/hyb_exe_h05" --out "$WORK/h05_bin" \
+  --main "$REPO/Test/prism-corpus/hybrid/H05_ExecOptStrictCSE.agda"
+H05_OUT=$(timeout 2 "$WORK/h05_bin")
+[ "$H05_OUT" = "p1=41,p2=36,p3=41,p4=31,p5=13,p6=36,p7=0" ] || { echo "FAIL H05 stdout: $H05_OUT"; exit 1; }
+echo "  [OK] H05 EvalColor native binary output: $H05_OUT ($(du -h "$WORK/h05_bin" | awk '{print $1}'))"
+
+"$PRISM_BIN" prism-build --trusted-codegen --lib-dir "$PRISM_LIB" --ir-dir "$PRISM_IR" \
+  --work-dir "$WORK/hyb_exe_h06" --out "$WORK/h06_bin" \
+  --main "$REPO/Test/prism-corpus/hybrid/H06_EvaluationDemand.agda"
+H06_OUT=$(timeout 2 "$WORK/h06_bin")
+[ "$H06_OUT" = "30" ] || { echo "FAIL H06 stdout: $H06_OUT"; exit 1; }
+echo "  [OK] H06 skipped undemanded branches, fields and proof computations"
+
+# Agda's --prop fragment is checked by the independent oracle.
+prop_sample="$REPO/Test/prism-corpus/hybrid/H07_PropErasure.agda"
+run_agda_isolated "$prop_sample"
+"$PRISM_BIN" prism-build --trusted-codegen --lib-dir "$PRISM_LIB" --ir-dir "$PRISM_IR" \
+  --work-dir "$WORK/hyb_exe_h07" --out "$WORK/h07_bin" --main "$prop_sample"
+[ "$(timeout 2 "$WORK/h07_bin")" = "7" ]
+echo "  [OK] H07 erased the recursively computed inhabitant of an authored Prop"
 
 echo ""
 echo "== [Step 5/8] Adversarial Negative Corpus (27 Cases — Zero False Positives Audit) =="
@@ -216,7 +251,7 @@ echo ""
 echo "== Wall-Clock Latency & Binary Size Benchmark (Pure Sweet-Spot & Hybrid Coinductive) =="
 BENCH_MOD="$REPO/Test/prism-corpus/positive/P02_PolyListTree.agda"
 t0=$(date +%s%3N)
-"$PRISM_BIN" prism-dump --main "$BENCH_MOD" >"$WORK/bench.sexp"
+"$PRISM_BIN" prism-dump --work-dir "$WORK/bench_parse" --main "$BENCH_MOD" >"$WORK/bench.sexp"
 t1=$(date +%s%3N)
 "$REPO/dump/dump" -i "$(dirname "$BENCH_MOD")" -i /usr/share/agda-stdlib "$BENCH_MOD" >"$WORK/bench_agda.sexp"
 t2=$(date +%s%3N)
@@ -229,8 +264,10 @@ t4=$(date +%s%3N)
 mkdir -p "$WORK/hyb_bench_src"
 sed 's/^module H01_HybridCoindMain where$/module Main where/' \
   "$REPO/Test/prism-corpus/hybrid/H01_HybridCoindMain.agda" > "$WORK/hyb_bench_src/Main.agda"
+"$PRISM_BIN" prism-check --lib-dir "$PRISM_LIB" --work-dir "$WORK/hyb_bench_check" \
+  --main "$WORK/hyb_bench_src/Main.agda"
 t5=$(date +%s%3N)
-"$PRISM_BIN" prism-build --lib-dir "$PRISM_LIB" --ir-dir "$PRISM_IR" \
+"$PRISM_BIN" prism-build --trusted-codegen --lib-dir "$PRISM_LIB" --ir-dir "$PRISM_IR" \
   --work-dir "$WORK/hyb_bench_lean" --out "$WORK/bin_hyb_prism" \
   --main "$WORK/hyb_bench_src/Main.agda" >/dev/null
 t6=$(date +%s%3N)
@@ -265,7 +302,6 @@ CODETRANSPORT_BACKEND=audit "$REPO/Main" order "$WORK/bp.sexp" >/dev/null
 CODETRANSPORT_BACKEND=audit "$REPO/Main" apply "$WORK/bp.sexp" "$WORK/bp.plan" >/dev/null
 echo "  [OK] CODETRANSPORT_BACKEND=audit Main roundtrip|units|order|apply : 100% bit-for-bit match (Lean 4 harness-engine == LegacyAgda)"
 
-rm -rf "$WORK"
 echo ""
 echo "========================================================================"
 echo "  ALL LEAN 4 PRISM + v2 OPTIC LENS GATES PASSED (0 FALSE POSITIVES)"

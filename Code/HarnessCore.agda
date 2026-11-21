@@ -9,6 +9,9 @@ open import Data.String using (String; unlines; intersperse) renaming (_++_ to _
 open import Code hiding (set)
 open import Code.Transport
 open import Code.Lift
+open import Code.Render using (render)
+open import Code.Encode using (encDecl; encObj)
+open import Code.SExpr using (list; showSExpr)
 import Code.NodeTransport as NT
 import Code.Namespace as NS
 import Code.PolyTransport as PT
@@ -20,6 +23,102 @@ open NT using (moduleQName)
 firstEvidence : Maybe Code → Maybe Code → Maybe Code
 firstEvidence (just c) _ = just c
 firstEvidence nothing c = c
+
+private
+  -- Dump resolves aliases and infix syntax to canonical names. Only the
+  -- result of a signature determines whether it declares a law.
+  lawResult : Expr → Bool
+  lawResult (pi _ t) = lawResult t
+  lawResult (fun′ _ t) = lawResult t
+  lawResult (app f _) = lawResult f
+  lawResult t@(def q) = tabooExpr t
+    ∨ (q ==ᴺ mkQ ("Agda" ∷ "Builtin" ∷ "Equality" ∷ "_≡_" ∷ []))
+    ∨ (q ==ᴺ mkQ ("Relation" ∷ "Binary" ∷ "PropositionalEquality" ∷ "Core" ∷ "_≢_" ∷ []))
+    ∨ (q ==ᴺ mkQ ("Relation" ∷ "Nullary" ∷ "¬_" ∷ []))
+  lawResult _ = false
+
+  lawSignature : Decl → Bool
+  lawSignature (sig _ _ t) = lawResult t
+  lawSignature _ = false
+
+  carrierDecl : Decl → Bool
+  carrierDecl (dataSig _ _ _ _) = true
+  carrierDecl (recSig _ _ _ _) = true
+  carrierDecl (dataDef _ _ _ _) = true
+  carrierDecl (recDef _ _ _ _ _) = true
+  carrierDecl _ = false
+
+  carrierOrOperation : Unit → Bool
+  carrierOrOperation u = anyᵇ carrierDecl ds ∨ hasFun ds ∨ (isPostulate ds ∧ not (anyᵇ lawSignature ds))
+    where ds = udecls u
+
+  tooDeep : List Name → Bool
+  tooDeep ("Gen" ∷ _ ∷ _ ∷ _ ∷ _ ∷ _ ∷ _) = true
+  tooDeep _ = false
+
+record NarrowingCertificate : Set where
+  constructor certificate
+  field
+    kind witness cause detour : String
+
+showCertificate : NarrowingCertificate → String
+showCertificate (certificate k w c d) = unlines
+  (("[KIND] " ++ˢ k) ∷ ("[WITNESS] " ++ˢ w) ∷ ("[CAUSE] " ++ˢ c) ∷ ("[DETOUR] " ++ˢ d) ∷ [])
+
+launderedLaws : Code → List Unit
+launderedLaws c = filterᵇ externalLaw us
+  where
+    us = units c
+    ports = filterᵇ carrierOrOperation us
+    externalLaw : Unit → Bool
+    externalLaw u = isPostulate ds ∧ anyᵇ lawSignature ds
+      ∧ not (anyᵇ (λ ref → anyᵇ (λ port → unitOwns port ref) ports) (refsDecls ds))
+      where ds = udecls u
+
+launderingCertificate : Unit → NarrowingCertificate
+launderingCertificate u = certificate "subspec_laundering" (NT.moduleKey (uname u))
+  "The postulated law only refers to external symbols. No local data/record port or local operation occurs in its signature."
+  "State the law over a child-owned port. If the parent specification entails a safe taboo, derive Context.Taboo.SafeTaboo and submit (kind independent)."
+
+subspecLaunderingProblem : Code → Maybe String
+subspecLaunderingProblem c with launderedLaws c
+... | [] = nothing
+... | us@(_ ∷ _) = just ("subspec axiom-laundering narrowing gate:\n" ++ˢ unlines (map (λ u → showCertificate (launderingCertificate u)) us))
+
+depthCertificate : Code → NarrowingCertificate
+depthCertificate c = certificate "subspec_narrowing" (NT.moduleKey (modName c))
+  "The child exceeds the ownership depth Gen.<Epoch>.<Root>.<Child>.<Grandchild>."
+  "Split siblings horizontally. If the specification entails a safe taboo, derive Context.Taboo.SafeTaboo and submit (kind independent)."
+
+subspecCertificates : Code → List NarrowingCertificate
+subspecCertificates c = if tooDeep (full (modName c)) then depthCertificate c ∷ [] else map launderingCertificate (launderedLaws c)
+
+subspecNarrowingProblem : Code → Maybe (String × String)
+subspecNarrowingProblem c with tooDeep (full (modName c))
+... | true = just ("subspec_depth_cap" , ("subspec depth-cap narrowing gate:\n" ++ˢ showCertificate (depthCertificate c)))
+... | false with subspecLaunderingProblem c
+...   | just e = just ("subspec_axiom_laundering" , e)
+...   | nothing = nothing
+
+unsafeCertificate : String → NarrowingCertificate
+unsafeCertificate q = certificate "unsafe_module" q
+  "Agda --safe excludes TrustMe and Unsafe modules and their declarations."
+  "Use a constructive safe import. For an unprovable requirement, derive Context.Taboo.SafeTaboo from the specification and submit (kind independent)."
+
+frontierCertificates : Code → Code → Plan → List Obj → List NarrowingCertificate
+frontierCertificates old cand p os = map explain os
+  where
+    objText : Obj → String
+    objText o = showSExpr (encObj o)
+
+    oldEdges = arrows old
+    changedSources = changed old cand p
+
+    explain : Obj → NarrowingCertificate
+    explain o = certificate "frontier_incomplete" (objText o)
+      (intersperse ", " (map objText upstream) ++ˢ " changed interface. Its dependent " ++ˢ objText o ++ˢ " has no outgoing proarrow.")
+      ("If it survives, add (move " ++ˢ objText o ++ˢ " " ++ˢ objText o ++ˢ "). Otherwise supply its rewrite or deletion move.")
+      where upstream = map proj₂ (filterᵇ (λ e → (proj₁ e ==ᴼ o) ∧ elemᵇ _==ᴼ_ (proj₂ e) changedSources) oldEdges)
 
 childImports : Code → List Import
 childImports c = filterᵇ (λ i → not (nullᵇ (assumes i))) (imports c)
@@ -37,10 +136,16 @@ childAncestors parent q with allowedAncestors parent
     lifted nothing = []
     lifted (just (_ , l)) = map baseChild (filterᵇ (λ e → upperChild e ==ᴺ q) (childLifts l))
 
-childTask : NodeTask → Code → Plan → Name → NodeTask
-childTask parent c p n = record (nodeTask (restrict c p childQ) (parentFlags parent) childLift)
+lookupRawSubspec : List (Name × String) → Name → String
+lookupRawSubspec [] _ = ""
+lookupRawSubspec ((k , v) ∷ xs) n = if k ==ˢ n then v else lookupRawSubspec xs n
+
+childTaskWithRaw : List (Name × String) → NodeTask → Code → Plan → Name → NodeTask
+childTaskWithRaw rawSubs parent c p n = record (nodeTask (restrict c p childQ) (parentFlags parent) childLift)
   { contextText = contextText parent ; baseModules = bases
-  ; transports = NT.subBindings (transports parent) childQ ; allowedAncestors = childAncestors parent childQ }
+  ; transports = NT.subBindings (transports parent) childQ ; allowedAncestors = childAncestors parent childQ
+  ; authoredSources = authoredSources parent
+  ; rawSpecSource = lookupRawSubspec rawSubs n }
   where
     childQ = moduleQName n
     -- Only the explicitly supplied immutable ancestry can cross this boundary.
@@ -62,6 +167,9 @@ childTask parent c p n = record (nodeTask (restrict c p childQ) (parentFlags par
         findMap [] = nothing
         findMap (entry ∷ ms) = if upperChild entry ==ᴺ childQ then findBase entry bases else findMap ms
 
+childTask : NodeTask → Code → Plan → Name → NodeTask
+childTask = childTaskWithRaw []
+
 childName : Import → Name
 childName i = intersperse "." (full (imod i))
 
@@ -71,6 +179,16 @@ wanted c n = anyᵇ (λ i → childName i ==ˢ n) (childImports c)
 data Phase : Set where
   Planning WaitingKids : Phase
   Done : Verdict → Phase
+
+subspecBoundaryProblem : NodeTask → List QName → Code → Maybe String
+subspecBoundaryProblem t siblings c with subspecImportProblem (child (δ t)) siblings collisionBases c
+  where collisionBases = filterᵇ (λ b → not (elemᵇ _==ᴺ_ (modName b) (map proj₁ (NT.keeps (transports t))))) (baseModules t)
+... | just e = just e
+... | nothing with childAncestors t (modName c)
+...   | nothing = nothing
+...   | just allowed with NS.checkTaskImports (NS.namespaceOf (modName c)) [] allowed c
+...     | [] = nothing
+...     | ps@(_ ∷ _) = just ("subspec namespace: " ++ˢ unlines (map NS.showNamespaceProblem ps))
 
 liftProblems : NodeTask → Code → List LiftProblem
 liftProblems t cand with maybeLift t
@@ -100,28 +218,74 @@ transportError t cand with concatMap checkPair (transports t)
     unchanged pair = anyᵇ (λ i → imod i ==ᴺ proj₁ pair ∧ eqDecls (assumes i) (proj₂ (NT.keptIface pair)))
                            (childImports cand)
 
-satisfiesDetails : SpecΔ → Code → List String
-satisfiesDetails δ cand with localizeTo (child δ) (newIface δ)
+record InterfaceMismatch : Set where
+  constructor mismatch
+  field name summary detail : String
+open InterfaceMismatch
+
+satisfiesMismatches : SpecΔ → Code → List InterfaceMismatch
+satisfiesMismatches δ cand with localizeTo (child δ) (newIface δ)
 ... | loc with unitsIn (full (child δ)) loc | units cand | coreNames (child δ) (newIface δ)
 ... | us | newUnits | core = concatMap inspect us
   where
     qstr : QName → String
     qstr q = intersperse "." (full q)
-    inspect : Unit → List String
+
+    renderWitness : List Decl → List Decl → String
+    renderWitness expDs actDs =
+      let expTxt = render (code (child δ) [] expDs)
+          actTxt = render (code (modName cand) [] actDs)
+          sexpNote = if expTxt ==ˢ actTxt
+                     then "\n    spec AST: " ++ˢ showSExpr (list (map encDecl expDs))
+                          ++ˢ "\n    cand AST: " ++ˢ showSExpr (list (map encDecl actDs))
+                     else ""
+      in "\n    expected (SPECIFICATION):\n" ++ˢ expTxt
+         ++ˢ "\n    actual   (your module):\n" ++ˢ actTxt ++ˢ sexpNote
+         ++ˢ "\n    note: `satisfies` checks syntactic AST equality (e.g. `∀ x →` uses `_` meta binder, not explicit `(x : T) →`; copy core signatures and helper definitions verbatim from SPECIFICATION!)"
+
+    isFunDecl : Decl → Bool
+    isFunDecl (fun _ _ _) = true
+    isFunDecl _ = false
+
+    sigOnlyDecls : List Decl → List Decl
+    sigOnlyDecls = filterᵇ (λ d → not (isFunDecl d))
+
+    inspect : Unit → List InterfaceMismatch
     inspect u with anonymousUnit u | lookupUnit newUnits (uname u)
     ... | true  | _       = []
     ... | false | nothing =
       if elemᵇ _==ᴺ_ (uname u) core
-        then ("missing core unit " ++ˢ qstr (uname u)) ∷ []
+        then (mismatch (qstr (uname u)) ("missing core unit " ++ˢ qstr (uname u)) (renderWitness (sigOnlyDecls (udecls u)) [])) ∷ []
         else []
     ... | false | just v  =
       if elemᵇ _==ᴺ_ (uname u) core ∧ not (hasFun (udecls u))
         then (if eqIface (ifaceOfDecls (udecls u)) (ifaceOfDecls (udecls v))
                 then []
-                else ("changed interface on " ++ˢ qstr (uname u)) ∷ [])
+                else (mismatch (qstr (uname u)) ("changed interface on " ++ˢ qstr (uname u))
+                      (renderWitness (sigOnlyDecls (udecls u)) (sigOnlyDecls (udecls v)))) ∷ [])
         else (if eqDecls (udecls u) (udecls v)
                 then []
-                else ("changed concrete helper or test on " ++ˢ qstr (uname u)) ∷ [])
+                else (mismatch (qstr (uname u)) ("changed concrete helper or test on " ++ˢ qstr (uname u))
+                      (renderWitness (udecls u) (udecls v))) ∷ [])
+
+satisfiesDetails : SpecΔ → Code → List String
+satisfiesDetails d cand = map (λ m → summary m ++ˢ detail m) (satisfiesMismatches d cand)
+
+interfaceCertificate : InterfaceMismatch → NarrowingCertificate
+interfaceCertificate m = certificate "subspec_narrowing" (name m) (summary m ++ˢ detail m)
+  "Copy the required core signature or concrete helper from SPECIFICATION and keep its qualified export."
+
+-- Submitted, kept and surviving old interfaces are merged identically for
+-- production scope checking, candidate assembly and read-only previews.
+candidateInterfaces : NodeTask → Code → List (QName × List Decl) → List (QName × List Decl)
+candidateInterfaces t old ifaces = ifaces ++ kept ++ map (λ i → imod i , assumes i) retained
+  where
+    submitted = map proj₁ ifaces
+    kept = filterᵇ (λ e → not (elemᵇ _==ᴺ_ (proj₁ e) submitted)) (map NT.keptIface (NT.keeps (transports t)))
+    retained = filterᵇ (λ i → not (elemᵇ _==ᴺ_ (imod i) (submitted ++ map proj₁ kept))) (childImports old)
+
+candidatePlan : NodeTask → String → Code → List (QName × List Decl) → List Proarrow → Plan
+candidatePlan t reason c merged ms = plan reason (decls (withChildIfaces merged c)) (mergeMoves (seedArrows (δ t)) ms)
 
 checkCandidateGates : NodeTask → Code → Plan → Code → Maybe String
 checkCandidateGates t old p cand with extendsSeed (δ t) p

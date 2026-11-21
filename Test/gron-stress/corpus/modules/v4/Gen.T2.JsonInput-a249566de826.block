@@ -1,0 +1,1165 @@
+module Gen.T2.JsonInput where
+
+open import Agda.Builtin.Char using (primCharEquality; primNatToChar)
+open import Agda.Builtin.String using (primStringEquality)
+open import Data.Bool using (Bool; false; true; _∧_; _∨_)
+open import Data.Char using (Char; toℕ)
+open import Data.List using (List; []; _∷_; [_]; _++_; any; take)
+open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Nat using (ℕ; zero; suc; _+_; _*_; _∸_; _<ᵇ_; _≡ᵇ_)
+open import Data.Nat.DivMod using (_/_; _%_)
+open import Data.Product using (_×_; _,_)
+open import Data.String using (String; fromList; toList) renaming (_++_ to _++ˢ_)
+open import Data.Empty using (⊥; ⊥-elim)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; sym; trans; subst)
+import Gen.T2.JsonInput.Comparison as Comparison
+import Gen.T2.JsonInput.Glyphs as Glyphs
+import Gen.T2.JsonInput.Grammar as Grammar
+
+data Json : Set where
+  jsonNull : Json
+  jsonBool : Bool → Json
+  jsonNumber : String → Json
+  jsonText : String → Json
+  jsonObject : List (String × Json) → Json
+  jsonArray : List Json → Json
+
+data Document : Set where
+  parsed : Json → Document
+  rejected : String → Document
+
+record StreamReply : Set where
+  constructor streamReply
+  field
+    status : ℕ
+    values : List Json
+    diagnostic : String
+
+data Expectation : Set where
+  valueStart : Expectation
+  inWord : String → Char → Expectation
+  objectKey : Expectation
+  afterKey : Expectation
+  afterMember : Expectation
+  afterElement : Expectation
+  integerDigit : Expectation
+  fractionalDigit : Expectation
+  exponentDigit : Expectation
+  insideString : Expectation
+  afterEscape : Expectation
+  unicodeDigit : Expectation
+  afterDocument : Expectation
+  exceededDepth : Expectation
+
+data Fault : Set where
+  missingDocument : Fault
+  incompleteDocument : Fault
+  unexpected : Char → Expectation → Fault
+
+data Prefix (A : Set) : Set where
+  consumed : A → List Char → Prefix A
+  failed : Fault → Prefix A
+
+whitespace : Char → Bool
+whitespace c = primCharEquality c ' ' ∨ (primCharEquality c '\t' ∨ (primCharEquality c '\r' ∨ primCharEquality c '\n'))
+
+jsonWhitespace : (c : _) → whitespace c ≡ (primCharEquality c ' ' ∨ (primCharEquality c '	' ∨ (primCharEquality c '\r' ∨ primCharEquality c '\n')))
+jsonWhitespace c = refl
+
+skipWhitespace : List Char → List Char
+skipWhitespace [] = []
+skipWhitespace (c ∷ xs) with whitespace c
+... | true  = skipWhitespace xs
+... | false = c ∷ xs
+
+skipEmpty : skipWhitespace [] ≡ []
+skipEmpty = refl
+
+skipSpace : (c : _) → (xs : _) → (whitespace c ≡ true) → skipWhitespace (c ∷ xs) ≡ skipWhitespace xs
+skipSpace c xs eq rewrite eq = refl
+
+keepNonspace : (c : _) → (xs : _) → (whitespace c ≡ false) → skipWhitespace (c ∷ xs) ≡ (c ∷ xs)
+keepNonspace c xs eq rewrite eq = refl
+
+diagnosticGlyph : Char → String
+diagnosticGlyph = Glyphs.diagnosticGlyph
+
+printableAscii : (c : _) → (((31 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 127)) ≡ true) → (primCharEquality c '\'' ≡ false) → (primCharEquality c '\\' ≡ false) → diagnosticGlyph c ≡ fromList ([ c ])
+printableAscii = Glyphs.printableAscii
+
+apostropheGlyph : diagnosticGlyph '\'' ≡ "\\'"
+apostropheGlyph = Glyphs.apostropheGlyph
+
+backslashGlyph : diagnosticGlyph '\\' ≡ "\\\\"
+backslashGlyph = Glyphs.backslashGlyph
+
+bellGlyph : diagnosticGlyph (primNatToChar 7) ≡ "\\a"
+bellGlyph = Glyphs.bellGlyph
+
+verticalTabGlyph : diagnosticGlyph (primNatToChar 11) ≡ "\\v"
+verticalTabGlyph = Glyphs.verticalTabGlyph
+
+backspaceGlyph : diagnosticGlyph (primNatToChar 8) ≡ "\\b"
+backspaceGlyph = Glyphs.backspaceGlyph
+
+tabGlyph : diagnosticGlyph '	' ≡ "\\t"
+tabGlyph = Glyphs.tabGlyph
+
+newlineGlyph : diagnosticGlyph '\n' ≡ "\\n"
+newlineGlyph = Glyphs.newlineGlyph
+
+formfeedGlyph : diagnosticGlyph (primNatToChar 12) ≡ "\\f"
+formfeedGlyph = Glyphs.formfeedGlyph
+
+returnGlyph : diagnosticGlyph '\r' ≡ "\\r"
+returnGlyph = Glyphs.returnGlyph
+
+diagnosticNibble : ℕ → Char
+diagnosticNibble = Glyphs.diagnosticNibble
+
+decimalNibble : (n : _) → ((n <ᵇ 10) ≡ true) → diagnosticNibble n ≡ primNatToChar (48 + n)
+decimalNibble = Glyphs.decimalNibble
+
+alphabeticNibble : (n : _) → (((9 <ᵇ n) ∧ (n <ᵇ 16)) ≡ true) → diagnosticNibble n ≡ primNatToChar (87 + n)
+alphabeticNibble = Glyphs.alphabeticNibble
+
+hexControlGlyph : (c : _) → (((toℕ c <ᵇ 32) ∨ (toℕ c ≡ᵇ 127)) ≡ true) → (any (primCharEquality c) (primNatToChar 7 ∷ (primNatToChar 8 ∷ ('	' ∷ ('\n' ∷ (primNatToChar 11 ∷ (primNatToChar 12 ∷ ('\r' ∷ []))))))) ≡ false) → diagnosticGlyph c ≡ ("\\x" ++ˢ fromList (diagnosticNibble (toℕ c / 16) ∷ (diagnosticNibble (toℕ c % 16) ∷ [])))
+hexControlGlyph = Glyphs.hexControlGlyph
+
+glyphTwoBytes : (c : _) → (((127 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 2048)) ≡ true) → diagnosticGlyph c ≡ fromList ([ primNatToChar (192 + (toℕ c / 64)) ])
+glyphTwoBytes = Glyphs.glyphTwoBytes
+
+glyphThreeBytes : (c : _) → (((2047 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 65536)) ≡ true) → diagnosticGlyph c ≡ fromList ([ primNatToChar (224 + (toℕ c / 4096)) ])
+glyphThreeBytes = Glyphs.glyphThreeBytes
+
+glyphFourBytes : (c : _) → ((65535 <ᵇ toℕ c) ≡ true) → diagnosticGlyph c ≡ fromList ([ primNatToChar (240 + (toℕ c / 262144)) ])
+glyphFourBytes = Glyphs.glyphFourBytes
+
+contextText : Expectation → String
+contextText valueStart = " looking for beginning of value"
+contextText (inWord word c) = (" in literal " ++ˢ (word ++ˢ (" (expecting '" ++ˢ (fromList ([ c ]) ++ˢ "')"))))
+contextText objectKey = " looking for beginning of object key string"
+contextText afterKey = " after object key"
+contextText afterMember = " after object key:value pair"
+contextText afterElement = " after array element"
+contextText integerDigit = " in numeric literal"
+contextText fractionalDigit = " after decimal point in numeric literal"
+contextText exponentDigit = " in exponent of numeric literal"
+contextText insideString = " in string literal"
+contextText afterEscape = " in string escape code"
+contextText unicodeDigit = " in \\u hexadecimal character escape"
+contextText afterDocument = " after top-level value"
+contextText exceededDepth = " exceeded max depth"
+
+startingValueMessage : contextText valueStart ≡ " looking for beginning of value"
+startingValueMessage = refl
+
+unfinishedWordMessage : (word : _) → (c : _) → contextText (inWord word c) ≡ (" in literal " ++ˢ (word ++ˢ (" (expecting '" ++ˢ (fromList ([ c ]) ++ˢ "')"))))
+unfinishedWordMessage word c = refl
+
+objectKeyMessage : contextText objectKey ≡ " looking for beginning of object key string"
+objectKeyMessage = refl
+
+colonMessage : contextText afterKey ≡ " after object key"
+colonMessage = refl
+
+memberMessage : contextText afterMember ≡ " after object key:value pair"
+memberMessage = refl
+
+elementMessage : contextText afterElement ≡ " after array element"
+elementMessage = refl
+
+integerMessage : contextText integerDigit ≡ " in numeric literal"
+integerMessage = refl
+
+fractionMessage : contextText fractionalDigit ≡ " after decimal point in numeric literal"
+fractionMessage = refl
+
+exponentMessage : contextText exponentDigit ≡ " in exponent of numeric literal"
+exponentMessage = refl
+
+stringMessage : contextText insideString ≡ " in string literal"
+stringMessage = refl
+
+escapeMessage : contextText afterEscape ≡ " in string escape code"
+escapeMessage = refl
+
+unicodeMessage : contextText unicodeDigit ≡ " in \\u hexadecimal character escape"
+unicodeMessage = refl
+
+trailingMessage : contextText afterDocument ≡ " after top-level value"
+trailingMessage = refl
+
+depthMessage : contextText exceededDepth ≡ " exceeded max depth"
+depthMessage = refl
+
+faultText : Fault → String
+faultText missingDocument = "EOF"
+faultText incompleteDocument = "unexpected EOF"
+faultText (unexpected c site) = "invalid character '" ++ˢ (diagnosticGlyph c ++ˢ ("'" ++ˢ contextText site))
+
+missingMessage : faultText missingDocument ≡ "EOF"
+missingMessage = refl
+
+incompleteMessage : faultText incompleteDocument ≡ "unexpected EOF"
+incompleteMessage = refl
+
+invalidMessage : (c : _) → (site : _) → faultText (unexpected c site) ≡ ("invalid character '" ++ˢ (diagnosticGlyph c ++ˢ ("'" ++ˢ contextText site)))
+invalidMessage c site = refl
+
+grammarComparison : Grammar.Comparison
+grammarComparison = Grammar.comparison Comparison.charReflexive Comparison.charSound
+                                       Comparison.stringReflexive Comparison.stringSound
+
+grammarLayout : Grammar.Layout
+grammarLayout = Grammar.layoutRules whitespace jsonWhitespace skipWhitespace skipEmpty skipSpace keepNonspace
+
+jsonConstructors : Grammar.Constructors Json
+jsonConstructors with Grammar.constructors jsonNull jsonBool jsonNumber jsonText jsonObject jsonArray
+... | build = build
+
+toExpectation : Expectation → Grammar.Expectation
+toExpectation valueStart = Grammar.valueStart
+toExpectation (inWord word c) = Grammar.inWord word c
+toExpectation objectKey = Grammar.objectKey
+toExpectation afterKey = Grammar.afterKey
+toExpectation afterMember = Grammar.afterMember
+toExpectation afterElement = Grammar.afterElement
+toExpectation integerDigit = Grammar.integerDigit
+toExpectation fractionalDigit = Grammar.fractionalDigit
+toExpectation exponentDigit = Grammar.exponentDigit
+toExpectation insideString = Grammar.insideString
+toExpectation afterEscape = Grammar.afterEscape
+toExpectation unicodeDigit = Grammar.unicodeDigit
+toExpectation afterDocument = Grammar.afterDocument
+toExpectation exceededDepth = Grammar.exceededDepth
+
+fromExpectation : Grammar.Expectation → Expectation
+fromExpectation Grammar.valueStart = valueStart
+fromExpectation (Grammar.inWord word c) = inWord word c
+fromExpectation Grammar.objectKey = objectKey
+fromExpectation Grammar.afterKey = afterKey
+fromExpectation Grammar.afterMember = afterMember
+fromExpectation Grammar.afterElement = afterElement
+fromExpectation Grammar.integerDigit = integerDigit
+fromExpectation Grammar.fractionalDigit = fractionalDigit
+fromExpectation Grammar.exponentDigit = exponentDigit
+fromExpectation Grammar.insideString = insideString
+fromExpectation Grammar.afterEscape = afterEscape
+fromExpectation Grammar.unicodeDigit = unicodeDigit
+fromExpectation Grammar.afterDocument = afterDocument
+fromExpectation Grammar.exceededDepth = exceededDepth
+
+expectationRoundTrip : (site : Expectation) → fromExpectation (toExpectation site) ≡ site
+expectationRoundTrip valueStart = refl
+expectationRoundTrip (inWord word c) = refl
+expectationRoundTrip objectKey = refl
+expectationRoundTrip afterKey = refl
+expectationRoundTrip afterMember = refl
+expectationRoundTrip afterElement = refl
+expectationRoundTrip integerDigit = refl
+expectationRoundTrip fractionalDigit = refl
+expectationRoundTrip exponentDigit = refl
+expectationRoundTrip insideString = refl
+expectationRoundTrip afterEscape = refl
+expectationRoundTrip unicodeDigit = refl
+expectationRoundTrip afterDocument = refl
+expectationRoundTrip exceededDepth = refl
+
+grammarExpectationRoundTrip : (site : Grammar.Expectation) → toExpectation (fromExpectation site) ≡ site
+grammarExpectationRoundTrip Grammar.valueStart = refl
+grammarExpectationRoundTrip (Grammar.inWord word c) = refl
+grammarExpectationRoundTrip Grammar.objectKey = refl
+grammarExpectationRoundTrip Grammar.afterKey = refl
+grammarExpectationRoundTrip Grammar.afterMember = refl
+grammarExpectationRoundTrip Grammar.afterElement = refl
+grammarExpectationRoundTrip Grammar.integerDigit = refl
+grammarExpectationRoundTrip Grammar.fractionalDigit = refl
+grammarExpectationRoundTrip Grammar.exponentDigit = refl
+grammarExpectationRoundTrip Grammar.insideString = refl
+grammarExpectationRoundTrip Grammar.afterEscape = refl
+grammarExpectationRoundTrip Grammar.unicodeDigit = refl
+grammarExpectationRoundTrip Grammar.afterDocument = refl
+grammarExpectationRoundTrip Grammar.exceededDepth = refl
+
+toFault : Fault → Grammar.Fault
+toFault missingDocument = Grammar.missingDocument
+toFault incompleteDocument = Grammar.incompleteDocument
+toFault (unexpected c site) = Grammar.unexpected c (toExpectation site)
+
+fromFault : Grammar.Fault → Fault
+fromFault Grammar.missingDocument = missingDocument
+fromFault Grammar.incompleteDocument = incompleteDocument
+fromFault (Grammar.unexpected c site) = unexpected c (fromExpectation site)
+
+faultRoundTrip : (err : Fault) → fromFault (toFault err) ≡ err
+faultRoundTrip missingDocument = refl
+faultRoundTrip incompleteDocument = refl
+faultRoundTrip (unexpected c site) = cong (unexpected c) (expectationRoundTrip site)
+
+grammarFaultRoundTrip : (err : Grammar.Fault) → toFault (fromFault err) ≡ err
+grammarFaultRoundTrip Grammar.missingDocument = refl
+grammarFaultRoundTrip Grammar.incompleteDocument = refl
+grammarFaultRoundTrip (Grammar.unexpected c site) = cong (Grammar.unexpected c) (grammarExpectationRoundTrip site)
+
+fromPrefix : {A : Set} → Grammar.Prefix A → Prefix A
+fromPrefix (Grammar.consumed value rest) = consumed value rest
+fromPrefix (Grammar.failed err) = failed (fromFault err)
+
+toPrefix : {A : Set} → Prefix A → Grammar.Prefix A
+toPrefix (consumed value rest) = Grammar.consumed value rest
+toPrefix (failed err) = Grammar.failed (toFault err)
+
+grammarPrefixRoundTrip : {A : Set} → (p : Grammar.Prefix A) → toPrefix (fromPrefix p) ≡ p
+grammarPrefixRoundTrip (Grammar.consumed v rest) = refl
+grammarPrefixRoundTrip (Grammar.failed err) = cong Grammar.failed (grammarFaultRoundTrip err)
+
+toPrefixEquality : {A : Set} → (p : Grammar.Prefix A) → {q : Prefix A} → fromPrefix p ≡ q → p ≡ toPrefix q
+toPrefixEquality p proof = trans (sym (grammarPrefixRoundTrip p)) (cong toPrefix proof)
+
+returnedFault : {A : Set} → (err : Fault) → fromPrefix (Grammar.failed (toFault err)) ≡ failed {A} err
+returnedFault err = cong failed (faultRoundTrip err)
+
+decimalDigit : Char → Bool
+decimalDigit c = Grammar.decimalDigit c
+
+hexadecimalDigit : Char → Maybe ℕ
+hexadecimalDigit c = Grammar.hexadecimalDigit c
+
+hexPrefix : ℕ → ℕ → List Char → Prefix ℕ
+hexPrefix n acc xs = fromPrefix (Grammar.hexPrefix n acc xs)
+
+isHighSurrogate : ℕ → Bool
+isHighSurrogate n = Grammar.isHighSurrogate n
+
+isLowSurrogate : ℕ → Bool
+isLowSurrogate n = Grammar.isLowSurrogate n
+
+utf16Escape : ℕ → List Char → Prefix Char
+utf16Escape n xs = fromPrefix (Grammar.utf16Escape grammarComparison n xs)
+
+escapePrefix : List Char → Prefix Char
+escapePrefix xs = fromPrefix (Grammar.escapePrefix grammarComparison xs)
+
+stringBody : List Char → Prefix String
+stringBody xs = fromPrefix (Grammar.stringBody grammarComparison xs)
+
+decimalRange : (c : _) → decimalDigit c ≡ ((47 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 58))
+decimalRange c = Grammar.decimalRange c
+
+hexDecimal : (c : _) → (decimalDigit c ≡ true) → hexadecimalDigit c ≡ just (toℕ c ∸ 48)
+hexDecimal c eq1 = Grammar.hexDecimal c eq1
+
+hexUppercase : (c : _) → (((64 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 71)) ≡ true) → hexadecimalDigit c ≡ just (toℕ c ∸ 55)
+hexUppercase c eq1 = Grammar.hexUppercase c eq1
+
+hexLowercase : (c : _) → (((96 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 103)) ≡ true) → hexadecimalDigit c ≡ just (toℕ c ∸ 87)
+hexLowercase c eq1 = Grammar.hexLowercase c eq1
+
+nonHex : (c : _) → ((decimalDigit c ∨ (((64 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 71)) ∨ ((96 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 103)))) ≡ false) → hexadecimalDigit c ≡ nothing
+nonHex c eq1 = Grammar.nonHex c eq1
+
+hexComplete : (acc : _) → (xs : _) → hexPrefix 0 acc xs ≡ consumed acc xs
+hexComplete acc xs = cong fromPrefix (Grammar.hexComplete acc xs)
+
+hexIncomplete : (n : _) → (acc : _) → hexPrefix (suc n) acc [] ≡ failed incompleteDocument
+hexIncomplete n acc = cong fromPrefix (Grammar.hexIncomplete n acc)
+
+hexUnexpected : (n : _) → (acc : _) → (c : _) → (xs : _) → (hexadecimalDigit c ≡ nothing) → hexPrefix (suc n) acc (c ∷ xs) ≡ failed (unexpected c unicodeDigit)
+hexUnexpected n acc c xs eq1 = cong fromPrefix (Grammar.hexUnexpected n acc c xs eq1)
+
+hexNext : (n : _) → (acc : _) → (c : _) → (xs : _) → (d : _) → (hexadecimalDigit c ≡ just d) → hexPrefix (suc n) acc (c ∷ xs) ≡ hexPrefix n ((16 * acc) + d) xs
+hexNext n acc c xs d eq1 = cong fromPrefix (Grammar.hexNext n acc c xs d eq1)
+
+highRange : (n : _) → isHighSurrogate n ≡ ((55295 <ᵇ n) ∧ (n <ᵇ 56320))
+highRange n = Grammar.highRange n
+
+lowRange : (n : _) → isLowSurrogate n ≡ ((56319 <ᵇ n) ∧ (n <ᵇ 57344))
+lowRange n = Grammar.lowRange n
+
+ordinaryUnit : (n : _) → (xs : _) → ((n <ᵇ 65536) ≡ true) → ((isHighSurrogate n ∨ isLowSurrogate n) ≡ false) → utf16Escape n xs ≡ consumed (primNatToChar n) xs
+ordinaryUnit n xs eq1 eq2 = cong fromPrefix (Grammar.ordinaryUnit grammarComparison n xs eq1 eq2)
+
+isolatedLow : (n : _) → (xs : _) → (isLowSurrogate n ≡ true) → utf16Escape n xs ≡ consumed (primNatToChar 65533) xs
+isolatedLow n xs eq1 = cong fromPrefix (Grammar.isolatedLow grammarComparison n xs eq1)
+
+noSecondUnit : (n : _) → (xs : _) → (isHighSurrogate n ≡ true) → (take 2 xs ≢ ('\\' ∷ ('u' ∷ []))) → utf16Escape n xs ≡ consumed (primNatToChar 65533) xs
+noSecondUnit n xs eq1 eq2 = cong fromPrefix (Grammar.noSecondUnit grammarComparison n xs eq1 eq2)
+
+malformedSecondUnit : (n : _) → (xs : _) → (fault : _) → (isHighSurrogate n ≡ true) → (hexPrefix 4 0 xs ≡ failed fault) → utf16Escape n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar 65533) ('\\' ∷ ('u' ∷ xs))
+malformedSecondUnit n xs fault eq1 eq2 = cong fromPrefix (Grammar.malformedSecondUnit grammarComparison n xs (toFault fault) eq1 (toPrefixEquality (Grammar.hexPrefix 4 0 xs) eq2))
+
+unmatchedSecondUnit : (n : _) → (m : _) → (xs : _) → (rest : _) → (isHighSurrogate n ≡ true) → (hexPrefix 4 0 xs ≡ consumed m rest) → (isLowSurrogate m ≡ false) → utf16Escape n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar 65533) ('\\' ∷ ('u' ∷ xs))
+unmatchedSecondUnit n m xs rest eq1 eq2 eq3 = cong fromPrefix (Grammar.unmatchedSecondUnit grammarComparison n m xs rest eq1 (toPrefixEquality (Grammar.hexPrefix 4 0 xs) eq2) eq3)
+
+pairedUnits : (n : _) → (m : _) → (xs : _) → (rest : _) → (isHighSurrogate n ≡ true) → (hexPrefix 4 0 xs ≡ consumed m rest) → (isLowSurrogate m ≡ true) → utf16Escape n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar (65536 + ((1024 * (n ∸ 55296)) + (m ∸ 56320)))) rest
+pairedUnits n m xs rest eq1 eq2 eq3 = cong fromPrefix (Grammar.pairedUnits grammarComparison n m xs rest eq1 (toPrefixEquality (Grammar.hexPrefix 4 0 xs) eq2) eq3)
+
+absentEscape : escapePrefix [] ≡ failed incompleteDocument
+absentEscape = cong fromPrefix (Grammar.absentEscape grammarComparison)
+
+quoteEscape : (xs : _) → escapePrefix ('\"' ∷ xs) ≡ consumed '\"' xs
+quoteEscape xs = cong fromPrefix (Grammar.quoteEscape grammarComparison xs)
+
+slashEscape : (xs : _) → escapePrefix ('/' ∷ xs) ≡ consumed '/' xs
+slashEscape xs = cong fromPrefix (Grammar.slashEscape grammarComparison xs)
+
+backslashEscape : (xs : _) → escapePrefix ('\\' ∷ xs) ≡ consumed '\\' xs
+backslashEscape xs = cong fromPrefix (Grammar.backslashEscape grammarComparison xs)
+
+backspaceEscape : (xs : _) → escapePrefix ('b' ∷ xs) ≡ consumed (primNatToChar 8) xs
+backspaceEscape xs = cong fromPrefix (Grammar.backspaceEscape grammarComparison xs)
+
+formfeedEscape : (xs : _) → escapePrefix ('f' ∷ xs) ≡ consumed (primNatToChar 12) xs
+formfeedEscape xs = cong fromPrefix (Grammar.formfeedEscape grammarComparison xs)
+
+newlineEscape : (xs : _) → escapePrefix ('n' ∷ xs) ≡ consumed '\n' xs
+newlineEscape xs = cong fromPrefix (Grammar.newlineEscape grammarComparison xs)
+
+returnEscape : (xs : _) → escapePrefix ('r' ∷ xs) ≡ consumed '\r' xs
+returnEscape xs = cong fromPrefix (Grammar.returnEscape grammarComparison xs)
+
+tabEscape : (xs : _) → escapePrefix ('t' ∷ xs) ≡ consumed '	' xs
+tabEscape xs = cong fromPrefix (Grammar.tabEscape grammarComparison xs)
+
+escapedUnit : (xs : _) → (n : _) → (rest : _) → (hexPrefix 4 0 xs ≡ consumed n rest) → escapePrefix ('u' ∷ xs) ≡ utf16Escape n rest
+escapedUnit xs n rest eq1 = cong fromPrefix (Grammar.escapedUnit grammarComparison xs n rest (toPrefixEquality (Grammar.hexPrefix 4 0 xs) eq1))
+
+malformedUnit : (xs : _) → (err : _) → (hexPrefix 4 0 xs ≡ failed err) → escapePrefix ('u' ∷ xs) ≡ failed err
+malformedUnit xs err eq1 = trans (cong fromPrefix (Grammar.malformedUnit grammarComparison xs (toFault err) (toPrefixEquality (Grammar.hexPrefix 4 0 xs) eq1))) (returnedFault err)
+
+unknownEscape : (c : _) → (xs : _) → (any (primCharEquality c) (toList "\"/\\bfnrtu") ≡ false) → escapePrefix (c ∷ xs) ≡ failed (unexpected c afterEscape)
+unknownEscape c xs eq1 = cong fromPrefix (Grammar.unknownEscape grammarComparison c xs eq1)
+
+bodyUnclosed : stringBody [] ≡ failed incompleteDocument
+bodyUnclosed = cong fromPrefix (Grammar.bodyUnclosed grammarComparison)
+
+bodyClosed : (xs : _) → stringBody ('\"' ∷ xs) ≡ consumed "" xs
+bodyClosed xs = cong fromPrefix (Grammar.bodyClosed grammarComparison xs)
+
+bodyControl : (c : _) → (xs : _) → ((toℕ c <ᵇ 32) ≡ true) → stringBody (c ∷ xs) ≡ failed (unexpected c insideString)
+bodyControl c xs eq1 = cong fromPrefix (Grammar.bodyControl grammarComparison c xs eq1)
+
+bodyCharacter : (c : _) → (xs : _) → (s : _) → (rest : _) → ((toℕ c <ᵇ 32) ≡ false) → (any (primCharEquality c) (toList "\"\\") ≡ false) → (stringBody xs ≡ consumed s rest) → stringBody (c ∷ xs) ≡ consumed (fromList ([ c ]) ++ˢ s) rest
+bodyCharacter c xs s rest eq1 eq2 eq3 = cong fromPrefix (Grammar.bodyCharacter grammarComparison c xs s rest eq1 eq2 (toPrefixEquality (Grammar.stringBody grammarComparison xs) eq3))
+
+bodyAfterCharacterError : (c : _) → (xs : _) → (e : _) → ((toℕ c <ᵇ 32) ≡ false) → (any (primCharEquality c) (toList "\"\\") ≡ false) → (stringBody xs ≡ failed e) → stringBody (c ∷ xs) ≡ failed e
+bodyAfterCharacterError c xs e eq1 eq2 eq3 = trans (cong fromPrefix (Grammar.bodyAfterCharacterError grammarComparison c xs (toFault e) eq1 eq2 (toPrefixEquality (Grammar.stringBody grammarComparison xs) eq3))) (returnedFault e)
+
+bodyEscape : (xs : _) → (c : _) → (mid : _) → (s : _) → (rest : _) → (escapePrefix xs ≡ consumed c mid) → (stringBody mid ≡ consumed s rest) → stringBody ('\\' ∷ xs) ≡ consumed (fromList ([ c ]) ++ˢ s) rest
+bodyEscape xs c mid s rest eq1 eq2 = cong fromPrefix (Grammar.bodyEscape grammarComparison xs c mid s rest (toPrefixEquality (Grammar.escapePrefix grammarComparison xs) eq1) (toPrefixEquality (Grammar.stringBody grammarComparison mid) eq2))
+
+bodyEscapeError : (xs : _) → (e : _) → (escapePrefix xs ≡ failed e) → stringBody ('\\' ∷ xs) ≡ failed e
+bodyEscapeError xs e eq1 = trans (cong fromPrefix (Grammar.bodyEscapeError grammarComparison xs (toFault e) (toPrefixEquality (Grammar.escapePrefix grammarComparison xs) eq1))) (returnedFault e)
+
+bodyAfterEscapeError : (xs : _) → (c : _) → (mid : _) → (e : _) → (escapePrefix xs ≡ consumed c mid) → (stringBody mid ≡ failed e) → stringBody ('\\' ∷ xs) ≡ failed e
+bodyAfterEscapeError xs c mid e eq1 eq2 = trans (cong fromPrefix (Grammar.bodyAfterEscapeError grammarComparison xs c mid (toFault e) (toPrefixEquality (Grammar.escapePrefix grammarComparison xs) eq1) (toPrefixEquality (Grammar.stringBody grammarComparison mid) eq2))) (returnedFault e)
+
+digitSpan : List Char → List Char × List Char
+digitSpan xs = Grammar.digitSpan xs
+
+requiredDigits : Expectation → List Char → Prefix (List Char)
+requiredDigits site xs = fromPrefix (Grammar.requiredDigits (toExpectation site) xs)
+
+unsignedInteger : List Char → Prefix (List Char)
+unsignedInteger xs = fromPrefix (Grammar.unsignedInteger grammarComparison xs)
+
+signedInteger : List Char → Prefix (List Char)
+signedInteger xs = fromPrefix (Grammar.signedInteger grammarComparison xs)
+
+fraction : List Char → Prefix (List Char)
+fraction xs = fromPrefix (Grammar.fraction grammarComparison xs)
+
+exponentBody : List Char → Prefix (List Char)
+exponentBody xs = fromPrefix (Grammar.exponentBody grammarComparison xs)
+
+exponent : List Char → Prefix (List Char)
+exponent xs = fromPrefix (Grammar.exponent grammarComparison xs)
+
+numberPrefix : List Char → Prefix String
+numberPrefix xs = fromPrefix (Grammar.numberPrefix grammarComparison xs)
+
+literalSuffix : Json → String → List Char → List Char → Prefix Json
+literalSuffix a word cs xs = fromPrefix (Grammar.literalSuffix {Json} grammarComparison a word cs xs)
+
+matchingValues : String → List (String × Json) → List Json
+matchingValues k fields = Grammar.matchingValues {Json} grammarComparison k fields
+
+resolveFields : List (String × Json) → List (String × Json)
+resolveFields fields = Grammar.resolveFields {Json} grammarComparison fields
+
+noDigitInput : digitSpan [] ≡ ([] , [])
+noDigitInput = Grammar.noDigitInput
+
+stopDigitSpan : (c : _) → (xs : _) → (decimalDigit c ≡ false) → digitSpan (c ∷ xs) ≡ ([] , (c ∷ xs))
+stopDigitSpan c xs eq1 = Grammar.stopDigitSpan c xs eq1
+
+extendDigitSpan : (c : _) → (xs : _) → (ds : _) → (rest : _) → (decimalDigit c ≡ true) → (digitSpan xs ≡ (ds , rest)) → digitSpan (c ∷ xs) ≡ ((c ∷ ds) , rest)
+extendDigitSpan c xs ds rest eq1 eq2 = Grammar.extendDigitSpan c xs ds rest eq1 eq2
+
+missingDigits : (site : _) → requiredDigits site [] ≡ failed incompleteDocument
+missingDigits site = cong fromPrefix (Grammar.missingDigits (toExpectation site))
+
+rejectedDigits : (site : _) → (c : _) → (xs : _) → (decimalDigit c ≡ false) → requiredDigits site (c ∷ xs) ≡ failed (unexpected c site)
+rejectedDigits site c xs eq1 = trans (cong fromPrefix (Grammar.rejectedDigits (toExpectation site) c xs eq1)) (returnedFault (unexpected c site))
+
+acceptedDigits : (site : _) → (c : _) → (xs : _) → (ds : _) → (rest : _) → (decimalDigit c ≡ true) → (digitSpan xs ≡ (ds , rest)) → requiredDigits site (c ∷ xs) ≡ consumed (c ∷ ds) rest
+acceptedDigits site c xs ds rest eq1 eq2 = cong fromPrefix (Grammar.acceptedDigits (toExpectation site) c xs ds rest eq1 eq2)
+
+zeroInteger : (xs : _) → unsignedInteger ('0' ∷ xs) ≡ consumed ([ '0' ]) xs
+zeroInteger xs = cong fromPrefix (Grammar.zeroInteger grammarComparison xs)
+
+otherInteger : (xs : _) → (take 1 xs ≢ ([ '0' ])) → unsignedInteger xs ≡ requiredDigits integerDigit xs
+otherInteger xs eq1 = cong fromPrefix (Grammar.otherInteger grammarComparison xs eq1)
+
+positiveInteger : (xs : _) → (take 1 xs ≢ ([ '-' ])) → signedInteger xs ≡ unsignedInteger xs
+positiveInteger xs eq1 = cong fromPrefix (Grammar.positiveInteger grammarComparison xs eq1)
+
+negativeInteger : (xs : _) → (ds : _) → (rest : _) → (unsignedInteger xs ≡ consumed ds rest) → signedInteger ('-' ∷ xs) ≡ consumed ('-' ∷ ds) rest
+negativeInteger xs ds rest eq1 = cong fromPrefix (Grammar.negativeInteger grammarComparison xs ds rest (toPrefixEquality (Grammar.unsignedInteger grammarComparison xs) eq1))
+
+negativeIntegerError : (xs : _) → (e : _) → (unsignedInteger xs ≡ failed e) → signedInteger ('-' ∷ xs) ≡ failed e
+negativeIntegerError xs e eq1 = trans (cong fromPrefix (Grammar.negativeIntegerError grammarComparison xs (toFault e) (toPrefixEquality (Grammar.unsignedInteger grammarComparison xs) eq1))) (returnedFault e)
+
+noFraction : (xs : _) → (take 1 xs ≢ ([ '.' ])) → fraction xs ≡ consumed [] xs
+noFraction xs eq1 = cong fromPrefix (Grammar.noFraction grammarComparison xs eq1)
+
+fractionWithDigits : (xs : _) → (ds : _) → (rest : _) → (requiredDigits fractionalDigit xs ≡ consumed ds rest) → fraction ('.' ∷ xs) ≡ consumed ('.' ∷ ds) rest
+fractionWithDigits xs ds rest eq1 = cong fromPrefix (Grammar.fractionWithDigits grammarComparison xs ds rest (toPrefixEquality (Grammar.requiredDigits Grammar.fractionalDigit xs) eq1))
+
+fractionWithoutDigits : (xs : _) → (e : _) → (requiredDigits fractionalDigit xs ≡ failed e) → fraction ('.' ∷ xs) ≡ failed e
+fractionWithoutDigits xs e eq1 = trans (cong fromPrefix (Grammar.fractionWithoutDigits grammarComparison xs (toFault e) (toPrefixEquality (Grammar.requiredDigits Grammar.fractionalDigit xs) eq1))) (returnedFault e)
+
+exponentWithoutSign : (xs : _) → (take 1 xs ≢ ([ '+' ])) → (take 1 xs ≢ ([ '-' ])) → exponentBody xs ≡ requiredDigits exponentDigit xs
+exponentWithoutSign xs eq1 eq2 = cong fromPrefix (Grammar.exponentWithoutSign grammarComparison xs eq1 eq2)
+
+exponentWithSign : (c : _) → (xs : _) → (ds : _) → (rest : _) → ((primCharEquality c '+' ∨ primCharEquality c '-') ≡ true) → (requiredDigits exponentDigit xs ≡ consumed ds rest) → exponentBody (c ∷ xs) ≡ consumed (c ∷ ds) rest
+exponentWithSign c xs ds rest eq1 eq2 = cong fromPrefix (Grammar.exponentWithSign grammarComparison c xs ds rest eq1 (toPrefixEquality (Grammar.requiredDigits Grammar.exponentDigit xs) eq2))
+
+exponentSignError : (c : _) → (xs : _) → (e : _) → ((primCharEquality c '+' ∨ primCharEquality c '-') ≡ true) → (requiredDigits exponentDigit xs ≡ failed e) → exponentBody (c ∷ xs) ≡ failed e
+exponentSignError c xs e eq1 eq2 = trans (cong fromPrefix (Grammar.exponentSignError grammarComparison c xs (toFault e) eq1 (toPrefixEquality (Grammar.requiredDigits Grammar.exponentDigit xs) eq2))) (returnedFault e)
+
+noExponent : (xs : _) → (take 1 xs ≢ ([ 'e' ])) → (take 1 xs ≢ ([ 'E' ])) → exponent xs ≡ consumed [] xs
+noExponent xs eq1 eq2 = cong fromPrefix (Grammar.noExponent grammarComparison xs eq1 eq2)
+
+exponentWithDigits : (c : _) → (xs : _) → (ds : _) → (rest : _) → ((primCharEquality c 'e' ∨ primCharEquality c 'E') ≡ true) → (exponentBody xs ≡ consumed ds rest) → exponent (c ∷ xs) ≡ consumed (c ∷ ds) rest
+exponentWithDigits c xs ds rest eq1 eq2 = cong fromPrefix (Grammar.exponentWithDigits grammarComparison c xs ds rest eq1 (toPrefixEquality (Grammar.exponentBody grammarComparison xs) eq2))
+
+exponentWithoutDigits : (c : _) → (xs : _) → (e : _) → ((primCharEquality c 'e' ∨ primCharEquality c 'E') ≡ true) → (exponentBody xs ≡ failed e) → exponent (c ∷ xs) ≡ failed e
+exponentWithoutDigits c xs e eq1 eq2 = trans (cong fromPrefix (Grammar.exponentWithoutDigits grammarComparison c xs (toFault e) eq1 (toPrefixEquality (Grammar.exponentBody grammarComparison xs) eq2))) (returnedFault e)
+
+numberWithParts : (xs : _) → (i : _) → (r : _) → (f : _) → (q : _) → (d : _) → (rest : _) → (signedInteger xs ≡ consumed i r) → (fraction r ≡ consumed f q) → (exponent q ≡ consumed d rest) → numberPrefix xs ≡ consumed (fromList (i ++ (f ++ d))) rest
+numberWithParts xs i r f q d rest eq1 eq2 eq3 = cong fromPrefix (Grammar.numberWithParts grammarComparison xs i r f q d rest (toPrefixEquality (Grammar.signedInteger grammarComparison xs) eq1) (toPrefixEquality (Grammar.fraction grammarComparison r) eq2) (toPrefixEquality (Grammar.exponent grammarComparison q) eq3))
+
+numberIntegerError : (xs : _) → (e : _) → (signedInteger xs ≡ failed e) → numberPrefix xs ≡ failed e
+numberIntegerError xs e eq1 = trans (cong fromPrefix (Grammar.numberIntegerError grammarComparison xs (toFault e) (toPrefixEquality (Grammar.signedInteger grammarComparison xs) eq1))) (returnedFault e)
+
+numberFractionError : (xs : _) → (i : _) → (r : _) → (e : _) → (signedInteger xs ≡ consumed i r) → (fraction r ≡ failed e) → numberPrefix xs ≡ failed e
+numberFractionError xs i r e eq1 eq2 = trans (cong fromPrefix (Grammar.numberFractionError grammarComparison xs i r (toFault e) (toPrefixEquality (Grammar.signedInteger grammarComparison xs) eq1) (toPrefixEquality (Grammar.fraction grammarComparison r) eq2))) (returnedFault e)
+
+numberExponentError : (xs : _) → (i : _) → (r : _) → (f : _) → (q : _) → (e : _) → (signedInteger xs ≡ consumed i r) → (fraction r ≡ consumed f q) → (exponent q ≡ failed e) → numberPrefix xs ≡ failed e
+numberExponentError xs i r f q e eq1 eq2 eq3 = trans (cong fromPrefix (Grammar.numberExponentError grammarComparison xs i r f q (toFault e) (toPrefixEquality (Grammar.signedInteger grammarComparison xs) eq1) (toPrefixEquality (Grammar.fraction grammarComparison r) eq2) (toPrefixEquality (Grammar.exponent grammarComparison q) eq3))) (returnedFault e)
+
+wordComplete : (a : _) → (word : _) → (xs : _) → literalSuffix a word [] xs ≡ consumed a xs
+wordComplete a word xs = cong fromPrefix (Grammar.wordComplete {Json} grammarComparison a word xs)
+
+wordIncomplete : (a : _) → (word : _) → (c : _) → (cs : _) → literalSuffix a word (c ∷ cs) [] ≡ failed incompleteDocument
+wordIncomplete a word c cs = cong fromPrefix (Grammar.wordIncomplete {Json} grammarComparison a word c cs)
+
+wordMatched : (a : _) → (word : _) → (c : _) → (cs : _) → (xs : _) → literalSuffix a word (c ∷ cs) (c ∷ xs) ≡ literalSuffix a word cs xs
+wordMatched a word c cs xs = cong fromPrefix (Grammar.wordMatched {Json} grammarComparison a word c cs xs)
+
+wordMismatch : (a : _) → (word : _) → (c : _) → (d : _) → (cs : _) → (xs : _) → (primCharEquality c d ≡ false) → literalSuffix a word (c ∷ cs) (d ∷ xs) ≡ failed (unexpected d (inWord word c))
+wordMismatch a word c d cs xs eq1 = cong fromPrefix (Grammar.wordMismatch {Json} grammarComparison a word c d cs xs eq1)
+
+noMatchingValues : (k : _) → matchingValues k [] ≡ []
+noMatchingValues k = Grammar.noMatchingValues {Json} grammarComparison k
+
+nextMatchingValue : (k : _) → (v : _) → (fields : _) → matchingValues k ((k , v) ∷ fields) ≡ (matchingValues k fields ++ ([ v ]))
+nextMatchingValue k v fields = Grammar.nextMatchingValue {Json} grammarComparison k v fields
+
+otherMatchingValue : (k : _) → (l : _) → (v : _) → (fields : _) → (primStringEquality k l ≡ false) → matchingValues k ((l , v) ∷ fields) ≡ matchingValues k fields
+otherMatchingValue k l v fields eq1 = Grammar.otherMatchingValue {Json} grammarComparison k l v fields eq1
+
+resolveEmpty : resolveFields [] ≡ []
+resolveEmpty = Grammar.resolveEmpty {Json} grammarComparison
+
+resolveAbsent : (k : _) → (fields : _) → (matchingValues k fields ≡ []) → matchingValues k (resolveFields fields) ≡ []
+resolveAbsent k fields eq1 = Grammar.resolveAbsent {Json} grammarComparison k fields eq1
+
+resolveNewest : (k : _) → (v : _) → (older : _) → (fields : _) → (matchingValues k fields ≡ (v ∷ older)) → matchingValues k (resolveFields fields) ≡ ([ v ])
+resolveNewest k v older fields eq1 = Grammar.resolveNewest {Json} grammarComparison k v older fields eq1
+
+valueAtDepth : ℕ → List Char → Prefix Json
+valueAtDepth budget xs = fromPrefix (Grammar.valueAtDepth {Json} grammarComparison grammarLayout jsonConstructors budget xs)
+
+arrayItems : ℕ → Bool → List Char → Prefix (List Json)
+arrayItems budget empty xs = fromPrefix (Grammar.arrayItems {Json} grammarComparison grammarLayout jsonConstructors budget empty xs)
+
+arrayTail : ℕ → List Char → Prefix (List Json)
+arrayTail budget xs = fromPrefix (Grammar.arrayTail {Json} grammarComparison grammarLayout jsonConstructors budget xs)
+
+objectItems : ℕ → Bool → List Char → Prefix (List (String × Json))
+objectItems budget empty xs = fromPrefix (Grammar.objectItems {Json} grammarComparison grammarLayout jsonConstructors budget empty xs)
+
+objectTail : ℕ → List Char → Prefix (List (String × Json))
+objectTail budget xs = fromPrefix (Grammar.objectTail {Json} grammarComparison grammarLayout jsonConstructors budget xs)
+
+memberPrefix : ℕ → List Char → Prefix (String × Json)
+memberPrefix budget xs = fromPrefix (Grammar.memberPrefix {Json} grammarComparison grammarLayout jsonConstructors budget xs)
+
+memberValue : ℕ → List Char → Prefix Json
+memberValue budget xs = fromPrefix (Grammar.memberValue {Json} grammarComparison grammarLayout jsonConstructors budget xs)
+
+emptyPrefix : (budget : _) → valueAtDepth budget [] ≡ failed missingDocument
+emptyPrefix budget = cong fromPrefix (Grammar.emptyPrefix {Json} grammarComparison grammarLayout jsonConstructors budget)
+
+leadingSpace : (budget : _) → (c : _) → (xs : _) → (whitespace c ≡ true) → valueAtDepth budget (c ∷ xs) ≡ valueAtDepth budget xs
+leadingSpace budget c xs eq1 = cong fromPrefix (Grammar.leadingSpace {Json} grammarComparison grammarLayout jsonConstructors budget c xs eq1)
+
+unexpectedStart : (budget : _) → (c : _) → (xs : _) → ((whitespace c ∨ (decimalDigit c ∨ any (primCharEquality c) (toList "-tfn\"[{"))) ≡ false) → valueAtDepth budget (c ∷ xs) ≡ failed (unexpected c valueStart)
+unexpectedStart budget c xs eq1 = cong fromPrefix (Grammar.unexpectedStart {Json} grammarComparison grammarLayout jsonConstructors budget c xs eq1)
+
+truePrefix : (budget : _) → (xs : _) → valueAtDepth budget ('t' ∷ xs) ≡ literalSuffix (jsonBool true) "true" (toList "rue") xs
+truePrefix budget xs = cong fromPrefix (Grammar.truePrefix {Json} grammarComparison grammarLayout jsonConstructors budget xs)
+
+falsePrefix : (budget : _) → (xs : _) → valueAtDepth budget ('f' ∷ xs) ≡ literalSuffix (jsonBool false) "false" (toList "alse") xs
+falsePrefix budget xs = cong fromPrefix (Grammar.falsePrefix {Json} grammarComparison grammarLayout jsonConstructors budget xs)
+
+nullPrefix : (budget : _) → (xs : _) → valueAtDepth budget ('n' ∷ xs) ≡ literalSuffix jsonNull "null" (toList "ull") xs
+nullPrefix budget xs = cong fromPrefix (Grammar.nullPrefix {Json} grammarComparison grammarLayout jsonConstructors budget xs)
+
+numberValue : (budget : _) → (c : _) → (xs : _) → (s : _) → (rest : _) → ((decimalDigit c ∨ primCharEquality c '-') ≡ true) → (numberPrefix (c ∷ xs) ≡ consumed s rest) → valueAtDepth budget (c ∷ xs) ≡ consumed (jsonNumber s) rest
+numberValue budget c xs s rest eq1 eq2 = cong fromPrefix (Grammar.numberValue {Json} grammarComparison grammarLayout jsonConstructors budget c xs s rest eq1 (toPrefixEquality (Grammar.numberPrefix grammarComparison (c ∷ xs)) eq2))
+
+numberValueError : (budget : _) → (c : _) → (xs : _) → (e : _) → ((decimalDigit c ∨ primCharEquality c '-') ≡ true) → (numberPrefix (c ∷ xs) ≡ failed e) → valueAtDepth budget (c ∷ xs) ≡ failed e
+numberValueError budget c xs e eq1 eq2 = trans (cong fromPrefix (Grammar.numberValueError {Json} grammarComparison grammarLayout jsonConstructors budget c xs (toFault e) eq1 (toPrefixEquality (Grammar.numberPrefix grammarComparison (c ∷ xs)) eq2))) (returnedFault e)
+
+stringValue : (budget : _) → (xs : _) → (s : _) → (rest : _) → (stringBody xs ≡ consumed s rest) → valueAtDepth budget ('\"' ∷ xs) ≡ consumed (jsonText s) rest
+stringValue budget xs s rest eq1 = cong fromPrefix (Grammar.stringValue {Json} grammarComparison grammarLayout jsonConstructors budget xs s rest (toPrefixEquality (Grammar.stringBody grammarComparison xs) eq1))
+
+stringValueError : (budget : _) → (xs : _) → (e : _) → (stringBody xs ≡ failed e) → valueAtDepth budget ('\"' ∷ xs) ≡ failed e
+stringValueError budget xs e eq1 = trans (cong fromPrefix (Grammar.stringValueError {Json} grammarComparison grammarLayout jsonConstructors budget xs (toFault e) (toPrefixEquality (Grammar.stringBody grammarComparison xs) eq1))) (returnedFault e)
+
+arrayValue : (budget : _) → (xs : _) → (vs : _) → (rest : _) → (arrayItems budget true xs ≡ consumed vs rest) → valueAtDepth (suc budget) ('[' ∷ xs) ≡ consumed (jsonArray vs) rest
+arrayValue budget xs vs rest eq1 = cong fromPrefix (Grammar.arrayValue {Json} grammarComparison grammarLayout jsonConstructors budget xs vs rest (toPrefixEquality (Grammar.arrayItems {Json} grammarComparison grammarLayout jsonConstructors budget true xs) eq1))
+
+arrayValueError : (budget : _) → (xs : _) → (e : _) → (arrayItems budget true xs ≡ failed e) → valueAtDepth (suc budget) ('[' ∷ xs) ≡ failed e
+arrayValueError budget xs e eq1 = trans (cong fromPrefix (Grammar.arrayValueError {Json} grammarComparison grammarLayout jsonConstructors budget xs (toFault e) (toPrefixEquality (Grammar.arrayItems {Json} grammarComparison grammarLayout jsonConstructors budget true xs) eq1))) (returnedFault e)
+
+objectValue : (budget : _) → (xs : _) → (fields : _) → (rest : _) → (objectItems budget true xs ≡ consumed fields rest) → valueAtDepth (suc budget) ('{' ∷ xs) ≡ consumed (jsonObject (resolveFields fields)) rest
+objectValue budget xs fields rest eq1 = cong fromPrefix (Grammar.objectValue {Json} grammarComparison grammarLayout jsonConstructors budget xs fields rest (toPrefixEquality (Grammar.objectItems {Json} grammarComparison grammarLayout jsonConstructors budget true xs) eq1))
+
+objectValueError : (budget : _) → (xs : _) → (e : _) → (objectItems budget true xs ≡ failed e) → valueAtDepth (suc budget) ('{' ∷ xs) ≡ failed e
+objectValueError budget xs e eq1 = trans (cong fromPrefix (Grammar.objectValueError {Json} grammarComparison grammarLayout jsonConstructors budget xs (toFault e) (toPrefixEquality (Grammar.objectItems {Json} grammarComparison grammarLayout jsonConstructors budget true xs) eq1))) (returnedFault e)
+
+arrayAtDepthLimit : (xs : _) → valueAtDepth zero ('[' ∷ xs) ≡ failed (unexpected '[' exceededDepth)
+arrayAtDepthLimit xs = cong fromPrefix (Grammar.arrayAtDepthLimit {Json} grammarComparison grammarLayout jsonConstructors xs)
+
+objectAtDepthLimit : (xs : _) → valueAtDepth zero ('{' ∷ xs) ≡ failed (unexpected '{' exceededDepth)
+objectAtDepthLimit xs = cong fromPrefix (Grammar.objectAtDepthLimit {Json} grammarComparison grammarLayout jsonConstructors xs)
+
+arrayItemsEOF : (budget : _) → (empty : _) → (xs : _) → (skipWhitespace xs ≡ []) → arrayItems budget empty xs ≡ failed incompleteDocument
+arrayItemsEOF budget empty xs eq1 = cong fromPrefix (Grammar.arrayItemsEOF {Json} grammarComparison grammarLayout jsonConstructors budget empty xs eq1)
+
+arrayEmpty : (budget : _) → (xs : _) → (rest : _) → (skipWhitespace xs ≡ (']' ∷ rest)) → arrayItems budget true xs ≡ consumed [] rest
+arrayEmpty budget xs rest eq1 = cong fromPrefix (Grammar.arrayEmpty {Json} grammarComparison grammarLayout jsonConstructors budget xs rest eq1)
+
+arrayItem : (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (v : _) → (mid : _) → (vs : _) → (rest : _) → (skipWhitespace xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c ']') ≡ false) → (valueAtDepth budget (c ∷ cs) ≡ consumed v mid) → (arrayTail budget mid ≡ consumed vs rest) → arrayItems budget empty xs ≡ consumed (v ∷ vs) rest
+arrayItem budget empty xs c cs v mid vs rest eq1 eq2 eq3 eq4 = cong fromPrefix (Grammar.arrayItem {Json} grammarComparison grammarLayout jsonConstructors budget empty xs c cs v mid vs rest eq1 eq2 (toPrefixEquality (Grammar.valueAtDepth {Json} grammarComparison grammarLayout jsonConstructors budget (c ∷ cs)) eq3) (toPrefixEquality (Grammar.arrayTail {Json} grammarComparison grammarLayout jsonConstructors budget mid) eq4))
+
+arrayItemError : (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (e : _) → (skipWhitespace xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c ']') ≡ false) → (valueAtDepth budget (c ∷ cs) ≡ failed e) → arrayItems budget empty xs ≡ failed e
+arrayItemError budget empty xs c cs e eq1 eq2 eq3 = trans (cong fromPrefix (Grammar.arrayItemError {Json} grammarComparison grammarLayout jsonConstructors budget empty xs c cs (toFault e) eq1 eq2 (toPrefixEquality (Grammar.valueAtDepth {Json} grammarComparison grammarLayout jsonConstructors budget (c ∷ cs)) eq3))) (returnedFault e)
+
+arrayAfterItemError : (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (v : _) → (mid : _) → (e : _) → (skipWhitespace xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c ']') ≡ false) → (valueAtDepth budget (c ∷ cs) ≡ consumed v mid) → (arrayTail budget mid ≡ failed e) → arrayItems budget empty xs ≡ failed e
+arrayAfterItemError budget empty xs c cs v mid e eq1 eq2 eq3 eq4 = trans (cong fromPrefix (Grammar.arrayAfterItemError {Json} grammarComparison grammarLayout jsonConstructors budget empty xs c cs v mid (toFault e) eq1 eq2 (toPrefixEquality (Grammar.valueAtDepth {Json} grammarComparison grammarLayout jsonConstructors budget (c ∷ cs)) eq3) (toPrefixEquality (Grammar.arrayTail {Json} grammarComparison grammarLayout jsonConstructors budget mid) eq4))) (returnedFault e)
+
+arrayTailEOF : (budget : _) → (xs : _) → (skipWhitespace xs ≡ []) → arrayTail budget xs ≡ failed incompleteDocument
+arrayTailEOF budget xs eq1 = cong fromPrefix (Grammar.arrayTailEOF {Json} grammarComparison grammarLayout jsonConstructors budget xs eq1)
+
+arrayTailClose : (budget : _) → (xs : _) → (rest : _) → (skipWhitespace xs ≡ (']' ∷ rest)) → arrayTail budget xs ≡ consumed [] rest
+arrayTailClose budget xs rest eq1 = cong fromPrefix (Grammar.arrayTailClose {Json} grammarComparison grammarLayout jsonConstructors budget xs rest eq1)
+
+arrayTailComma : (budget : _) → (xs : _) → (rest : _) → (skipWhitespace xs ≡ (',' ∷ rest)) → arrayTail budget xs ≡ arrayItems budget false rest
+arrayTailComma budget xs rest eq1 = cong fromPrefix (Grammar.arrayTailComma {Json} grammarComparison grammarLayout jsonConstructors budget xs rest eq1)
+
+arrayTailUnexpected : (budget : _) → (xs : _) → (c : _) → (rest : _) → (skipWhitespace xs ≡ (c ∷ rest)) → ((primCharEquality c ']' ∨ primCharEquality c ',') ≡ false) → arrayTail budget xs ≡ failed (unexpected c afterElement)
+arrayTailUnexpected budget xs c rest eq1 eq2 = cong fromPrefix (Grammar.arrayTailUnexpected {Json} grammarComparison grammarLayout jsonConstructors budget xs c rest eq1 eq2)
+
+objectItemsEOF : (budget : _) → (empty : _) → (xs : _) → (skipWhitespace xs ≡ []) → objectItems budget empty xs ≡ failed incompleteDocument
+objectItemsEOF budget empty xs eq1 = cong fromPrefix (Grammar.objectItemsEOF {Json} grammarComparison grammarLayout jsonConstructors budget empty xs eq1)
+
+objectEmpty : (budget : _) → (xs : _) → (rest : _) → (skipWhitespace xs ≡ ('}' ∷ rest)) → objectItems budget true xs ≡ consumed [] rest
+objectEmpty budget xs rest eq1 = cong fromPrefix (Grammar.objectEmpty {Json} grammarComparison grammarLayout jsonConstructors budget xs rest eq1)
+
+objectItem : (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (entry : _) → (mid : _) → (fields : _) → (rest : _) → (skipWhitespace xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c '}') ≡ false) → (memberPrefix budget (c ∷ cs) ≡ consumed entry mid) → (objectTail budget mid ≡ consumed fields rest) → objectItems budget empty xs ≡ consumed (entry ∷ fields) rest
+objectItem budget empty xs c cs entry mid fields rest eq1 eq2 eq3 eq4 = cong fromPrefix (Grammar.objectItem {Json} grammarComparison grammarLayout jsonConstructors budget empty xs c cs entry mid fields rest eq1 eq2 (toPrefixEquality (Grammar.memberPrefix {Json} grammarComparison grammarLayout jsonConstructors budget (c ∷ cs)) eq3) (toPrefixEquality (Grammar.objectTail {Json} grammarComparison grammarLayout jsonConstructors budget mid) eq4))
+
+objectItemError : (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (e : _) → (skipWhitespace xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c '}') ≡ false) → (memberPrefix budget (c ∷ cs) ≡ failed e) → objectItems budget empty xs ≡ failed e
+objectItemError budget empty xs c cs e eq1 eq2 eq3 = trans (cong fromPrefix (Grammar.objectItemError {Json} grammarComparison grammarLayout jsonConstructors budget empty xs c cs (toFault e) eq1 eq2 (toPrefixEquality (Grammar.memberPrefix {Json} grammarComparison grammarLayout jsonConstructors budget (c ∷ cs)) eq3))) (returnedFault e)
+
+objectAfterItemError : (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (entry : _) → (mid : _) → (e : _) → (skipWhitespace xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c '}') ≡ false) → (memberPrefix budget (c ∷ cs) ≡ consumed entry mid) → (objectTail budget mid ≡ failed e) → objectItems budget empty xs ≡ failed e
+objectAfterItemError budget empty xs c cs entry mid e eq1 eq2 eq3 eq4 = trans (cong fromPrefix (Grammar.objectAfterItemError {Json} grammarComparison grammarLayout jsonConstructors budget empty xs c cs entry mid (toFault e) eq1 eq2 (toPrefixEquality (Grammar.memberPrefix {Json} grammarComparison grammarLayout jsonConstructors budget (c ∷ cs)) eq3) (toPrefixEquality (Grammar.objectTail {Json} grammarComparison grammarLayout jsonConstructors budget mid) eq4))) (returnedFault e)
+
+objectTailEOF : (budget : _) → (xs : _) → (skipWhitespace xs ≡ []) → objectTail budget xs ≡ failed incompleteDocument
+objectTailEOF budget xs eq1 = cong fromPrefix (Grammar.objectTailEOF {Json} grammarComparison grammarLayout jsonConstructors budget xs eq1)
+
+objectTailClose : (budget : _) → (xs : _) → (rest : _) → (skipWhitespace xs ≡ ('}' ∷ rest)) → objectTail budget xs ≡ consumed [] rest
+objectTailClose budget xs rest eq1 = cong fromPrefix (Grammar.objectTailClose {Json} grammarComparison grammarLayout jsonConstructors budget xs rest eq1)
+
+objectTailComma : (budget : _) → (xs : _) → (rest : _) → (skipWhitespace xs ≡ (',' ∷ rest)) → objectTail budget xs ≡ objectItems budget false rest
+objectTailComma budget xs rest eq1 = cong fromPrefix (Grammar.objectTailComma {Json} grammarComparison grammarLayout jsonConstructors budget xs rest eq1)
+
+objectTailUnexpected : (budget : _) → (xs : _) → (c : _) → (rest : _) → (skipWhitespace xs ≡ (c ∷ rest)) → ((primCharEquality c '}' ∨ primCharEquality c ',') ≡ false) → objectTail budget xs ≡ failed (unexpected c afterMember)
+objectTailUnexpected budget xs c rest eq1 eq2 = cong fromPrefix (Grammar.objectTailUnexpected {Json} grammarComparison grammarLayout jsonConstructors budget xs c rest eq1 eq2)
+
+memberEOF : (budget : _) → memberPrefix budget [] ≡ failed incompleteDocument
+memberEOF budget = cong fromPrefix (Grammar.memberEOF {Json} grammarComparison grammarLayout jsonConstructors budget)
+
+memberBadStart : (budget : _) → (c : _) → (xs : _) → (primCharEquality c '\"' ≡ false) → memberPrefix budget (c ∷ xs) ≡ failed (unexpected c objectKey)
+memberBadStart budget c xs eq1 = cong fromPrefix (Grammar.memberBadStart {Json} grammarComparison grammarLayout jsonConstructors budget c xs eq1)
+
+memberWithValue : (budget : _) → (xs : _) → (k : _) → (mid : _) → (v : _) → (rest : _) → (stringBody xs ≡ consumed k mid) → (memberValue budget mid ≡ consumed v rest) → memberPrefix budget ('\"' ∷ xs) ≡ consumed (k , v) rest
+memberWithValue budget xs k mid v rest eq1 eq2 = cong fromPrefix (Grammar.memberWithValue {Json} grammarComparison grammarLayout jsonConstructors budget xs k mid v rest (toPrefixEquality (Grammar.stringBody grammarComparison xs) eq1) (toPrefixEquality (Grammar.memberValue {Json} grammarComparison grammarLayout jsonConstructors budget mid) eq2))
+
+memberKeyError : (budget : _) → (xs : _) → (e : _) → (stringBody xs ≡ failed e) → memberPrefix budget ('\"' ∷ xs) ≡ failed e
+memberKeyError budget xs e eq1 = trans (cong fromPrefix (Grammar.memberKeyError {Json} grammarComparison grammarLayout jsonConstructors budget xs (toFault e) (toPrefixEquality (Grammar.stringBody grammarComparison xs) eq1))) (returnedFault e)
+
+memberValueError : (budget : _) → (xs : _) → (k : _) → (mid : _) → (e : _) → (stringBody xs ≡ consumed k mid) → (memberValue budget mid ≡ failed e) → memberPrefix budget ('\"' ∷ xs) ≡ failed e
+memberValueError budget xs k mid e eq1 eq2 = trans (cong fromPrefix (Grammar.memberValueError {Json} grammarComparison grammarLayout jsonConstructors budget xs k mid (toFault e) (toPrefixEquality (Grammar.stringBody grammarComparison xs) eq1) (toPrefixEquality (Grammar.memberValue {Json} grammarComparison grammarLayout jsonConstructors budget mid) eq2))) (returnedFault e)
+
+valueAfterColon : (budget : _) → (xs : _) → (rest : _) → (skipWhitespace xs ≡ (':' ∷ rest)) → (valueAtDepth budget rest ≢ failed missingDocument) → memberValue budget xs ≡ valueAtDepth budget rest
+valueAfterColon budget xs rest eq1 eq2 = cong fromPrefix (Grammar.valueAfterColon {Json} grammarComparison grammarLayout jsonConstructors budget xs rest eq1 (λ mismatch → eq2 (cong fromPrefix mismatch)))
+
+valueEOF : (budget : _) → (xs : _) → (skipWhitespace xs ≡ []) → memberValue budget xs ≡ failed incompleteDocument
+valueEOF budget xs eq1 = cong fromPrefix (Grammar.valueEOF {Json} grammarComparison grammarLayout jsonConstructors budget xs eq1)
+
+valueAfterColonEOF : (budget : _) → (xs : _) → (rest : _) → (skipWhitespace xs ≡ (':' ∷ rest)) → (valueAtDepth budget rest ≡ failed missingDocument) → memberValue budget xs ≡ failed incompleteDocument
+valueAfterColonEOF budget xs rest eq1 eq2 = cong fromPrefix (Grammar.valueAfterColonEOF {Json} grammarComparison grammarLayout jsonConstructors budget xs rest eq1 (toPrefixEquality (Grammar.valueAtDepth {Json} grammarComparison grammarLayout jsonConstructors budget rest) eq2))
+
+memberMissingColon : (budget : _) → (xs : _) → (c : _) → (rest : _) → (skipWhitespace xs ≡ (c ∷ rest)) → (primCharEquality c ':' ≡ false) → memberValue budget xs ≡ failed (unexpected c afterKey)
+memberMissingColon budget xs c rest eq1 eq2 = cong fromPrefix (Grammar.memberMissingColon {Json} grammarComparison grammarLayout jsonConstructors budget xs c rest eq1 eq2)
+
+maxNesting : ℕ
+maxNesting = 10000
+
+nestingCapacity : maxNesting ≡ 10000
+nestingCapacity = refl
+
+valuePrefix : List Char → Prefix Json
+valuePrefix = valueAtDepth maxNesting
+
+topLevelBudget : (xs : _) → valuePrefix xs ≡ valueAtDepth maxNesting xs
+topLevelBudget xs = refl
+
+firstDocument : List Char → Document
+firstDocument xs with valuePrefix xs
+... | consumed v rest = parsed v
+... | failed e = rejected (faultText e)
+
+firstDocumentFound : (xs : _) → (v : _) → (rest : _) → (valuePrefix xs ≡ consumed v rest) → firstDocument xs ≡ parsed v
+firstDocumentFound xs v rest eq rewrite eq = refl
+
+firstDocumentFault : (xs : _) → (e : _) → (valuePrefix xs ≡ failed e) → firstDocument xs ≡ rejected (faultText e)
+firstDocumentFault xs e eq rewrite eq = refl
+
+readDocument : String → Document
+readDocument s = firstDocument (toList s)
+
+readDocumentLaw : (s : _) → readDocument s ≡ firstDocument (toList s)
+readDocumentLaw s = refl
+
+strictRemainder : Json → List Char → Document
+strictRemainder v rest with rest
+... | [] = parsed v
+... | c ∷ cs = rejected (faultText (unexpected c afterDocument))
+
+strictFromPrefix : Prefix Json → Document
+strictFromPrefix (consumed v rest) = strictRemainder v (skipWhitespace rest)
+strictFromPrefix (failed missingDocument) = rejected "unexpected end of JSON input"
+strictFromPrefix (failed incompleteDocument) = rejected "unexpected end of JSON input"
+strictFromPrefix (failed (unexpected c site)) = rejected (faultText (unexpected c site))
+
+strictDocument : List Char → Document
+strictDocument xs = strictFromPrefix (valuePrefix xs)
+
+strictDocumentFound : (xs : _) → (v : _) → (rest : _) → (valuePrefix xs ≡ consumed v rest) → (skipWhitespace rest ≡ []) → strictDocument xs ≡ parsed v
+strictDocumentFound xs v rest eq tailEq = trans (cong strictFromPrefix eq) (cong (strictRemainder v) tailEq)
+
+strictDocumentTrailing : (xs : _) → (v : _) → (rest : _) → (c : _) → (cs : _) → (valuePrefix xs ≡ consumed v rest) → (skipWhitespace rest ≡ (c ∷ cs)) → strictDocument xs ≡ rejected (faultText (unexpected c afterDocument))
+strictDocumentTrailing xs v rest c cs eq tailEq = trans (cong strictFromPrefix eq) (cong (strictRemainder v) tailEq)
+
+strictDocumentInvalid : (xs : _) → (c : _) → (site : _) → (valuePrefix xs ≡ failed (unexpected c site)) → strictDocument xs ≡ rejected (faultText (unexpected c site))
+strictDocumentInvalid xs c site eq = cong strictFromPrefix eq
+
+strictDocumentMissing : (xs : _) → (valuePrefix xs ≡ failed missingDocument) → strictDocument xs ≡ rejected "unexpected end of JSON input"
+strictDocumentMissing xs eq = cong strictFromPrefix eq
+
+strictDocumentIncomplete : (xs : _) → (valuePrefix xs ≡ failed incompleteDocument) → strictDocument xs ≡ rejected "unexpected end of JSON input"
+strictDocumentIncomplete xs eq = cong strictFromPrefix eq
+
+record FrameScan : Set where
+  constructor frameScan
+  field
+    frames : List (List Char)
+    tooLong : Bool
+
+falseAtOne : (n : ℕ) → ((suc n) <ᵇ 1) ≡ false
+falseAtOne n with n
+... | zero = refl
+... | suc k = refl
+
+cutFor : (lower gap n : ℕ) → (((lower + gap) <ᵇ n) ≡ true) → (n <ᵇ suc lower) ≡ false
+cutFor zero gap zero ()
+cutFor (suc lower) gap zero ()
+cutFor zero gap (suc n) eq = falseAtOne n
+cutFor (suc lower) gap (suc n) eq = cutFor lower gap n eq
+
+bothLeft : (a b : Bool) → ((a ∧ b) ≡ true) → a ≡ true
+bothLeft true b eq = refl
+bothLeft false b ()
+
+bothRight : (a b : Bool) → ((a ∧ b) ≡ true) → b ≡ true
+bothRight true b eq = eq
+bothRight false b ()
+
+widthOf : ℕ → ℕ
+widthOf n with n <ᵇ 128
+... | true = 1
+... | false with n <ᵇ 2048
+...   | true = 2
+...   | false with n <ᵇ 65536
+...     | true = 3
+...     | false = 4
+
+utf8Width : Char → ℕ
+utf8Width c = widthOf (toℕ c)
+
+asciiWidth : (c : _) → ((toℕ c <ᵇ 128) ≡ true) → utf8Width c ≡ 1
+asciiWidth c p rewrite p = refl
+
+twoByteWidth : (c : _) → (((127 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 2048)) ≡ true) → utf8Width c ≡ 2
+twoByteWidth c p rewrite cutFor 127 0 (toℕ c) (bothLeft (127 <ᵇ toℕ c) (toℕ c <ᵇ 2048) p) | bothRight (127 <ᵇ toℕ c) (toℕ c <ᵇ 2048) p = refl
+
+threeByteWidth : (c : _) → (((2047 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 65536)) ≡ true) → utf8Width c ≡ 3
+threeByteWidth c p rewrite cutFor 127 1920 (toℕ c) (bothLeft (2047 <ᵇ toℕ c) (toℕ c <ᵇ 65536) p) | cutFor 2047 0 (toℕ c) (bothLeft (2047 <ᵇ toℕ c) (toℕ c <ᵇ 65536) p) | bothRight (2047 <ᵇ toℕ c) (toℕ c <ᵇ 65536) p = refl
+
+fourByteWidth : (c : _) → ((65535 <ᵇ toℕ c) ≡ true) → utf8Width c ≡ 4
+fourByteWidth c p rewrite cutFor 127 65408 (toℕ c) p | cutFor 2047 63488 (toℕ c) p | cutFor 65535 0 (toℕ c) p = refl
+
+byteCount : List Char → ℕ
+byteCount [] = zero
+byteCount (c ∷ xs) = utf8Width c + byteCount xs
+
+noBytes : byteCount [] ≡ 0
+noBytes = refl
+
+moreBytes : (c : _) → (xs : _) → byteCount (c ∷ xs) ≡ (utf8Width c + byteCount xs)
+moreBytes c xs = refl
+
+lineContent : List Char → List Char
+lineContent [] = []
+lineContent (c ∷ d ∷ xs) = c ∷ lineContent (d ∷ xs)
+lineContent (c ∷ []) with primCharEquality c '\r'
+... | true = []
+... | false = [ c ]
+
+noLineContent : lineContent [] ≡ []
+noLineContent = refl
+
+stripFinalCR : (xs : _) → lineContent (xs ++ ([ '\r' ])) ≡ xs
+stripFinalCR [] = refl
+stripFinalCR (c ∷ []) = refl
+stripFinalCR (c ∷ d ∷ xs) = cong (λ ys → c ∷ ys) (stripFinalCR (d ∷ xs))
+
+keepFinalChar : (xs : _) → (c : _) → (primCharEquality c '\r' ≡ false) → lineContent (xs ++ ([ c ])) ≡ (xs ++ ([ c ]))
+keepFinalChar [] c eq rewrite eq = refl
+keepFinalChar (d ∷ []) c eq = cong (λ ys → d ∷ ys) (keepFinalChar [] c eq)
+keepFinalChar (d ∷ e ∷ xs) c eq = cong (λ ys → d ∷ ys) (keepFinalChar (e ∷ xs) c eq)
+
+frameLimit : ℕ
+frameLimit = 1048576
+
+lineBufferCapacity : frameLimit ≡ 1048576
+lineBufferCapacity = refl
+
+data LineView : Set where
+  end : LineView
+  final : List Char → LineView
+  terminated : List Char → FrameScan → LineView
+
+keepFrame : List Char → FrameScan → FrameScan
+keepFrame xs (frameScan ls capped) = frameScan (lineContent xs ∷ ls) capped
+
+finishLine : Bool → List Char → FrameScan → FrameScan
+finishLine true xs after = keepFrame xs after
+finishLine false xs after = frameScan [] true
+
+renderView : LineView → FrameScan
+renderView end = frameScan [] false
+renderView (final xs) = finishLine (byteCount xs <ᵇ frameLimit) xs (frameScan [] false)
+renderView (terminated xs after) = finishLine (byteCount xs <ᵇ frameLimit) xs after
+
+extendLine : Bool → Char → LineView → LineView
+extendLine true c next = terminated [] (renderView next)
+extendLine false c end = final [ c ]
+extendLine false c (final xs) = final (c ∷ xs)
+extendLine false c (terminated xs after) = terminated (c ∷ xs) after
+
+lineView : List Char → LineView
+lineView [] = end
+lineView (c ∷ xs) = extendLine (primCharEquality '\n' c) c (lineView xs)
+
+physicalLines : List Char → FrameScan
+physicalLines xs = renderView (lineView xs)
+
+noPhysicalLines : physicalLines [] ≡ frameScan [] false
+noPhysicalLines = refl
+
+viewTerminated : (xs ys : List Char) → any (primCharEquality '\n') xs ≡ false →
+  lineView (xs ++ ('\n' ∷ ys)) ≡ terminated xs (physicalLines ys)
+viewTerminated [] ys eq = refl
+viewTerminated (c ∷ xs) ys eq with primCharEquality '\n' c
+... | false = cong (extendLine false c) (viewTerminated xs ys eq)
+... | true with eq
+...   | ()
+
+lastView : List Char → LineView
+lastView [] = end
+lastView (c ∷ xs) = final (c ∷ xs)
+
+extendFinal : (c : Char) → (xs : List Char) →
+  extendLine false c (lastView xs) ≡ final (c ∷ xs)
+extendFinal c [] = refl
+extendFinal c (d ∷ xs) = refl
+
+viewFinal : (xs : List Char) → any (primCharEquality '\n') xs ≡ false → lineView xs ≡ lastView xs
+viewFinal [] eq = refl
+viewFinal (c ∷ xs) eq with primCharEquality '\n' c
+... | false rewrite viewFinal xs eq = extendFinal c xs
+... | true with eq
+...   | ()
+
+terminatedLine : (xs : _) → (ys : _) → (ls : _) → (capped : _) → (any (primCharEquality '\n') xs ≡ false) → ((byteCount xs <ᵇ frameLimit) ≡ true) → (physicalLines ys ≡ frameScan ls capped) → physicalLines (xs ++ ('\n' ∷ ys)) ≡ frameScan (lineContent xs ∷ ls) capped
+terminatedLine xs ys ls capped noLF within tailEq rewrite viewTerminated xs ys noLF | within | tailEq = refl
+
+finalLine : (c : _) → (xs : _) → (any (primCharEquality '\n') (c ∷ xs) ≡ false) → ((byteCount (c ∷ xs) <ᵇ frameLimit) ≡ true) → physicalLines (c ∷ xs) ≡ frameScan ([ lineContent (c ∷ xs) ]) false
+finalLine c xs noLF within rewrite viewFinal (c ∷ xs) noLF | within = refl
+
+oversizedLine : (xs : _) → (ys : _) → (any (primCharEquality '\n') xs ≡ false) → ((byteCount xs <ᵇ frameLimit) ≡ false) → physicalLines (xs ++ ('\n' ∷ ys)) ≡ frameScan [] true
+oversizedLine xs ys noLF exceeds rewrite viewTerminated xs ys noLF | exceeds = refl
+
+oversizedFinalLine : (c : _) → (xs : _) → (any (primCharEquality '\n') (c ∷ xs) ≡ false) → ((byteCount (c ∷ xs) <ᵇ frameLimit) ≡ false) → physicalLines (c ∷ xs) ≡ frameScan [] true
+oversizedFinalLine c xs noLF exceeds rewrite viewFinal (c ∷ xs) noLF | exceeds = refl
+
+
+record DocumentSequence : Set where
+  constructor documentSequence
+  field
+    documents : List Json
+    interruption : Maybe String
+
+decodeStep : Document → DocumentSequence → DocumentSequence
+decodeStep doc rest with doc
+... | rejected e = documentSequence [] (just e)
+... | parsed v = documentSequence (v ∷ DocumentSequence.documents rest) (DocumentSequence.interruption rest)
+
+decodeLines : List (List Char) → DocumentSequence
+decodeLines [] = documentSequence [] nothing
+decodeLines (line ∷ more) = decodeStep (firstDocument line) (decodeLines more)
+
+decodeWithoutLines : decodeLines [] ≡ documentSequence [] nothing
+decodeWithoutLines = refl
+
+decodeUntilFault : (line : _) → (more : _) → (e : _) → (firstDocument line ≡ rejected e) → decodeLines (line ∷ more) ≡ documentSequence [] (just e)
+decodeUntilFault line more e eq = cong (λ d → decodeStep d (decodeLines more)) eq
+
+decodeNextLine : (line : _) → (more : _) → (v : _) → (vs : _) → (e : _) → (firstDocument line ≡ parsed v) → (decodeLines more ≡ documentSequence vs e) → decodeLines (line ∷ more) ≡ documentSequence (v ∷ vs) e
+decodeNextLine line more v vs e eq tailEq =
+  trans (cong (λ d → decodeStep d (decodeLines more)) eq) (cong (decodeStep (parsed v)) tailEq)
+
+streamStatus : Bool → DocumentSequence → StreamReply
+streamStatus capped decoded with decoded
+... | documentSequence vs (just e) = streamReply 3 vs ("failed to form statements: " ++ˢ (e ++ˢ "\n"))
+... | documentSequence vs nothing with capped
+...   | false = streamReply 0 vs ""
+...   | true = streamReply 3 vs "error reading multiline input: bufio.Scanner: token too long: %!s(MISSING)\n"
+
+streamFromScan : FrameScan → StreamReply
+streamFromScan (frameScan ls capped) = streamStatus capped (decodeLines ls)
+
+readStream : String → StreamReply
+readStream s = streamFromScan (physicalLines (toList s))
+
+streamReadComplete : (s : _) → (ls : _) → (vs : _) → (physicalLines (toList s) ≡ frameScan ls false) → (decodeLines ls ≡ documentSequence vs nothing) → readStream s ≡ streamReply 0 vs ""
+streamReadComplete s ls vs eq tailEq = trans (cong streamFromScan eq) (cong (streamStatus false) tailEq)
+
+streamReadMalformed : (s : _) → (ls : _) → (capped : _) → (vs : _) → (e : _) → (physicalLines (toList s) ≡ frameScan ls capped) → (decodeLines ls ≡ documentSequence vs (just e)) → readStream s ≡ streamReply 3 vs ("failed to form statements: " ++ˢ (e ++ˢ "\n"))
+streamReadMalformed s ls capped vs e eq tailEq = trans (cong streamFromScan eq) (cong (streamStatus capped) tailEq)
+
+streamReadCapped : (s : _) → (ls : _) → (vs : _) → (physicalLines (toList s) ≡ frameScan ls true) → (decodeLines ls ≡ documentSequence vs nothing) → readStream s ≡ streamReply 3 vs "error reading multiline input: bufio.Scanner: token too long: %!s(MISSING)\n"
+streamReadCapped s ls vs eq tailEq = trans (cong streamFromScan eq) (cong (streamStatus true) tailEq)
+
+rootDepth : (xs : List Char) → valuePrefix xs ≡ valueAtDepth 10000 xs
+rootDepth xs = trans (topLevelBudget xs) (cong (λ budget → valueAtDepth budget xs) nestingCapacity)
+
+printableFault : (c : Char) → (site : Expectation) → (message : String) →
+  ((31 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 127)) ≡ true →
+  primCharEquality c '\'' ≡ false → primCharEquality c '\\' ≡ false →
+  contextText site ≡ message →
+  faultText (unexpected c site) ≡ ("invalid character '" ++ˢ (fromList ([ c ]) ++ˢ ("'" ++ˢ message)))
+printableFault c site message range noQuote noSlash context =
+  trans (invalidMessage c site)
+    (trans (cong (λ glyph → "invalid character '" ++ˢ (glyph ++ˢ ("'" ++ˢ contextText site)))
+                 (printableAscii c range noQuote noSlash))
+           (cong (λ suffix → "invalid character '" ++ˢ (fromList ([ c ]) ++ˢ ("'" ++ˢ suffix))) context))
+
+numberPrefixFixture : readDocument " 	\r\n1x" ≡ parsed (jsonNumber "1")
+numberPrefixFixture =
+  firstDocumentFound (toList " 	\r\n1x") (jsonNumber "1") ([ 'x' ])
+    (trans (rootDepth (toList " 	\r\n1x"))
+           (cong fromPrefix (Grammar.leadingNumberExample grammarComparison grammarLayout jsonConstructors)))
+
+leadingZeroFixture : readDocument "[01]" ≡ rejected "invalid character '1' after array element"
+leadingZeroFixture =
+  trans (firstDocumentFault (toList "[01]") (unexpected '1' afterElement)
+           (trans (rootDepth (toList "[01]"))
+                  (cong fromPrefix (Grammar.leadingZeroExample grammarComparison grammarLayout jsonConstructors))))
+        (cong rejected (printableFault '1' afterElement " after array element" refl refl refl elementMessage))
+
+failureAfterExponentFixture : readDocument "[1e+]" ≡ rejected "invalid character ']' in exponent of numeric literal"
+failureAfterExponentFixture =
+  trans (firstDocumentFault (toList "[1e+]") (unexpected ']' exponentDigit)
+           (trans (rootDepth (toList "[1e+]"))
+                  (cong fromPrefix (Grammar.exponentErrorExample grammarComparison grammarLayout jsonConstructors))))
+        (cong rejected (printableFault ']' exponentDigit " in exponent of numeric literal" refl refl refl exponentMessage))
+
+nulIsUnexpected : (whitespace (primNatToChar 0) ∨ (decimalDigit (primNatToChar 0) ∨ any (primCharEquality (primNatToChar 0)) (toList "-tfn\"[{"))) ≡ false
+nulIsUnexpected =
+  cong (λ digit → whitespace (primNatToChar 0) ∨ (digit ∨ any (primCharEquality (primNatToChar 0)) (toList "-tfn\"[{")))
+       (decimalRange (primNatToChar 0))
+
+nulGlyph : diagnosticGlyph (primNatToChar 0) ≡ "\\x00"
+nulGlyph =
+  trans (hexControlGlyph (primNatToChar 0) refl refl)
+        (cong (λ nibble → "\\x" ++ˢ fromList (nibble ∷ (nibble ∷ []))) (decimalNibble 0 refl))
+
+nulFixture : readDocument (fromList ([ primNatToChar 0 ])) ≡ rejected "invalid character '\\x00' looking for beginning of value"
+nulFixture =
+  trans (firstDocumentFault ([ primNatToChar 0 ]) (unexpected (primNatToChar 0) valueStart)
+           (unexpectedStart maxNesting (primNatToChar 0) [] nulIsUnexpected))
+        (cong rejected
+          (trans (invalidMessage (primNatToChar 0) valueStart)
+                 (trans (cong (λ glyph → "invalid character '" ++ˢ (glyph ++ˢ ("'" ++ˢ contextText valueStart))) nulGlyph)
+                        (cong (λ suffix → "invalid character '\\x00'" ++ˢ suffix) startingValueMessage))))
+
+documentFields : Document → List (String × Json)
+documentFields doc with doc
+... | parsed (jsonObject fields) = fields
+... | _ = []
+
+observedDuplicates : List (String × Json) → Set
+observedDuplicates xs with xs
+... | fs =
+  (matchingValues "a" fs ≡ (jsonObject (("y" , jsonNumber "2") ∷ []) ∷ [])) ×
+  (matchingValues "b" fs ≡ (jsonNumber "1" ∷ []))
+
+decodedFromExample : (fs : List (String × Json)) →
+  readDocument "{\"a\":{\"x\":1},\"a\":{\"y\":2},\"\\u0062\":0,\"b\":1}" ≡ parsed (jsonObject fs) →
+  Grammar.RepeatedKeys grammarComparison grammarLayout jsonConstructors → observedDuplicates fs
+decodedFromExample fs observed (Grammar.repeatedKeys chosen prefixProof latestA latestB) =
+  subst observedDuplicates
+    (cong documentFields
+      (trans (sym (firstDocumentFound
+                     (toList "{\"a\":{\"x\":1},\"a\":{\"y\":2},\"\\u0062\":0,\"b\":1}")
+                     (jsonObject chosen) []
+                     (trans (rootDepth (toList "{\"a\":{\"x\":1},\"a\":{\"y\":2},\"\\u0062\":0,\"b\":1}"))
+                            (cong fromPrefix prefixProof))))
+             observed))
+    (latestA , latestB)
+
+decodedDuplicateFixture : (fs : _) → (readDocument "{\"a\":{\"x\":1},\"a\":{\"y\":2},\"\\u0062\":0,\"b\":1}" ≡ parsed (jsonObject fs)) → (matchingValues "a" fs ≡ (jsonObject (("y" , jsonNumber "2") ∷ []) ∷ [])) × (matchingValues "b" fs ≡ (jsonNumber "1" ∷ []))
+decodedDuplicateFixture fs observed =
+  decodedFromExample fs observed (Grammar.repeatedKeyExample grammarComparison grammarLayout jsonConstructors)
+
+surrogateFixture : readDocument "[\"\\uD83D\\uDE00\",\"\\uD800\",\"\\uDC00\",\"\\uD800\\u0041\",\"a\\/b\"]" ≡ parsed (jsonArray (jsonText (fromList ([ primNatToChar 128512 ])) ∷ (jsonText (fromList ([ primNatToChar 65533 ])) ∷ (jsonText (fromList ([ primNatToChar 65533 ])) ∷ (jsonText (fromList (primNatToChar 65533 ∷ ([ 'A' ]))) ∷ ([ jsonText "a/b" ]))))))
+surrogateFixture =
+  firstDocumentFound (toList "[\"\\uD83D\\uDE00\",\"\\uD800\",\"\\uDC00\",\"\\uD800\\u0041\",\"a\\/b\"]")
+    (jsonArray (jsonText (fromList ([ primNatToChar 128512 ])) ∷
+     (jsonText (fromList ([ primNatToChar 65533 ])) ∷ (jsonText (fromList ([ primNatToChar 65533 ])) ∷
+      (jsonText (fromList (primNatToChar 65533 ∷ ([ 'A' ]))) ∷ ([ jsonText "a/b" ]))))))
+    [] (trans (rootDepth (toList "[\"\\uD83D\\uDE00\",\"\\uD800\",\"\\uDC00\",\"\\uD800\\u0041\",\"a\\/b\"]"))
+              (cong fromPrefix (Grammar.surrogateExample grammarComparison grammarLayout jsonConstructors)))
+
+strictTailFixture : strictDocument (toList "[[\"a\"],1][[\"b\"],2]") ≡ rejected "invalid character '[' after top-level value"
+strictTailFixture =
+  trans (strictDocumentTrailing
+           (toList "[[\"a\"],1][[\"b\"],2]") (jsonArray (jsonArray ([ jsonText "a" ]) ∷ ([ jsonNumber "1" ])))
+           (toList "[[\"b\"],2]") '[' (toList "[\"b\"],2]")
+           (trans (rootDepth (toList "[[\"a\"],1][[\"b\"],2]"))
+                  (cong fromPrefix (Grammar.nestedExample grammarComparison grammarLayout jsonConstructors)))
+           (keepNonspace '[' (toList "[\"b\"],2]") refl))
+        (cong rejected (printableFault '[' afterDocument " after top-level value" refl refl refl trailingMessage))
+
+strictBlankFixture : strictDocument (toList " \r	") ≡ rejected "unexpected end of JSON input"
+strictBlankFixture =
+  strictDocumentMissing (toList " \r	")
+    (trans (leadingSpace maxNesting ' ' ('\r' ∷ ([ '	' ])) refl)
+      (trans (leadingSpace maxNesting '\r' ([ '	' ]) refl)
+        (trans (leadingSpace maxNesting '	' [] refl) (emptyPrefix maxNesting))))
+
+trueDocument : (xs : List Char) → firstDocument ('t' ∷ ('r' ∷ ('u' ∷ ('e' ∷ xs)))) ≡ parsed (jsonBool true)
+trueDocument xs =
+  firstDocumentFound ('t' ∷ ('r' ∷ ('u' ∷ ('e' ∷ xs)))) (jsonBool true) xs
+    (trans (truePrefix maxNesting ('r' ∷ ('u' ∷ ('e' ∷ xs))))
+      (trans (wordMatched (jsonBool true) "true" 'r' ('u' ∷ ([ 'e' ])) ('u' ∷ ('e' ∷ xs)))
+        (trans (wordMatched (jsonBool true) "true" 'u' ([ 'e' ]) ('e' ∷ xs))
+          (trans (wordMatched (jsonBool true) "true" 'e' [] xs)
+                 (wordComplete (jsonBool true) "true" xs)))))
+
+quotedLineFits : (byteCount (toList "\"a\r") <ᵇ frameLimit) ≡ true
+quotedLineFits rewrite lineBufferCapacity = refl
+
+trueLineFits : (byteCount (toList "true") <ᵇ frameLimit) ≡ true
+trueLineFits rewrite lineBufferCapacity = refl
+
+nullLineFits : (byteCount (toList "null") <ᵇ frameLimit) ≡ true
+nullLineFits rewrite lineBufferCapacity = refl
+
+blankLineFits : (byteCount [] <ᵇ frameLimit) ≡ true
+blankLineFits rewrite lineBufferCapacity = refl
+
+twoValuesFit : (byteCount (toList "true null") <ᵇ frameLimit) ≡ true
+twoValuesFit rewrite lineBufferCapacity = refl
+
+quotedCRLFFixture : readStream "\"a\r\n" ≡ streamReply 3 [] "failed to form statements: unexpected EOF\n"
+quotedCRLFFixture =
+  streamReadMalformed "\"a\r\n" ([ toList "\"a" ]) false [] "unexpected EOF"
+    (terminatedLine (toList "\"a\r") [] [] false refl quotedLineFits noPhysicalLines)
+    (decodeUntilFault (toList "\"a") [] "unexpected EOF"
+      (trans (firstDocumentFault (toList "\"a") incompleteDocument
+                (stringValueError maxNesting ([ 'a' ]) incompleteDocument
+                  (bodyAfterCharacterError 'a' [] incompleteDocument refl refl bodyUnclosed)))
+             (cong rejected incompleteMessage)))
+
+oneValueOnLineFixture : readStream "true null\n" ≡ streamReply 0 (jsonBool true ∷ []) ""
+oneValueOnLineFixture =
+  streamReadComplete "true null\n" ([ toList "true null" ]) ([ jsonBool true ])
+    (terminatedLine (toList "true null") [] [] false refl twoValuesFit noPhysicalLines)
+    (decodeNextLine (toList "true null") [] (jsonBool true) [] nothing
+      (trueDocument (toList " null")) decodeWithoutLines)
+
+blankLineStopsFixture : readStream "true\n\nnull\n" ≡ streamReply 3 (jsonBool true ∷ []) "failed to form statements: EOF\n"
+blankLineStopsFixture =
+  streamReadMalformed "true\n\nnull\n" (toList "true" ∷ ([] ∷ ([ toList "null" ])))
+    false ([ jsonBool true ]) "EOF"
+    (terminatedLine (toList "true") (toList "\nnull\n") ([] ∷ ([ toList "null" ]))
+      false refl trueLineFits
+      (terminatedLine [] (toList "null\n") ([ toList "null" ]) false refl blankLineFits
+        (terminatedLine (toList "null") [] [] false refl nullLineFits noPhysicalLines)))
+    (decodeNextLine (toList "true") ([] ∷ ([ toList "null" ])) (jsonBool true) [] (just "EOF")
+      (trueDocument [])
+      (decodeUntilFault [] ([ toList "null" ]) "EOF"
+        (trans (firstDocumentFault [] missingDocument (emptyPrefix maxNesting))
+               (cong rejected missingMessage))))
+

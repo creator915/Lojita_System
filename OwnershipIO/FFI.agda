@@ -13,7 +13,9 @@ open import Agda.Builtin.String using (String)
 open import Agda.Builtin.Bool using (Bool)
 open import Agda.Builtin.Nat using (Nat)
 open import Agda.Builtin.List using (List)
-open import Agda.Builtin.Unit using (⊤)
+open import Agda.Builtin.Unit using (⊤; tt)
+import IO.Primitive as Prim
+import IO.Primitive.Finite as Finite
 
 
 
@@ -159,10 +161,12 @@ postulate
   IORef      : ∀ {a} → Set a → Set a
   newIORef   : ∀ {a} {A : Set a} → A → IO (IORef A)
   readIORef  : ∀ {a} {A : Set a} → IORef A → IO A
+  modifyIORef : ∀ {a} {A : Set a} → IORef A → (A → A) → IO ⊤
   writeIORef : ∀ {a} {A : Set a} → IORef A → A → IO ⊤
 {-# COMPILE GHC IORef      = type IORefL #-}
 {-# COMPILE GHC newIORef   = \ _ _ -> R.newIORef #-}
 {-# COMPILE GHC readIORef  = \ _ _ -> R.readIORef #-}
+{-# COMPILE GHC modifyIORef = \ _ _ r f -> R.atomicModifyIORef' r (\ a -> (f a, ())) #-}
 {-# COMPILE GHC writeIORef = \ _ _ -> R.writeIORef #-}
 
 ------------------------------------------------------------------------
@@ -218,6 +222,15 @@ postulate
   fixIO : ∀ {a} {A : Set a} → (A → IO A) → IO A
 {-# COMPILE GHC jsonString = jsonField #-}
 {-# COMPILE GHC fixIO = \ _ _ -> MF.mfix #-}
+
+-- The native harness uses its sibling Prism executable for compiler self-checks.
+-- Keep this fixed-purpose action small enough for the harness's host interface.
+runPrismCatSelfChecks : IO ⊤
+runPrismCatSelfChecks =
+  readProcess "runtime/lean-prism/.lake/build/bin/agda2lean" ("cat-self-check" List.∷ List.[]) "" Prim.>>= λ where
+    (procResult 0 _ _) → Prim.return tt
+    (procResult _ out err) → Finite.putStrLn out Prim.>>= λ _ → Finite.putStrLn err Prim.>>= λ _ → exitFailure
+  where import Agda.Builtin.List as List
 
 -- Filesystem plumbing shared by session persistence and exception-safe probes.
 postulate

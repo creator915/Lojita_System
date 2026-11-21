@@ -2,17 +2,17 @@
 module Code.HarnessEngineMain where
 
 open import Data.Bool using (Bool; true; false; _∧_; not; if_then_else_)
-open import Data.List using (List; []; _∷_; length)
+open import Data.List using (List; []; _∷_; length; map)
 open import Data.Maybe using (Maybe; just; nothing; maybe′)
 open import Data.Nat using (_≡ᵇ_)
 open import Data.Product using (_,_)
-open import Data.String using (String) renaming (_++_ to _++ˢ_)
+open import Data.String using (String; unlines) renaming (_++_ to _++ˢ_)
 import Data.Unit as Unit
 open import Data.Unit.Polymorphic using (⊤; tt)
 import IO.Primitive as Prim
 open import IO using (IO; Main; run; putStrLn; _>>=_; _>>_; pure; lift) renaming (readFiniteFile to readFile)
 open import System.Environment using (getArgs)
-open import OwnershipIO.FFI using (exitFailure; enableLineBuffering)
+open import OwnershipIO.FFI using (exitFailure; enableLineBuffering; runPrismCatSelfChecks)
 
 import Context.Blueprint as BP
 import Context.PolyTransport as CPT
@@ -20,21 +20,22 @@ import Context.Terminal as Term
 import Context.Filter as Filter
 import Backend.Mode as Mode
 open import Code
-open import Code.SExpr using (parseSExpr; showSExpr)
+open import Code.SExpr using (parseSExpr; showSExpr; str)
 open import Code.Shape using (HomeShape; node)
 open import Code.Transport
 open import Code.Lift using (liftSpec)
 open import Code.Protocol
 open import Code.Encode using (encodeCanonical)
-open import Code.Parse using (parse; parsePlan; parseLift)
+open import Code.Parse using (parse; parsePlan; parseLift; decodeQ)
 open import Code.Render using (render)
 import Code.Namespace as NS
 import Code.PolyTransport as PT
 import Code.NodeTransport as NT
 open import Code.Submission using (parseSubmission)
 open import Code.SessionProtocol using (parseSessionAction)
-open import Code.Prompt using (nodePrompt)
+open import Code.Prompt using (nodePrompt; showRefuteProblem; showImplProblem)
 open import Code.HarnessCore
+import Code.PlanPreview as Preview
 open import Code.PureCLI
 
 private
@@ -43,6 +44,42 @@ private
 
   canonicalText : String → String
   canonicalText txt = maybe′ encodeCanonical "-- parse error" (parse txt)
+
+  checkInterfaceTexts : String → String → String
+  checkInterfaceTexts specTxt candTxt with parse specTxt | parse candTxt
+  ... | nothing   | _         = "-- parse error (spec)"
+  ... | _         | nothing   = "-- parse error (cand)"
+  ... | just spec | just cand =
+    let d = specΔ (modName spec) (decls spec) []
+    in if satisfies d cand then "OK"
+       else unlines ("INTERFACE_MISMATCH" ∷ satisfiesDetails d cand)
+
+  refuteStubText : String → String
+  refuteStubText txt with parse txt
+  ... | nothing = "-- parse error (spec)"
+  ... | just c = render (refuteStubOf (specΔ (modName c) (decls c) []))
+
+  checkWitnesses : List String → Code → QName → String
+  checkWitnesses allowed c spec with validIndependence spec allowed c
+  ... | ps@(_ ∷ _) = unlines ("REFUTE_GATE_ERROR" ∷ map showRefuteProblem ps)
+  ... | [] = if nullᵇ (validRefutation spec allowed c)
+    then "OK:contradiction" else "OK:independent"
+
+  checkRefuteText : String → List String → String → String
+  checkRefuteText specName allowed txt = maybe′
+    (λ c → maybe′ (checkWitnesses allowed c) "REFUTE_GATE_ERROR\ninvalid spec name" (decodeQ (str specName)))
+    "REFUTE_GATE_ERROR\ninvalid candidate" (parse txt)
+
+  checkObject : String → List String → Code → String
+  checkObject role allowed c with if role ==ˢ "closed" then closedImplOK allowed c else specImplOK allowed c
+  ... | p ∷ ps = unlines ("OBJECT_GATE_ERROR" ∷ map showImplProblem (p ∷ ps))
+  ... | [] = maybe′ (λ { (kind , detail) → unlines (kind ∷ detail ∷ []) })
+    (maybe′ (λ problem → "OBJECT_GATE_ERROR\n" ++ˢ problem) "OK"
+      (if role ==ˢ "closed" then nothing else specProblem (decls c)))
+    (if role ==ˢ "subspec" then subspecNarrowingProblem c else nothing)
+
+  checkObjectText : String → List String → String → String
+  checkObjectText role allowed txt = maybe′ (checkObject role allowed) "OBJECT_GATE_ERROR\ninvalid candidate" (parse txt)
 
   selfCheckOK : Bool
   selfCheckOK =
@@ -79,8 +116,26 @@ private
   runArgs ("canonical" ∷ f ∷ []) = readFile f >>= λ txt → putStrLn (canonicalText txt)
   runArgs ("apply" ∷ f ∷ g ∷ []) =
     readFile f >>= λ old → readFile g >>= λ pl → putStrLn (applyTexts old pl)
+  runArgs ("check-interface" ∷ f ∷ g ∷ []) =
+    readFile f >>= λ sp → readFile g >>= λ ca → putStrLn (checkInterfaceTexts sp ca)
+  runArgs ("refute-stub" ∷ f ∷ []) =
+    readFile f >>= λ sp → putStrLn (refuteStubText sp)
+  runArgs ("check-refute" ∷ spec ∷ f ∷ allowed) =
+    readFile f >>= λ c → putStrLn (checkRefuteText spec allowed c)
+  runArgs ("check-object" ∷ role ∷ f ∷ allowed) =
+    readFile f >>= λ c → putStrLn (checkObjectText role allowed c)
+  runArgs ("check-plan" ∷ f ∷ g ∷ []) =
+    readFile f >>= λ ctx → readFile g >>= λ req → putStrLn (Preview.planPreview ctx req)
+  runArgs ("decode-plan" ∷ f ∷ []) = readFile f >>= λ txt → putStrLn (Preview.decodePlanSource txt)
+  runArgs ("plan-deps" ∷ f ∷ []) = readFile f >>= λ ctx → putStrLn (Preview.planDeps ctx "(subspecs)")
+  runArgs ("plan-deps" ∷ f ∷ g ∷ []) =
+    readFile f >>= λ ctx → readFile g >>= λ subs → putStrLn (Preview.planDeps ctx subs)
+  runArgs ("check-object-json" ∷ role ∷ f ∷ allowed) =
+    readFile f >>= λ txt → putStrLn (Preview.objectPreview role allowed txt)
+  runArgs ("check-interface-json" ∷ f ∷ g ∷ []) =
+    readFile f >>= λ sp → readFile g >>= λ ca → putStrLn (Preview.interfacePreview sp ca)
   runArgs ("verify-self" ∷ []) =
-    if selfCheckOK then putStrLn "HARNESS_ENGINE_OK" else liftUnit exitFailure
+    if selfCheckOK then (liftUnit runPrismCatSelfChecks >> putStrLn "HARNESS_ENGINE_OK") else liftUnit exitFailure
   runArgs _ = liftUnit exitFailure
 
 main : Main

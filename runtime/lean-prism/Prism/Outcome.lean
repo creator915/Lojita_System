@@ -42,21 +42,28 @@ inductive SExpr : Type where
   deriving Repr, BEq, Inhabited
 
 private def escapeStr (s : String) : String :=
-  let rec go : List Char → List Char
-    | [] => []
-    | '"' :: cs  => '\\' :: '"' :: go cs
-    | '\\' :: cs => '\\' :: '\\' :: go cs
-    | '\n' :: cs => '\\' :: 'n' :: go cs
-    | '\r' :: cs => '\\' :: 'r' :: go cs
-    | '\t' :: cs => '\\' :: 't' :: go cs
-    | c :: cs    => c :: go cs
-  String.ofList (go s.toList)
+  s.foldl (init := "") fun acc c =>
+    match c with
+    | '"' => acc ++ "\\\""
+    | '\\' => acc ++ "\\\\"
+    | '\n' => acc ++ "\\n"
+    | '\r' => acc ++ "\\r"
+    | '\t' => acc ++ "\\t"
+    | _ => acc.push c
 
-partial def renderSExpr : SExpr → String
-  | .sym s   => s
-  | .num n   => toString n
-  | .str s   => "\"" ++ escapeStr s ++ "\""
-  | .list xs => "(" ++ String.intercalate " " (xs.map renderSExpr) ++ ")"
+partial def renderSExpr (root : SExpr) : String :=
+  let rec emit (xs : List SExpr) (parents : List (List SExpr)) (out : String) : String :=
+    let finish (out : String) (rest : List SExpr) := if rest.isEmpty then out else out.push ' '
+    match xs with
+    | [] =>
+      match parents with
+      | [] => out
+      | next :: outer => emit next outer (finish (out.push ')') next)
+    | .list children :: rest => emit children (rest :: parents) (out.push '(')
+    | .sym s :: rest => emit rest parents (finish (out ++ s) rest)
+    | .num n :: rest => emit rest parents (finish (out ++ toString n) rest)
+    | .str s :: rest => emit rest parents (finish ((out.push '"' ++ escapeStr s).push '"') rest)
+  emit [root] [] ""
 
 def renderTopSExpr : SExpr → String
   | .list (.sym "module" :: nm :: ps :: ds) =>
@@ -69,6 +76,7 @@ def renderTopSExpr : SExpr → String
 structure QName : Type where
   full  : List String
   shown : String
+  canonAlts : List (List String) := []
   deriving Repr, BEq
 
 def mkQ (xs : List String) : QName :=
@@ -200,12 +208,30 @@ structure CodeMod : Type where
   params  : List Bind
   decls   : List Decl
 
+namespace CatStructure
+
+structure AmbQ where
+  primaryQ : QName
+  canonAlts : List (List String)
+
+inductive SurfaceView where
+  | authored (src : String)
+  | synthesized (src : String)
+
+structure PreTCPoint where
+  code : CodeMod
+  ambTable : List AmbQ
+  surface : SurfaceView
+
+end CatStructure
+
 -- §3 Canonical S-Expr Encoder (exact mirror of `Code/Encode.agda` & `Dump.hs`)
 
 def encQ (q : QName) : SExpr :=
   let f := fullDot q
   let last := q.full.getLastD ""
-  if q.shown == last then .str f else .list [.sym "q", .str f, .str q.shown]
+  if q.shown == last && q.canonAlts.isEmpty then .str f
+  else .list (.sym "q" :: .str f :: .str q.shown :: q.canonAlts.map (fun p => .str (String.intercalate "." p)))
 
 def encHid : Hiding → SExpr
   | .visible => .sym "vis"
@@ -325,7 +351,7 @@ mutual
                fs.map fun (n, e) => .list [.sym "field", .str n, encExpr e])
     | .variable_ vs    => .list (.sym "variable" :: vs.map fun (n, e) => .list [.sym "var", .str n, encExpr e])
     | .module_ x bs ds => .list (.sym "module" :: .str x :: .list (.sym "params" :: bs.map encBind) :: ds.map encDecl)
-    | .patSyn x _ _ _  => .list [.sym "unsupported", .str ("pattern synonym " ++ x)]
+    | .patSyn x xs p _ => .list [.sym "patsyn", .str x, .list (xs.map .str), encPat p]
     | .unsupported s   => .list [.sym "unsupported", .str s]
 end
 
@@ -333,11 +359,74 @@ def encodeCodeMod (c : CodeMod) : SExpr :=
   .list (.sym "module" :: encQ c.modName :: .list (.sym "params" :: c.params.map encBind) :: c.decls.map encDecl)
 
 partial def canonicalSExpr : SExpr → SExpr
-  | .list [.sym "q", .str f, .str _] => .str f
+  | .list (.sym "q" :: .str f :: .str _ :: _) => .str f
   | .list xs => .list (xs.map canonicalSExpr)
   | x => x
 
 def encodeCanonicalMod (c : CodeMod) : String :=
   renderSExpr (canonicalSExpr (encodeCodeMod c))
+
+inductive FixLevel : Type where
+  | unrelated : FixLevel
+  | related   : Int → Assoc → FixLevel
+  deriving Repr, BEq
+
+-- Agda 2.6.3 `defaultFixity`: unannotated mixfix operators have `infix 20` (`Related 20 NonAssoc`)!
+def defaultAgdaFixity : FixLevel :=
+  .related 20 .infixN
+
+inductive SymKind : Type where
+  | defSym
+  | conSym
+  | typeSym
+  | projSym : Nat → SymKind   -- record projection with number of erased record type params
+  deriving Repr, BEq
+
+structure SymInfo : Type where
+  localName : String
+  canonPath : List String
+  kind      : SymKind
+  fixity    : FixLevel := defaultAgdaFixity
+  leanName  : String
+  conArity  : Nat := 0        -- number of visible constructor args (for pattern checking)
+  deriving Repr, BEq
+
+structure ExportedModule : Type where
+  modPath        : List String
+  symbols        : List SymInfo
+  hasSafe        : Bool := false
+  hasGuardedness : Bool := false
+  coindRecords   : List (List String) := []
+  slowExports    : List (List String) := []
+  deriving Repr
+
+def checkOptionsPragma (body : String) (forExe := false) : PrismOutcome Unit :=
+  if !body.startsWith "OPTIONS" then
+    .bot s!"non-OPTIONS pragma '{body}' routed to Agda"
+  else
+    let flags := (body.drop 7).toString.splitOn " " |>.filter (fun s => !s.isEmpty)
+    let rec checkFlags : List String → PrismOutcome Unit
+      | [] => .translated ()
+      | "--safe" :: rest | "--guardedness" :: rest | "--exact-split" :: rest =>
+          checkFlags rest
+      | "--prop" :: rest =>
+          if forExe then checkFlags rest else .bot s!"OPTIONS '{body}' uses Agda-specific type theory flag"
+      | "--without-K" :: _ | "--cubical-compatible" :: _ | "--cubical" :: _
+      | "--sized-types" :: _ | "--rewriting" :: _
+      | "--type-in-type" :: _ | "--omega-in-omega" :: _ =>
+          .bot s!"OPTIONS '{body}' uses Agda-specific type theory flag"
+      | f :: _ =>
+          .syntaxErr s!"unknown or unsupported OPTIONS flag '{f}'"
+    checkFlags flags
+
+def leanMangleIdent (s : String) : String :=
+  let chars := s.toList.flatMap fun c =>
+    if ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9') then [c]
+    else if c == '_' then ['_', 'u']
+    else s!"_x{c.toNat}_".toList
+  "_ag_" ++ String.ofList chars
+
+def leanModNamespace (modPath : List String) : String :=
+  "_AgMod_" ++ String.intercalate "_" (modPath.map leanMangleIdent)
 
 end Prism

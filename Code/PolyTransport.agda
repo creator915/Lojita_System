@@ -160,13 +160,13 @@ private
   -- Use the shared dotted QName format whenever it preserves the segments.
   -- An empty path or a literal dot inside a segment needs the segment list.
   encName : QName → SExpr
-  encName q@(qn path sh) =
+  encName q@(scopedQName path sh alts) =
     if nullᵇ path ∨ anyᵇ (λ n → anyᵇ (primCharEquality '.') (toList n)) path
-    then list (sym "q" ∷ list (map str path) ∷ str sh ∷ [])
+    then list (sym "q" ∷ list (map str path) ∷ str sh ∷ map str alts)
     else encQ q
 
   decName : SExpr → Maybe QName
-  decName (list (sym "q" ∷ list path ∷ str sh ∷ [])) = decodeNames path >>= λ ns → just (qn ns sh)
+  decName (list (sym "q" ∷ list path ∷ str sh ∷ as)) = decodeNames path >>= λ ns → decodeNames as >>= λ alts → just (scopedQName ns sh alts)
   decName e = decodeQ e
 
   encNames : List QName → SExpr

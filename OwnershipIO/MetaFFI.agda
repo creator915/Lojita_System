@@ -14,18 +14,26 @@ m >> k = m >>= λ _ → k
 
 {-# FOREIGN GHC
 import qualified Control.Exception as E
+import qualified Control.Concurrent.MVar as MV
+import qualified Data.Aeson as JSON
+import qualified Data.Aeson.Types as Aeson
+import qualified Data.Aeson.Key as AesonKey
+import qualified Data.ByteString.Lazy as BL
+import qualified System.Timeout as Timeout
 import Control.Monad (forM_, unless, when)
 import qualified Data.ByteString as BS
-import Data.List (isPrefixOf, isSuffixOf)
+import Data.List (intercalate, isPrefixOf, isSuffixOf)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as UTF8
 import qualified System.Directory as D
+import qualified System.Environment as Env
 import System.Exit (ExitCode(ExitSuccess))
 import qualified System.FilePath as FP
 import qualified System.IO as H
 import qualified GHC.IO.Handle.Lock as Lock
 import qualified System.Posix.Files as U
 import qualified System.Posix.Temp as U
+import qualified System.Posix.Time as UTime
 import qualified System.Process as Proc
 import qualified Agda.Syntax.Parser as P
 import qualified Agda.Syntax.Parser.Tokens as K
@@ -34,6 +42,7 @@ import qualified Agda.Syntax.Concrete.Name as N
 import Agda.Syntax.Concrete.Pretty ()
 import Agda.Syntax.Position (mkRangeFile)
 import Agda.Utils.FileName (mkAbsolute)
+import Agda.Utils.Pretty (prettyShow)
 import qualified Data.Foldable as Fold
 
 readBytes :: T.Text -> IO (Maybe BS.ByteString)
@@ -151,20 +160,82 @@ sourceNames input = do
     imported (_ : ts) = imported ts
     imported [] = Just []
 
--- Precompile Context/{Blueprint,PolyTransport,Terminal}.agda once per content
--- digest outside scratch, then copy the sealed Context view and _build cache
--- into the caller's private temp directory.
-populateCachedContext :: T.Text -> T.Text -> IO ()
-populateCachedContext repoT tmpT = do
-  let repoDir = T.unpack repoT
-      tmpDir  = T.unpack tmpT
-      ctxFiles = [ "Blueprint.agda"
+sourceNamesDiag :: T.Text -> IO T.Text
+sourceNamesDiag input = do
+  let stripped = T.strip input
+      src      = T.unpack input
+      srcLines = lines src
+      path     = mkRangeFile (mkAbsolute "/Object.agda") Nothing
+  if T.null stripped then
+    pure (T.pack "source block is empty")
+  else if T.isPrefixOf (T.pack "@") stripped then
+    pure (T.pack ("source begins with '" ++ T.unpack (T.take 48 stripped)
+      ++ "' instead of 'module <Name> where' (write bare @<name> without double quotes in S-expr, or save the block via write_draft first)"))
+  else do
+    (parsed, _) <- P.runPMIO (P.parseFile P.moduleParser path src)
+    (lexed, _)  <- P.runPMIO (P.parse P.tokensParser src)
+    case parsed of
+      Left err -> pure (T.pack (formatParseErr srcLines (prettyShow err)))
+      Right ((m, _), _) -> case lexed of
+        Left lerr -> pure (T.pack (formatParseErr srcLines (prettyShow lerr)))
+        Right _ ->
+          let mods = [q | C.Module _ q _ _ <- C.modDecls m]
+              firstLine = case srcLines of { (l : _) -> take 120 l ; [] -> "" }
+          in case mods of
+               [_] -> pure (T.pack ("malformed 'import' target token in module (first line: " ++ firstLine ++ ")"))
+               []  -> pure (T.pack ("missing top-level 'module <Name> where' header (first line: " ++ firstLine ++ ")"))
+               _   -> pure (T.pack ("multiple top-level 'module' headers (" ++ show (length mods) ++ " found); exactly one top-level module is allowed"))
+  where
+    formatParseErr :: [String] -> String -> String
+    formatParseErr ls msg =
+      let lineHint = case extractLineNo msg of
+            Just ln | ln >= 1 && ln <= length ls ->
+              "\noffending line " ++ show ln ++ ": " ++ take 200 (ls !! (ln - 1))
+            _ -> ""
+      in msg ++ lineHint
+    extractLineNo :: String -> Maybe Int
+    extractLineNo msg =
+      let pfx :: String
+          pfx = "/Object.agda:"
+      in if isPrefixOf pfx msg then
+           let rest = drop (length pfx) msg
+               digits = takeWhile (\c -> c >= '0' && c <= '9') rest
+           in if null digits then Nothing else Just (read digits :: Int)
+         else Nothing
+
+logNarrowingEvent :: T.Text -> T.Text -> T.Text -> T.Text -> [Aeson.Pair] -> IO ()
+logNarrowingEvent explicitPath kindT modT detailT fields =
+  E.catch go (\(_ :: E.IOException) -> pure ())
+  where
+    field name = (JSON..=) (AesonKey.fromString name)
+    go = do
+      envP <- Env.lookupEnv "CODETRANSPORT_NARROW_LOG"
+      let chosen = if T.null explicitPath then maybe "" id envP else T.unpack explicitPath
+      unless (null chosen) $ do
+        D.createDirectoryIfMissing True (FP.takeDirectory chosen)
+        ts <- UTime.epochTime
+        let entry = JSON.object ([field "ts" (fromEnum ts), field "source" ("host" :: String),
+                      field "kind" kindT, field "module" modT, field "detail" (T.take 600 detailT)] ++ fields)
+        H.withBinaryFile chosen H.AppendMode $ \h -> do
+          Lock.hLock h Lock.ExclusiveLock
+          BS.hPut h (BL.toStrict (JSON.encode entry) <> BS.singleton 10)
+          H.hFlush h
+
+logCertificate :: T.Text -> T.Text -> T.Text -> T.Text -> T.Text -> T.Text -> IO ()
+logCertificate path modName kind witness cause detour =
+  logNarrowingEvent path kind modName cause
+    [ AesonKey.fromString "witness" JSON..= witness, AesonKey.fromString "cause" JSON..= cause
+    , AesonKey.fromString "detour" JSON..= detour ]
+
+contextFiles :: [FilePath]
+contextFiles = [ "Blueprint.agda"
                  , "PolyTransport.agda"
                  , "Terminal.agda"
                  , "Filter.agda"
                  , "Tools" FP.</> "Clock.agda"
                  , "Tools" FP.</> "ClockLaws.agda"
                  , "Tools" FP.</> "TermLaws.agda"
+                 , "Taboo.agda"
                  , "Tools" FP.</> "FuzzGen.agda"
                  , "Tools" FP.</> "FsSandbox.agda"
                  , "Tools" FP.</> "NetSandbox.agda"
@@ -176,10 +247,65 @@ populateCachedContext repoT tmpT = do
                  , "Tools" FP.</> "NetLaws.agda"
                  , "WorldLaws.agda"
                  , "Protocol.agda" ]
-  blobs <- mapM (\f -> BS.readFile (repoDir FP.</> "Context" FP.</> f)) ctxFiles
-  digest <- shaBytes (BS.concat [BS.concat [UTF8.encodeUtf8 (T.pack f), BS.singleton 0, b, BS.singleton 0] | (f, b) <- zip ctxFiles blobs])
+
+-- The scope-only reader needs just the immutable, allowlisted files. Real
+-- paths identify installed interfaces across fresh request workspaces.
+linkScopeContext :: T.Text -> T.Text -> IO ()
+linkScopeContext repo dir = forM_ contextFiles $ \file -> do
+  src <- D.makeAbsolute (T.unpack repo FP.</> "Context" FP.</> file)
+  let dst = T.unpack dir FP.</> "Context" FP.</> file
+  D.createDirectoryIfMissing True (FP.takeDirectory dst)
+  U.createSymbolicLink src dst
+  iface <- D.doesFileExist (src ++ "i")
+  when iface (U.createSymbolicLink (src ++ "i") (dst ++ "i"))
+
+-- One framed, serialized request at a time per session. Scope failures are
+-- ordinary replies. EOF, invalid framing and cancellation retire the worker.
+withScopeProcess :: T.Text -> ((Bool -> [T.Text] -> T.Text -> IO T.Text) -> IO a) -> IO a
+withScopeProcess binary use = E.bracket (MV.newMVar Nothing) stop $ \cell ->
+  use $ \complete includes file -> do
+    answer <- MV.modifyMVar cell $ \old -> E.mask $ \restore -> do
+      proc@(Just inp, Just out, _, _) <- maybe spawn pure old
+      res <- E.try (restore (exchange complete inp out includes file))
+      case res of
+        Right reply -> pure (Just proc, Right reply)
+        Left e -> Proc.cleanupProcess proc >> pure (Nothing, Left (e :: E.SomeException))
+    either E.throwIO (either (ioError . userError) pure) answer
+  where
+    spawn = Proc.createProcess ((Proc.proc (T.unpack binary) ["--daemon"])
+      { Proc.std_in = Proc.CreatePipe, Proc.std_out = Proc.CreatePipe })
+    stop cell = MV.takeMVar cell >>= maybe (pure ()) Proc.cleanupProcess
+    exchange complete inp out dirs file = do
+      result <- Timeout.timeout 120000000 $ do
+        BL.hPut inp (JSON.encode (JSON.object
+          [ AesonKey.fromString "cmd" JSON..= T.pack "dump", AesonKey.fromString "main" JSON..= file
+          , AesonKey.fromString "deps" JSON..= ([] :: [T.Text]), AesonKey.fromString "includes" JSON..= dirs ]))
+        H.hPutChar inp '\n'
+        H.hFlush inp
+        BS.hGetLine out
+      wire <- maybe (ioError (userError "agda-dumpd timeout")) pure result
+      case JSON.eitherDecodeStrict' wire >>= Aeson.parseEither (readReply complete) of
+        Left err -> ioError (userError ("agda-dumpd protocol: " ++ err))
+        Right reply -> pure reply
+    readReply complete = JSON.withObject "scope response" $ \o -> do
+      ok <- o JSON..: AesonKey.fromString "ok"
+      if ok then do
+        errors <- o JSON..:? AesonKey.fromString "check_errors" JSON..!= []
+        if complete && not (null errors) then pure (Left (unlines errors))
+          else Right <$> o JSON..: AesonKey.fromString "sexpr"
+      else Left <$> o JSON..: AesonKey.fromString "error"
+
+-- Precompile Context/{Blueprint,PolyTransport,Terminal}.agda once per content
+-- digest outside scratch, then copy the sealed Context view and _build cache
+-- into the caller's private temp directory.
+populateCachedContext :: T.Text -> T.Text -> IO ()
+populateCachedContext repoT tmpT = do
+  let repoDir = T.unpack repoT
+      tmpDir  = T.unpack tmpT
+  blobs <- mapM (\f -> BS.readFile (repoDir FP.</> "Context" FP.</> f)) contextFiles
+  digest <- shaBytes (BS.concat [BS.concat [UTF8.encodeUtf8 (T.pack f), BS.singleton 0, b, BS.singleton 0] | (f, b) <- zip contextFiles blobs])
   sysTmp <- D.getTemporaryDirectory
-  let cacheBase = sysTmp FP.</> "codetransport-context-cache-v2"
+  let cacheBase = sysTmp FP.</> "codetransport-context-cache-v3"
       entry     = cacheBase FP.</> digest
       ready     = entry FP.</> "ready"
   D.createDirectoryIfMissing True cacheBase
@@ -196,7 +322,7 @@ populateCachedContext repoT tmpT = do
             agdaCfg = stage FP.</> ".agda"
         D.createDirectoryIfMissing True sTools
         D.createDirectoryIfMissing True agdaCfg
-        forM_ ctxFiles $ \f -> do
+        forM_ contextFiles $ \f -> do
           let dst = sCtx FP.</> f
           D.createDirectoryIfMissing True (FP.takeDirectory dst)
           D.copyFileWithMetadata (repoDir FP.</> "Context" FP.</> f) dst
@@ -204,13 +330,19 @@ populateCachedContext repoT tmpT = do
         U.setFileMode sTools 0o555
         U.setFileMode sCtx 0o555
         U.setFileMode (stage FP.</> "context") 0o555
-        forM_ ctxFiles $ \f -> do
-          let cp = (Proc.proc "/usr/bin/env"
-                     [ "AGDA_DIR=" ++ agdaCfg, "agda", "--no-libraries"
-                     , "-i", stage FP.</> "context", "-i", "/usr/share/agda-stdlib"
-                     , sCtx FP.</> f ]) { Proc.cwd = Just stage }
-          (_, _, _) <- Proc.readCreateProcessWithExitCode cp ""
-          pure ()
+        -- A single Agda session loads the shared stdlib interfaces once.
+        -- The driver and its own interface live outside the published view.
+        let driver = agdaCfg FP.</> "ContextCacheWarmup.agda"
+            imports = [ "import Context." ++ intercalate "." (FP.splitDirectories (FP.dropExtension f))
+                      | f <- contextFiles ]
+            cp = (Proc.proc "/usr/bin/env"
+                   [ "AGDA_DIR=" ++ agdaCfg, "agda", "--no-libraries"
+                   , "-i", agdaCfg, "-i", stage FP.</> "context", "-i", "/usr/share/agda-stdlib"
+                   , driver ]) { Proc.cwd = Just agdaCfg }
+        writeFile (agdaCfg FP.</> "warmup.agda-lib") "name: context-cache-warmup\ninclude: .\n"
+        writeFile driver (unlines ("module ContextCacheWarmup where" : imports))
+        (status, out, err) <- Proc.readCreateProcessWithExitCode cp ""
+        unless (status == ExitSuccess) $ ioError (userError ("Context cache warmup failed:\n" ++ out ++ err))
         removeTreePerm agdaCfg
         BS.writeFile ( stage FP.</> "ready" ) BS.empty
         D.renamePath stage entry
@@ -272,6 +404,11 @@ postulate
   copyReadOnly : String → String → IO ⊤
   sealDirectory : String → IO ⊤
   inspectSource : String → IO (Maybe (List (List String)))
+  inspectSourceDiag : String → IO String
+  appendNarrowingEvent : String → String → String → String → IO ⊤
+  appendCertificate : String → String → String → String → String → String → IO ⊤
+  linkScopeContext : String → String → IO ⊤
+  withScopeProcess : ∀ {a} {A : Set a} → String → ((Bool → List String → String → IO String) → IO A) → IO A
   populateContextCache : String → String → IO ⊤
 
 {-# COMPILE GHC readUTF8 = \p -> fmap (>>= decodeBytes) (readBytes p) #-}
@@ -286,4 +423,9 @@ postulate
 {-# COMPILE GHC copyReadOnly = \src dst -> D.copyFile (T.unpack src) (T.unpack dst) >> U.setFileMode (T.unpack dst) 0o444 #-}
 {-# COMPILE GHC sealDirectory = \p -> U.setFileMode (T.unpack p) 0o555 #-}
 {-# COMPILE GHC inspectSource = sourceNames #-}
+{-# COMPILE GHC inspectSourceDiag = sourceNamesDiag #-}
+{-# COMPILE GHC appendNarrowingEvent = \p k m d -> logNarrowingEvent p k m d [] #-}
+{-# COMPILE GHC appendCertificate = logCertificate #-}
+{-# COMPILE GHC withScopeProcess = \ _ _ -> withScopeProcess #-}
+{-# COMPILE GHC linkScopeContext = linkScopeContext #-}
 {-# COMPILE GHC populateContextCache = populateCachedContext #-}

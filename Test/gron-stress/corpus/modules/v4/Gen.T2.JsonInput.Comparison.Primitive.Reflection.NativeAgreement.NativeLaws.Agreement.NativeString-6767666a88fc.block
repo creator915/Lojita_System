@@ -1,0 +1,9 @@
+module Gen.T2.JsonInput.Comparison.Primitive.Reflection.NativeAgreement.NativeLaws.Agreement.NativeString where
+
+open import Agda.Builtin.String using (String; primStringEquality)
+open import Relation.Binary.PropositionalEquality using (_≡_)
+open import Data.Bool using (true)
+
+postulate
+  string-sound : (s t : String) → primStringEquality s t ≡ true → s ≡ t
+  string-complete : (s t : String) → s ≡ t → primStringEquality s t ≡ true

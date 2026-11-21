@@ -403,8 +403,8 @@ compiledSpecGates cwd = withTempDirectory (cwd ++ˢ "/tmp/tests/compiled-specs")
     badHoleSpec = "module Gen.BadHole.JSON where\nopen import Data.Nat\nopen import Relation.Binary.PropositionalEquality\npostulate\n  parse : ℕ → ℕ\n_ : parse 0 ≡ 0\n_ = ?\n"
     whereSpec = "module Gen.GoodWhere.JSON where\nopen import Data.Nat\nopen import Relation.Binary.PropositionalEquality\nclassify : ℕ → ℕ\nclassify n = base\n  where\n    base : ℕ\n    base = 0\npostulate\n  parse : ℕ → ℕ\n  parseLaw : parse 0 ≡ classify 0\n"
     whereImpl = "module Gen.GoodWhere.JSON where\nopen import Data.Nat\nopen import Relation.Binary.PropositionalEquality\nclassify : ℕ → ℕ\nclassify n = base\n  where\n    base : ℕ\n    base = 0\nparse : ℕ → ℕ\nparse n = 0\nparseLaw : parse 0 ≡ classify 0\nparseLaw = refl\n"
-    bigNatSpec = "module Gen.GoodBigNat.JSON where\nopen import Data.Nat\nopen import Relation.Binary.PropositionalEquality\ndiagnosticByte : ℕ → ℕ\ndiagnosticByte 39 = 0\ndiagnosticByte 8232 = 1\ndiagnosticByte n = n\npostulate\n  parse : ℕ → ℕ\n  parseLaw : parse 8232 ≡ diagnosticByte 8232\n"
-    bigNatImpl = "module Gen.GoodBigNat.JSON where\nopen import Data.Nat\nopen import Relation.Binary.PropositionalEquality\ndiagnosticByte : ℕ → ℕ\ndiagnosticByte 39 = 0\ndiagnosticByte 8232 = 1\ndiagnosticByte n = n\nparse : ℕ → ℕ\nparse 39 = 0\nparse 8232 = 1\nparse n = n\nparseLaw : parse 8232 ≡ diagnosticByte 8232\nparseLaw = refl\n"
+    bigNatSpec = "module Gen.GoodBigNat.JSON where\nopen import Data.Nat\nopen import Relation.Binary.PropositionalEquality\ndiagnosticByte : ℕ → ℕ\ndiagnosticByte 19 = 0\ndiagnosticByte 20 = 1\ndiagnosticByte n = n\npostulate\n  parse : ℕ → ℕ\n  parseLaw : parse 20 ≡ diagnosticByte 20\n"
+    bigNatImpl = "module Gen.GoodBigNat.JSON where\nopen import Data.Nat\nopen import Relation.Binary.PropositionalEquality\ndiagnosticByte : ℕ → ℕ\ndiagnosticByte 19 = 0\ndiagnosticByte 20 = 1\ndiagnosticByte n = n\nparse : ℕ → ℕ\nparse 19 = 0\nparse 20 = 1\nparse n = n\nparseLaw : parse 20 ≡ diagnosticByte 20\nparseLaw = refl\n"
     badSubHelper = "module BadSub where\nopen import Data.Nat\nopen import Data.String\nbad : ℕ → ℕ\nbad n = \"bad-sub\"\npostulate\n  k : ℕ\n"
     badSubUnused = "module UnusedBad where\nopen import Data.Nat\nopen import Data.String\nopen import Relation.Binary.PropositionalEquality\npostulate\n  bad : 0 ≡ \"str\"\n"
     hasSub : String → String → Bool
@@ -447,7 +447,7 @@ compiledSpecGates cwd = withTempDirectory (cwd ++ˢ "/tmp/tests/compiled-specs")
       let cfg = sessionConfig cwd ws "compiler-check all specs before execution"
             (refSpec (local "/bin/cat") [] 30000) (ScriptedBackend [])
             (λ name → if name ==ˢ "GoodWhere" then ScriptedBackend (sourcePlan "where-scope projection preserved" whereImpl ∷ [])
-                      else if name ==ˢ "GoodBigNat" then ScriptedBackend (sourcePlan "39/8232 large Nat literal pattern works natively in Lean4" bigNatImpl ∷ [])
+                      else if name ==ˢ "GoodBigNat" then ScriptedBackend (sourcePlan "Agda 2.6.3 accepts Nat literal patterns through 20" bigNatImpl ∷ [])
                       else ScriptedBackend [])
       in
       driveTree cfg "BadGron" gronDeadlockSpec [] nothing IO.>>= λ r1 →

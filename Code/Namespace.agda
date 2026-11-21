@@ -32,28 +32,28 @@ validSegment n with toList n
 
 private
   hasRoot : List Name → QName → Bool
-  hasRoot roots (qn [] _) = false
-  hasRoot roots (qn (r ∷ _) _) = elemᵇ _==ˢ_ r roots
+  hasRoot roots (scopedQName [] _ _) = false
+  hasRoot roots (scopedQName (r ∷ _) _ _) = elemᵇ _==ˢ_ r roots
 
   libraryRoots = "Data" ∷ "Relation" ∷ "Function" ∷ "Algebra" ∷ "Category"
                ∷ "Induction" ∷ "Context" ∷ []
 
   ioModule : QName → Bool
-  ioModule (qn ("IO" ∷ _) _) = true
-  ioModule (qn ("Agda" ∷ path) _) = elemᵇ _==ˢ_ "IO" path
+  ioModule (scopedQName ("IO" ∷ _) _ _) = true
+  ioModule (scopedQName ("Agda" ∷ path) _ _) = elemᵇ _==ˢ_ "IO" path
   ioModule _ = false
 
 isMetaModule : QName → Bool
-isMetaModule (qn ("Main" ∷ []) _) = true
+isMetaModule (scopedQName ("Main" ∷ []) _ _) = true
 isMetaModule q = hasRoot ("Ownership" ∷ "OwnershipIO" ∷ "Code" ∷ "Store" ∷ "Meta"
                        ∷ "Backend" ∷ "Test" ∷ "Verification" ∷ "SessionEnv" ∷ "UI" ∷ []) q
 
 isPreTaskContext : QName → Bool
-isPreTaskContext = hasRoot ("Agda" ∷ "Level" ∷ "Axiom" ∷ "Codata" ∷ "Effect" ∷ "IO" ∷ libraryRoots)
+isPreTaskContext q = safeQName q ∧ hasRoot ("Agda" ∷ "Level" ∷ "Axiom" ∷ "Codata" ∷ "Effect" ∷ "IO" ∷ libraryRoots) q
 
 isClosedWorldContext : QName → Bool
-isClosedWorldContext (qn ("Level" ∷ []) _) = true
-isClosedWorldContext q = hasRoot ("Agda" ∷ libraryRoots) q ∧ not (ioModule q)
+isClosedWorldContext (scopedQName ("Level" ∷ []) _ _) = true
+isClosedWorldContext q = safeQName q ∧ hasRoot ("Agda" ∷ libraryRoots) q ∧ not (ioModule q)
 
 canonicalMod : NamespaceCtx → Name → QName
 canonicalMod (nsCtx e path) = qn ("Gen" ∷ e ∷ path)
@@ -74,10 +74,10 @@ data NamespaceProblem : Set where
 private
   -- 只替换首段一次。别名目标已经是全名，shown 属于引用处的作用域。
   expand : NamespaceCtx → Name → List Name → List (Name × QName) → QName → QName
-  expand ctx self kids bases (qn [] s) = qn [] s
-  expand ctx self kids bases q@(qn (k ∷ suffix) s) =
-    if k ==ˢ self then qn (prefix ++ suffix) s
-    else if elemᵇ _==ˢ_ k kids then qn (prefix ++ (k ∷ suffix)) s
+  expand ctx self kids bases (scopedQName [] s alts) = scopedQName [] s alts
+  expand ctx self kids bases q@(scopedQName (k ∷ suffix) s alts) =
+    if k ==ˢ self then scopedQName (prefix ++ suffix) s alts
+    else if elemᵇ _==ˢ_ k kids then scopedQName (prefix ++ (k ∷ suffix)) s alts
     else fromBase bases
     where
       prefix = full (canonicalMod ctx self)
@@ -85,7 +85,7 @@ private
       fromBase : List (Name × QName) → QName
       fromBase [] = q
       fromBase ((alias , target) ∷ rest) =
-        if k ==ˢ alias then qn (full target ++ suffix) s else fromBase rest
+        if k ==ˢ alias then scopedQName (full target ++ suffix) s alts else fromBase rest
 
   -- import/open 也携带 QName，甚至可以出现在 λ where 的子句里。
   -- 直接结构递归重写 QName，并单独收集实际进入父作用域的 import（assumes 是孩子接口，不计入父作用域）。
@@ -171,6 +171,7 @@ private
     rewriteDecl ρ (recDef m n ns d fs) = recDef m n ns d (rewriteFields ρ fs)
     rewriteDecl ρ (variable′ vs) = variable′ (rewriteFields ρ vs)
     rewriteDecl ρ (module′ n bs ds) = module′ n (rewriteBinds ρ bs) (rewriteDecls ρ ds)
+    rewriteDecl ρ (patSyn n xs p) = patSyn n xs (rewritePat ρ p)
     rewriteDecl ρ d = d
 
     rewriteDecls : (QName → QName) → List Decl → List Decl
@@ -277,7 +278,8 @@ checkNodeImports ctx ownedKids allowedBases c = slotProblems [] ownedKids
 
     problem : QName → List NamespaceProblem
     problem m =
-      if isMetaModule m then [ metaNamespaceCollision m ]
+      if not (safeQName m) then [ forbiddenSiblingOrExternalImport m ]
+      else if isMetaModule m then [ metaNamespaceCollision m ]
       else if isClosedWorldContext m ∨ anyᵇ (directChild m) ownedKids
               ∨ (not (ioModule m) ∧ elemᵇ _==ᴺ_ m allowedBases)
            then [] else [ forbiddenSiblingOrExternalImport m ]
@@ -315,12 +317,12 @@ disjointPaths (c ∷ cs) = not (anyᵇ (λ d → modName c ==ᴺ modName d) cs) 
 -- Session sources may already carry canonical names. Legacy module headers
 -- stay addressable by the names used by existing scripts and lift descriptors.
 namespaceOf : QName → NamespaceCtx
-namespaceOf (qn ("Gen" ∷ e ∷ path) _) = nsCtx e path
+namespaceOf (scopedQName ("Gen" ∷ e ∷ path) _ _) = nsCtx e path
 namespaceOf m = nsCtx "" (full m)
 
 canonicalRootOK : Name → QName → Bool
-canonicalRootOK name (qn ("Gen" ∷ e ∷ r ∷ []) _) = e ==ˢ name ∧ validSegment e ∧ validSegment r
-canonicalRootOK _ (qn ("Gen" ∷ _) _) = false
+canonicalRootOK name (scopedQName ("Gen" ∷ e ∷ r ∷ []) _ _) = e ==ˢ name ∧ validSegment e ∧ validSegment r
+canonicalRootOK _ (scopedQName ("Gen" ∷ _) _ _) = false
 canonicalRootOK _ q = not (isMetaModule q ∨ isPreTaskContext q)
 
 showNamespaceProblem : NamespaceProblem → Name

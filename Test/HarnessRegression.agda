@@ -41,13 +41,19 @@ truth = con (mkQ ("Agda" ∷ "Builtin" ∷ "Bool" ∷ "true" ∷ []))
 k₁ k₂ b₁ b₂ kImpl₁ kImpl₂ bImpl refutation : Code
 k₁ = code (q "K") [] (natImport ∷ sig plain "inputRows" nat ∷ [])
 k₂ = code (q "K") [] (boolImport ∷ sig plain "inputRows" bool ∷ [])
-b₁ = code (q "B") [] (emptyImport ∷ sig plain "ready" bottom ∷ [])
+-- The failed child promises an inhabitant of its own empty port.
+b₁ = code (q "B") []
+  (dataSig plain "EmptyPort" [] (set 0) ∷ dataDef plain "EmptyPort" [] []
+   ∷ sig plain "ready" (def (local "B" "EmptyPort")) ∷ [])
 b₂ = code (q "B") [] (natImport ∷ sig plain "ready" nat ∷ [])
 kImpl₁ = record k₁ { decls = decls k₁ ++ [ body "K" "inputRows" [] (lit (natL 1)) ] }
 kImpl₂ = record k₂ { decls = decls k₂ ++ [ body "K" "inputRows" [] truth ] }
 bImpl = record b₂ { decls = decls b₂ ++ [ body "B" "ready" [] (lit (natL 2)) ] }
-refutation = code (q "Refute") [] (emptyImport ∷ use "B" ∷ sig plain "absurd" bottom
-  ∷ body "Refute" "absurd" [] (def (qualified "B" "ready")) ∷ [])
+refutation = code (q "Refute") [] (emptyImport ∷ use "B"
+  ∷ sig plain "impossible" (fun′ (vis (def (qualified "B" "EmptyPort"))) bottom)
+  ∷ fun plain "impossible" [ clause (head (local "Refute" "impossible") [ vis absurdP ]) absurdRHS [] ]
+  ∷ sig plain "absurd" bottom
+  ∷ body "Refute" "absurd" [] (app (def (local "Refute" "impossible")) (vis (def (qualified "B" "ready")))) ∷ [])
 
 result rows answer : QName
 result = local "P" "result"
@@ -76,11 +82,11 @@ data FirstK : Set where
 
 round₁ : String
 round₁ = submission "P round1" "P1" (("K" , "K1") ∷ ("B" , "B1") ∷ [])
-  (⊥ ⇝ ext rows ∷ ⊥ ⇝ ext answer ∷ [])
+  (⊥ ⇝ ext rows ∷ ⊥ ⇝ ext answer ∷ ⊥ ⇝ ext (local "B" "EmptyPort") ∷ [])
 
 round₂ : FirstK → String
 round₂ first = submission "P round2" "P2" (("K" , "K2") ∷ ("B" , "B2") ∷ [])
-  (incoming first ∷ keep (ext answer) ∷ [])
+  (incoming first ∷ keep (ext answer) ∷ ext (local "B" "EmptyPort") ⇝ ⊥ ∷ [])
   where
     -- Both parent descriptions need translation at the child's actual slot.
     incoming : FirstK → Proarrow
@@ -143,8 +149,8 @@ isolatedDump : Server [] DumpReq DumpResult [] (Dir [])
 ServerI.call isolatedDump = ask λ req → tell (parse req) (daemon isolatedDump)
   where
     parse : DumpReq → DumpResult
-    parse (dumpReq src [] ds) = decode src ds
-    parse (dumpReq _ (_ ∷ _) _) = dumpFailed "a sibling source reached Dump"
+    parse (scopeRequest src [] ds _) = decode src ds
+    parse (scopeRequest _ (_ ∷ _) _ _) = dumpFailed "a sibling source reached Dump"
 ServerI.stop isolatedDump = give∃Dir tt refl
 
 Checker = Server [] AgdaCheckReq CheckResult [] (Dir [])
@@ -283,7 +289,7 @@ ServerI.stop (checkDeps _) = give∃Dir tt refl
 partialRevision : Maybe Verdict × Maybe Memory
 partialRevision with observeN 9 (startP (environment (round₁ ∷ reviseB ∷ []) checker (leaves committed)))
   where
-    reviseB = submission "repair only B" "P-keep-K" [ "B" , "B2" ] [ keep (ext answer) ]
+    reviseB = submission "repair only B" "P-keep-K" [ "B" , "B2" ] (keep (ext answer) ∷ ext (local "B" "EmptyPort") ⇝ ⊥ ∷ [])
     checker = checkDeps ((b₁ ∷ k₁ ∷ []) ∷ (b₂ ∷ k₁ ∷ []) ∷ (kImpl₁ ∷ bImpl ∷ []) ∷ [])
 ... | verdict , next = verdict , firstKMemory (Running.onStop next)
 

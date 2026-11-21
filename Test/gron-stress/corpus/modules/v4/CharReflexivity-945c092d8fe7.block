@@ -1,0 +1,11 @@
+module CharReflexivity where
+
+open import Agda.Builtin.Char using (primCharEquality)
+open import Agda.Builtin.Char.Properties using (primCharToNatInjective)
+open import Agda.Builtin.String.Properties using ()
+open import Data.Bool using (true)
+open import Data.Char using (Char)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+
+char-reflexive : (c : Char) → primCharEquality c c ≡ true
+char-reflexive c = refl

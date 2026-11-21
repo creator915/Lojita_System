@@ -42,9 +42,14 @@ private
 -- 原子
 ------------------------------------------------------------------------
 
+decodeNames : List SExpr → Maybe (List Name)
+decodeNames []           = just []
+decodeNames (str x ∷ xs) = decodeNames xs >>= λ r → just (x ∷ r)
+decodeNames (_ ∷ _)      = nothing
+
 decodeQ : SExpr → Maybe QName
 decodeQ (str s)                                 = just (mkQ (splitDots s))
-decodeQ (list (sym "q" ∷ str f ∷ str sh ∷ []))  = just (qn (splitDots f) sh)
+decodeQ (list (sym "q" ∷ str f ∷ str sh ∷ as))  = decodeNames as >>= λ alts → just (scopedQName (splitDots f) sh alts)
 decodeQ _                                       = nothing
 
 decodeHid : SExpr → Maybe Hiding
@@ -78,11 +83,6 @@ decodeMods (list (sym "mods" ∷ ms)) = just (go ms plain)
     go (sym "terminating" ∷ fs)    m = go fs (record m { termCheck = terminating })
     go (_ ∷ fs)                m = go fs m
 decodeMods _ = nothing
-
-decodeNames : List SExpr → Maybe (List Name)
-decodeNames []           = just []
-decodeNames (str x ∷ xs) = decodeNames xs >>= λ r → just (x ∷ r)
-decodeNames (_ ∷ _)      = nothing
 
 decodeAssoc : SExpr → Maybe Assoc
 decodeAssoc (sym "l") = just infixL
@@ -265,6 +265,8 @@ mutual
   decodeDecl (list (sym "variable" ∷ vs))               = decodeVars vs >>= λ vs′ → just (variable′ vs′ ∷ [])
   decodeDecl (list (sym "module" ∷ str x ∷ list (sym "params" ∷ bs) ∷ ds)) =
     decodeBinds bs >>= λ bs′ → decodeDecls ds >>= λ ds′ → just (module′ x bs′ ds′ ∷ [])
+  decodeDecl (list (sym "patsyn" ∷ str n ∷ list xs ∷ p ∷ [])) =
+    decodeNames xs >>= λ ns → decodePat p >>= λ pat → just (patSyn n ns pat ∷ [])
   decodeDecl (list (sym "unsupported" ∷ str s ∷ []))   = just (unsupported s ∷ [])
   decodeDecl _ = nothing
 

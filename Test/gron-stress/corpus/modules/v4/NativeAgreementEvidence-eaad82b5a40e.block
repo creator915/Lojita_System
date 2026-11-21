@@ -1,0 +1,14 @@
+module NativeAgreementEvidence where
+
+open import Data.Char using (Char)
+open import Data.String using (String)
+open import Relation.Binary.PropositionalEquality using (_≡_)
+import Relation.Nullary as Dec using (Reflects; does; proof)
+import Data.Char as Char using (_≟_)
+import Data.String as String using (_≟_)
+
+char-reflects : (c d : Char) → Dec.Reflects (c ≡ d) (Dec.does (c Char.≟ d))
+char-reflects c d = Dec.proof (c Char.≟ d)
+
+string-reflects : (s t : String) → Dec.Reflects (s ≡ t) (Dec.does (s String.≟ t))
+string-reflects s t = Dec.proof (s String.≟ t)

@@ -24,7 +24,7 @@ record CodexConfig : Set where
   field
     executable model effort serviceTier scratch sessions : String
     timeoutMs : ℕ
-    mcpMode repoDir workspace refFile : String
+    mcpMode repoDir workspace refFile narrowLog : String
     ancestorDirs : List String
 open CodexConfig public
 
@@ -32,7 +32,7 @@ defaultCodex : String → CodexConfig
 defaultCodex dir = codexConfig
   "/root/.local/bin/codex" "gpt-6.2-sol" "max" "ultrafast"
   (dir ++ˢ "/ai") (dir ++ˢ "/threads") 0
-  "node" "" "" "" []
+  "node" "" "" "" (dir ++ˢ "/narrowing-events.jsonl") []
 
 nodeCodex : String → String → List String → CodexConfig
 nodeCodex repo dir ancestors = record (defaultCodex dir)
@@ -40,7 +40,7 @@ nodeCodex repo dir ancestors = record (defaultCodex dir)
 
 sessionCodex : String → String → String → CodexConfig
 sessionCodex repo ws refPath = record (defaultCodex ws)
-  { mcpMode = "session" ; repoDir = repo ; workspace = ws ; refFile = refPath }
+  { mcpMode = "session" ; repoDir = repo ; workspace = ws ; refFile = refPath ; narrowLog = ws ++ˢ "/narrowing-events.jsonl" }
 
 data Backend : Set where
   CodexCLIBackend : CodexConfig → Backend
@@ -62,6 +62,11 @@ withBackendAncestors repo dirs (CodexCLIBackend cfg) =
     { repoDir = if repoDir cfg ==ˢ "" then repo else repoDir cfg
     ; ancestorDirs = dirs })
 withBackendAncestors _ _ b = b
+
+withBackendNarrowLog : String → Backend → Backend
+withBackendNarrowLog logPath (CodexCLIBackend cfg) =
+  CodexCLIBackend (record cfg { narrowLog = logPath })
+withBackendNarrowLog _ b = b
 
 private
   infixl 1 _>>=_ _>>_
@@ -180,9 +185,10 @@ private
           extraArgs = if modeStr ==ˢ "session"
             then ("--workspace" ∷ workspace cfg ∷ "--ref-file" ∷ refFile cfg ∷ [])
             else []
+          narrowArgs = if narrowLog cfg ==ˢ "" then [] else ("--narrow-log" ∷ narrowLog cfg ∷ [])
           allArgs = "mcp" ∷ "--mode" ∷ modeStr ∷ "--repo" ∷ effRepo
                     ∷ "--lib-dir" ∷ libDir ∷ "--ir-dir" ∷ irDir
-                    ∷ "--dump-bin" ∷ dumpB ∷ "--ctx-dir" ∷ ctxDir ∷ extraArgs
+                    ∷ "--dump-bin" ∷ dumpB ∷ "--ctx-dir" ∷ ctxDir ∷ extraArgs ++ narrowArgs
           tomlArr = "[" ++ˢ joinComma (map quoteToml allArgs) ++ˢ "]"
           tomlVal = "mcp_servers.codetransport={command=" ++ˢ quoteToml mcpBin
                     ++ˢ ",args=" ++ˢ tomlArr
@@ -342,9 +348,16 @@ codexService cfg = freshDirectory (scratch cfg) >>= λ isolated →
         choose nothing = fileExists (sessions cfg ++ˢ "/" ++ˢ n ++ˢ ".id") >>= λ where
           true → F.readFile (sessions cfg ++ˢ "/" ++ˢ n ++ˢ ".id") >>= save
           false → ensure isolated ref >>= save
-    request isolated ref (propose prompt retry) = ensure isolated ref >>= λ tid →
-      readIORef ref >>= λ s → let state = session s in
-      (if tid ==ˢ "" then IO.return (aiReply "AI thread initialization failed; retry binding before proposing" "")
+    request isolated ref (propose prompt retry context) = do
+      -- Refresh the read-only MCP view on retries as well as fresh forks.
+      mkdirP (isolated ++ˢ "/mcp")
+      F.writeFile (isolated ++ˢ "/mcp/node-prompt.txt") prompt
+      if context ==ˢ "" then removeAll (isolated ++ˢ "/mcp/plan-context.sexp")
+        else F.writeFile (isolated ++ˢ "/mcp/plan-context.sexp") context
+      tid ← ensure isolated ref
+      s ← readIORef ref
+      let state = session s
+      r ← if tid ==ˢ "" then IO.return (aiReply "AI thread initialization failed; retry binding before proposing" "")
        else if retry ∧ not (scratchThread state ==ˢ "") then
          (let delta = retryDelta prompt in
           F.putStrLn ("Retrying " ++ˢ slot state ++ˢ " on scratch (" ++ˢ scratchThread state ++ˢ ")") >>
@@ -357,9 +370,9 @@ codexService cfg = freshDirectory (scratch cfg) >>= λ isolated →
           else IO.return r)
        else
          (F.putStrLn ("Planning " ++ˢ slot state ++ˢ " (" ++ˢ tid ++ˢ ")") >>
-          forkScratch isolated ref state prompt)) >>= λ r →
-      mkdirP (scratch cfg) >>
-      F.writeFile (scratch cfg ++ˢ "/" ++ˢ slot state ++ˢ ".latest-reply") (AIReply.text r) >>
+          forkScratch isolated ref state prompt)
+      mkdirP (scratch cfg)
+      F.writeFile (scratch cfg ++ˢ "/" ++ˢ slot state ++ˢ ".latest-reply") (AIReply.text r)
       IO.return (aiReply (AIReply.text r) tid)
     request isolated ref (accept summary) = ensure isolated ref >>= λ tid →
       replaceScratch isolated ref "" >>
@@ -376,7 +389,7 @@ scriptedService replies = newIORef replies >>= λ ref → IO.return (record
   where
     scripted : IORef (List String) → AIReq → IO.IO AIReply
     scripted ref (bindNode n _) = IO.return (aiReply "bound" ("scripted/" ++ˢ n))
-    scripted ref (propose _ _) = readIORef ref >>= λ where
+    scripted ref (propose _ _ _) = readIORef ref >>= λ where
       [] → failIO "ScriptedBackend exhausted before a valid verdict/finish"
       (r ∷ rs) → writeIORef ref rs >> IO.return (aiReply r "scripted")
     scripted ref (accept _) = IO.return (aiReply "accepted" "scripted")
@@ -389,7 +402,7 @@ httpService endpoint headers header = record
   where
     request : AIReq → IO.IO AIReply
     request (bindNode n _) = IO.return (aiReply "bound" n)
-    request (propose prompt _) = readProcessAt "" 120000 "curl"
+    request (propose prompt _ _) = readProcessAt "" 120000 "curl"
       ("--fail-with-body" ∷ "--silent" ∷ "--show-error" ∷ "-H" ∷ "Content-Type: application/json" ∷ concatMap (λ h → "-H" ∷ h ∷ []) headers ++
        ("--data-binary" ∷ "@-" ∷ endpoint ∷ []))
       ("{\"input\":\"" ++ˢ escape (header ++ˢ "\n" ++ˢ prompt) ++ˢ "\"}") >>= λ where

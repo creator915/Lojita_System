@@ -1,0 +1,43 @@
+module Gen.T2.JsonInput.Comparison.Primitive.Reflection.NativeAgreement.NativeLaws where
+
+open import Agda.Builtin.Char using (primCharEquality)
+open import Agda.Builtin.String using (primStringEquality)
+open import Data.Bool using (Bool; true)
+open import Data.Char using (Char)
+open import Data.Empty using (⊥-elim)
+open import Data.String using (String)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans)
+open import Relation.Nullary using (Dec; does; yes; no)
+import Data.Char.Properties as CharProps
+import Data.String.Properties as StringProps
+import Gen.T2.JsonInput.Comparison.Primitive.Reflection.NativeAgreement.NativeLaws.Agreement as Agreement
+
+private
+  answer : {P : Set} → Dec P → Bool
+  answer = does
+
+  answer-sound : {P : Set} → (decision : Dec P) → answer decision ≡ true → P
+  answer-sound (yes proof) _ = proof
+  answer-sound (no _) ()
+
+  answer-complete : {P : Set} → (decision : Dec P) → P → answer decision ≡ true
+  answer-complete (yes _) _ = refl
+  answer-complete (no refute) proof = ⊥-elim (refute proof)
+
+  char-native : (c d : Char) → primCharEquality c d ≡ answer (CharProps._≟_ c d)
+  char-native = Agreement.char-agrees
+
+  string-native : (s t : String) → primStringEquality s t ≡ answer (StringProps._≟_ s t)
+  string-native = Agreement.string-agrees
+
+char-sound : (c d : Char) → (primCharEquality c d ≡ true) → c ≡ d
+char-sound c d proof = answer-sound (CharProps._≟_ c d) (trans (sym (char-native c d)) proof)
+
+char-complete : (c d : Char) → (c ≡ d) → primCharEquality c d ≡ true
+char-complete c d proof = trans (char-native c d) (answer-complete (CharProps._≟_ c d) proof)
+
+string-sound : (s t : String) → (primStringEquality s t ≡ true) → s ≡ t
+string-sound s t proof = answer-sound (StringProps._≟_ s t) (trans (sym (string-native s t)) proof)
+
+string-complete : (s t : String) → (s ≡ t) → primStringEquality s t ≡ true
+string-complete s t proof = trans (string-native s t) (answer-complete (StringProps._≟_ s t) proof)

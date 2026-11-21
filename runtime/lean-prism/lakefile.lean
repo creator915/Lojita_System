@@ -26,19 +26,27 @@ extern_lib «liblean_cli_host» pkg := do
 
 @[default_target]
 lean_lib «AgdaMirror» where
-  roots := #[`AgdaMirror.Core, `AgdaMirror.Context, `AgdaMirror.World, `AgdaMirror.Protocol, `AgdaMirror.AxiomGuard, `AgdaMirror.VerifySelf]
+  roots := #[`AgdaMirror.CharClass, `AgdaMirror.Utf8, `AgdaMirror.Core, `AgdaMirror.Context, `AgdaMirror.World, `AgdaMirror.Protocol, `AgdaMirror.AxiomGuard, `AgdaMirror.VerifySelf]
 
 lean_lib «Prism» where
   roots := #[
     `Prism.Outcome,
-    `Prism.Lexer,
-    `Prism.MixfixDAG,
     `Prism.StdScope,
-    `Prism.Parser,
     `Prism.DecodeSExpr,
     `Prism.TermMatrix,
     `Prism.LensSlice,
-    `Prism.EmitLean,
+    `Prism.AxiomFootprint,
+    `Prism.CatStructure,
+    `Prism.LoweringContext,
+    `Prism.ExecFields,
+    `Prism.ExecRecords,
+    `Prism.ExecPorts,
+    `Prism.ExecGhost,
+    `Prism.TranscodeExec,
+    `Prism.KernelDriver,
+    `Prism.FactorMutual,
+    `Prism.TranscodeChk,
+    `Prism.Conservativity,
     `Prism.Driver,
     `Prism.MCPServer
   ]

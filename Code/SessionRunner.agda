@@ -16,10 +16,10 @@ import IO.Primitive.Finite as F
 open import Ownership using (Prog; Dir)
 open import OwnershipIO hiding (ext)
 open import OwnershipIO.FFI
-open import Code.Transport using (Verdict; ok; contradiction)
+open import Code.Transport using (Verdict; ok; contradiction; independent)
 open import Code.Harness using (NodeΨ; NodeTask; nodeAgent; HomeShape; HomeSt; ChildS)
 open import Code.Codecs using (HomeValue; storeHome)
-open import Code.Driver using (writeSource; moduleNameOf; nodeEnvironmentWith; nodeEnvironmentForBackend)
+open import Code.Driver using (writeSource; moduleNameOf; nodeEnvironmentWithTasks)
 
 -- The sole unbounded loop is an outer IO observer. Each call remains a finite
 -- ownership transaction, and stop always returns the dynamically indexed home.
@@ -55,17 +55,17 @@ import Meta.Boundary as Boundary
 import Meta.Sandbox as Sandbox
 import Store.CAS as CAS
 open import Store.Verify using (verifyCommitDAG)
-open import OwnershipIO.MetaFFI using (catchIO; replaceDuring; withTreeLock)
+open import OwnershipIO.MetaFFI using (catchIO; replaceDuring; withTreeLock; withScopeProcess; appendNarrowingEvent)
 open import Code.Lift using (LiftSpec; ChildLift; EndpointLift; baseMod; upperMod; childLifts; endpoints; baseChild; upperChild; subLift; baseUnit; LiftProblem; wrongBase; wrongUpper; missingChildMap; missingBaseUnit) renaming (liftSpec to mkLiftSpec)
 open import Code.Parse using (parseLift)
 open import Code.Render using (render)
 open import Code.AgdaTool using (writeCodes; modulePath)
-open import Code.AI using (Backend; trackedService; isConcurrentBackend; withBackendAncestors)
+open import Code.AI using (Backend; trackedService; isConcurrentBackend; withBackendAncestors; withBackendNarrowLog)
 open import Code.Prompt using (sessionTemplate; sessionTransportHelp; showLiftProblem; showImplProblem)
 open import Code.SExpr using (list; str; sym; showSExpr)
 open import Code.SessionProtocol
 open import Code.SessionWorkspace
-open import Backend.Switch using (leanPrism; resolveBackendMode; switchDump; switchCheck; switchSessionCompileExe; checkCandidateEntrySafe)
+open import Backend.Switch using (leanPrism; resolveBackendMode; switchDump; switchDumpWithLog; switchCheckWithLog; switchCheck; switchSessionCompileExe; checkCandidateEntrySafe)
 
 private
   infixl 1 _>>=_ _>>_
@@ -124,6 +124,7 @@ compileInWith staticLink ghcObjDir repo dir incs file = do
   cliHostC ← absolutePath (repo ++ˢ "/runtime/cli_host.c")
   let outDir = if ghcObjDir ==ˢ "" then "build" else ghcObjDir
       staticFlags = if staticLink then ("--ghc-flag=-optl-static" ∷ "--ghc-flag=-optl-pthread" ∷ []) else []
+      genDir = if ghcObjDir ==ˢ "" then "build" else ghcObjDir ++ˢ "/generated"
   mkdirP outDir
   readProcessAt dir 0 "agda"
     ("--compile" ∷ "--ghc-flag=-O0"
@@ -132,7 +133,7 @@ compileInWith staticLink ghcObjDir repo dir incs file = do
      ∷ ("--ghc-flag=-i" ++ˢ repo ++ˢ "/runtime/tools")
      ∷ ("--ghc-flag=" ++ˢ cliHostC)
      ∷ staticFlags
-     ++ ("--compile-dir=build" ∷ "--ghc-flag=-outputdir" ∷ ("--ghc-flag=" ++ˢ outDir)
+     ++ (("--compile-dir=" ++ˢ genDir) ∷ "--ghc-flag=-outputdir" ∷ ("--ghc-flag=" ++ˢ outDir)
          ∷ includeArgs ("." ∷ incs) ++ (file ∷ []))) ""
 
 compileIn : String → String → List String → String → IO.IO ProcResult
@@ -180,7 +181,9 @@ runInWithCache ghcObjDir repo dir incs src = writeSource dir src >>= λ where
       (sourceFailed e) → IO.return (procResult 2 "" e)
       (sourceOK _) → compileInWith false ghcObjDir repo dir masked file >>= λ where
         (procResult (suc c) out err) → IO.return (procResult (suc c) (stripStdlibWarnings out) (stripStdlibWarnings err))
-        (procResult zero _ _) → readProcessAt dir 120000 ("./build/" ++ˢ executableName src) [] ""
+        (procResult zero _ _) →
+          let binDir = if ghcObjDir ==ˢ "" then "./build" else ghcObjDir ++ˢ "/generated"
+          in readProcessAt dir 120000 (binDir ++ˢ "/" ++ˢ executableName src) [] ""
 
 runIn : String → String → List String → String → IO.IO ProcResult
 runIn = runInWithCache ""
@@ -198,12 +201,21 @@ runSessionScript cfg src = ensureRelay (repository cfg) >>= λ where
     (just relay) → withTreeLock ws (withTempDirectory (ws ++ˢ "/tmp/scripts") λ dir → do
       let scratch  = dir ++ˢ "/resources"
           ghcCache = ws ++ˢ "/tmp/ghc-script-cache"
-      mkdirP (dir ++ˢ "/env")
-      mkdirP ghcCache
-      F.writeFile (dir ++ˢ "/env/SessionEnv.agda")
-        (sessionEnvSource (reference cfg) candidate relay scratch)
+          envDir   = ghcCache ++ˢ "/env"
+          envFile  = envDir ++ˢ "/SessionEnv.agda"
+          resources = ghcCache ++ˢ "/resources"
+          envSource = sessionEnvSource (reference cfg) candidate relay resources
+      -- The lock gives the active probe exclusive use of the stable resource
+      -- link. Its target, including both replay markers, is fresh on every run.
+      mkdirP envDir
+      mkdirP scratch
+      removeAll resources
+      linkPath scratch resources
+      oldEnv ← readIfExists envFile
+      if oldEnv ==ˢ envSource then IO.return tt else atomicText envFile envSource
       result ← withOpenIncludes (repository cfg) ws λ incs →
-        runInWithCache ghcCache (repository cfg) dir ((dir ++ˢ "/env") ∷ incs) src
+        runInWithCache ghcCache (repository cfg) dir (envDir ∷ incs) src
+      removeAll resources
       recordReplay scratch result)
   where
     ws = workspace cfg
@@ -284,7 +296,7 @@ chooseTransport bs (just src) = PT.parsePolyTransport src Data.Maybe.>>= λ s �
 -- directory, so a local stub cannot shadow an ancestor (including a keep).
 driveTreeWith : SessionConfig → String → String → String → List String →
                 Maybe String → Maybe String → IO.IO ActionResult
-driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTreeLock (workspace cfg) action) (λ e → IO.return (rejected e))
+driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTreeLock (workspace cfg) (absolutePath dumpBin >>= λ bin → withScopeProcess bin action)) (λ e → IO.return (rejected e))
   where
     ws = workspace cfg
     repo = repository cfg
@@ -293,8 +305,8 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
     scratch = ws ++ˢ "/tmp/nodes/" ++ˢ name
     dumpBin = repo ++ˢ "/dump/dump"
 
-    publish : BaseClosure → HomeValue → IO.IO ActionResult
-    publish b result@(sh , h) = do
+    publish : List (Code × String) → BaseClosure → HomeValue → IO.IO ActionResult
+    publish surfaces b result@(sh , h) = do
       let allCodes = NT.exported (freezeHome sh (dropModel (homeNoChan sh) h))
           codes = uniqueCodes allCodes
       agree ← exportsAgree ws name codes
@@ -305,26 +317,30 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
         save codes = do
           prev ← CAS.readRef storeDir (treeRef name)
           let ps = nubᵇ _==ˢ_ (directTips b ++ Data.Maybe.maybe′ (λ k → k ∷ []) [] prev)
-          key ← CAS.storeTreeCommit storeDir ps name reason result
+          key ← CAS.storeTreeWithSurfaces surfaces storeDir ps name reason result
           valid ← verifyCommitDAG storeDir key
           if valid then complete codes key else IO.return (rejected "drive-tree: invalid commit DAG")
           where
             complete : List Code → CAS.Hash → IO.IO ActionResult
             complete codes key = publishGeneration ws path bases "ok" result λ stage → do
-              inventory ← exportCodes ws name codes
-              writeCodes (stage ++ˢ "/generated") codes
+              inventory ← exportCodes ws name surfaces codes
+              writeViews (stage ++ˢ "/generated") surfaces codes
               F.writeFile (stage ++ˢ "/modules.tsv") inventory
               replaceDuring (stage ++ˢ "/generated") (ws ++ˢ "/generated/" ++ˢ name)
                 (replaceDuring (stage ++ˢ "/modules.tsv") (path ++ˢ "/modules.tsv")
                   (CAS.writeRef storeDir (treeRef name) key))
               IO.return (accepted ("ok " ++ˢ name ++ˢ "\n" ++ˢ unlines (map moduleSummary codes)))
 
-    dispatch : BaseClosure → List String → Maybe (Maybe (Code × LiftSpec)) → Maybe NT.Bindings → IO.IO ActionResult
-    dispatch b dirs nothing _ = IO.return (rejected "drive-tree: invalid LiftSpec or baseMod absent from baseTrees")
-    dispatch b dirs _ nothing = IO.return (rejected "drive-tree: invalid TransportSpec, source snapshot or nested child mapping")
-    dispatch b dirs (just lifting) (just transports′) =
-      resolveBackendMode leanPrism >>= λ mode →
-      switchDump mode dumpBin repo scratch dirs (dumpReq src [] []) >>= λ where
+    narrowLogPath = ws ++ˢ "/narrowing-events.jsonl"
+
+    scopeSource : Sandbox.ScopeFrontend → List String → DumpReq → IO.IO DumpResult
+    scopeSource frontend dirs = Sandbox.sandboxDumpUsing narrowLogPath repo scratch dirs frontend
+
+    dispatch : Sandbox.ScopeFrontend → BaseClosure → List String → Maybe (Maybe (Code × LiftSpec)) → Maybe NT.Bindings → IO.IO ActionResult
+    dispatch frontend b dirs nothing _ = IO.return (rejected "drive-tree: invalid LiftSpec or baseMod absent from baseTrees")
+    dispatch frontend b dirs _ nothing = IO.return (rejected "drive-tree: invalid TransportSpec, source snapshot or nested child mapping")
+    dispatch frontend b dirs (just lifting) (just transports′) =
+      scopeSource frontend dirs (dumpReq src [] []) >>= λ where
         (dumpFailed e) → IO.return (rejected e)
         (dumped spec) → validateSpec spec (specProblem (decls spec))
       where
@@ -337,7 +353,7 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
         liftIssues spec nothing = []
         liftIssues spec (just (base , l)) = precheckLift (suc (length cs)) cs base (modName spec) l
         validateSpec : Code → Maybe String → IO.IO ActionResult
-        execute : Code → Maybe HomeValue → IO.IO ActionResult
+        execute : Code → List (Code × String) → Maybe HomeValue → IO.IO ActionResult
         resume : Code → IO.IO ActionResult
         resume spec = readIfExists (path ++ˢ "/verdict") >>= λ v → if v ==ˢ "ok" then
           (entries (ws ++ˢ "/trees") >>= λ trees → resolveTree ws (suc (length trees)) name >>= λ where
@@ -345,9 +361,11 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
             (just key) → verifyCommitDAG storeDir key >>= λ valid → if valid then
               (CAS.newCommitHomeReader storeDir >>= λ read → (CAS.getCommit storeDir key CAS.>>=? read) >>= λ where
                 nothing → IO.return (rejected "drive-tree: missing previous home")
-                (just h) → execute spec (just h))
+                (just h) → CAS.commitSurfaces storeDir key >>= λ where
+                  nothing → IO.return (rejected "drive-tree: invalid source presentation")
+                  (just views) → execute spec views (just h))
               else IO.return (rejected "drive-tree: invalid previous commit DAG"))
-          else loadHome path >>= execute spec
+          else loadHome path >>= execute spec []
         validateSpec spec (just e) = IO.return (rejected e)
         validateSpec spec nothing with liftIssues spec lifting
         ... | ps@(_ ∷ _) = IO.return (rejected ("drive-tree: invalid LiftSpec for base tree (every base child subpackage must appear in LiftSpec child-map):\n" ++ˢ unlines (map showLiftProblem ps)))
@@ -359,12 +377,12 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
           ∧ allᵇ (λ e → PT.newModOf (proj₂ e) ==ᴺ modName spec) transports′
           ∧ not (elemᵇ _==ᴺ_ (modName spec) ancestors)
           then (resolveBackendMode leanPrism >>= λ mode →
-                switchCheck mode repo scratch dirs
-                 (agdaCheck (specCheckOf (specΔ (modName spec) (decls spec) [])) []) >>= λ where
+                switchCheckWithLog narrowLogPath mode repo scratch []
+                 (agdaCheck (specCheckOf (specΔ (modName spec) (decls spec) [])) cs) >>= λ where
                    Code.Transport.pass → resume spec
                    (Code.Transport.fail e) → IO.return (rejected ("drive-tree: specification failed Agda typecheck:\n" ++ˢ e)))
           else IO.return (rejected "drive-tree: unsafe flags, namespace collision or wrong target module")
-        execute spec saved = start (chosen saved)
+        execute spec views saved = newIORef views >>= λ seen → start seen (chosen saved)
           where
             d = specΔ (modName spec) (decls spec) []
             chosen : Maybe HomeValue → HomeValue
@@ -373,39 +391,56 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
             ancestorText : Code → String
             ancestorText c = if anyᵇ (λ i → imod i ==ᴺ modName c) (imports spec)
                               then render c else moduleSummary c
-            start : HomeValue → IO.IO ActionResult
-            start home@(sh , m) =
+            capture : IORef (List (Code × String)) → DumpReq → IO.IO DumpResult
+            capture seen req = scopeSource frontend dirs (record req { codeDeps = localDeps (codeDeps req) }) >>= λ where
+              (dumpFailed e) → IO.return (dumpFailed e)
+              (dumped c) → modifyIORef seen ((c , source req) ∷_) >> IO.return (dumped c)
+            refresh : IORef (List (Code × String)) → NodeTask → IO.IO NodeTask
+            refresh seen t = readIORef seen >>= λ latest → IO.return (record t { authoredSources = latest })
+            start : IORef (List (Code × String)) → HomeValue → IO.IO ActionResult
+            start seen home@(sh , m) =
               let old = codeOf sh (dropModel (homeNoChan sh) m)
                   seed = map (λ u → if elemᵇ _==ᴼ_ (unit (uname u)) (objects old)
                     then keep (ext (uname u)) else Code.⊥ ⇝ ext (uname u)) (units (stubOf d))
                   task = record (nodeTask (record d { δarrows = seed }) (flagsOf spec) lifting)
                     { baseModules = cs ; transports = transports′ ; allowedAncestors = just ancestors
-                    ; contextText = goal cfg ++ˢ "\nANCESTOR MODULES\n" ++ˢ unlines (map ancestorText cs) }
+                    ; contextText = goal cfg ++ˢ "\nANCESTOR MODULES\n" ++ˢ unlines (map ancestorText cs)
+                    ; rawSpecSource = src ; authoredSources = views }
               in if modName old ==ᴺ modName spec then
-                (let treeBack = withBackendAncestors repo dirs (treeBackend cfg name) in
-                 nodeEnvironmentForBackend (isConcurrentBackend treeBack)
+                (let treeBack = withBackendNarrowLog narrowLogPath (withBackendAncestors repo dirs (treeBackend cfg name)) in
+                 nodeEnvironmentWithTasks (isConcurrentBackend treeBack) (refresh seen)
                    (trackedService (ws ++ˢ "/threads/" ++ˢ name) treeBack)
-                   (λ req → resolveBackendMode leanPrism >>= λ mode → switchDump mode dumpBin repo scratch dirs (record req { codeDeps = localDeps (codeDeps req) }))
-                   (λ req → resolveBackendMode leanPrism >>= λ mode → switchCheck mode repo scratch dirs (record req { dependencies = localDeps (dependencies req) }))
+                   (capture seen)
+                   (λ req → resolveBackendMode leanPrism >>= λ mode →
+                     switchCheckWithLog narrowLogPath mode repo scratch [] (record req { dependencies = cs ++ localDeps (dependencies req) }))
                  >>= λ env → runNode env task home >>= λ where
-                   (ok , result) → publish b result
+                   (ok , result) → readIORef seen >>= λ surfaces → publish surfaces b result
                    (contradiction c , result) → publishGeneration ws path bases "contradiction" result λ _ →
-                     IO.return (accepted ("contradiction " ++ˢ name ++ˢ "\n" ++ˢ render c)))
+                     IO.return (accepted ("contradiction " ++ˢ name ++ˢ "\n" ++ˢ render c))
+                   (independent why c , result) → publishGeneration ws path bases "independent" result λ _ →
+                     IO.return (accepted ("independent " ++ˢ name ++ˢ (if why ==ˢ "" then "" else " — " ++ˢ why)
+                       ++ˢ "\nNOTE: Child formally proved your specification implies a known Agda 2.6.3 --safe independent taboo (Context.Taboo.SafeTaboo). Your business semantics and test cases are NOT contradictory — rewrite the specification replacing opaque primitives (primStringEquality / primCharEquality / String toList-fromList roundtrips) or function equality with --safe decidable/reflective operations (Context.Tools.FsSandbox.eqStr, Data.String.Properties._≟_, Data.Char.Properties._≟_, toℕ, or _≢_), then drive-tree again.\n" ++ˢ render c)))
                 else IO.return (rejected "drive-tree: saved ownership root differs from specSrc")
 
-    runTree : BaseClosure → IO.IO ActionResult
-    runTree b = if elemᵇ _==ˢ_ name (map treeEpoch (sealedBases b))
+    runTree : Sandbox.ScopeFrontend → BaseClosure → IO.IO ActionResult
+    runTree frontend b with concatMap recheckAncestor (baseCodes b)
+      where
+        recheckAncestor : Code → List String
+        recheckAncestor c = map (λ p → intersperse "." (full (modName c)) ++ˢ " " ++ˢ showImplProblem p)
+          (closedImplOK [] c)
+    ... | errs@(_ ∷ _) = IO.return (rejected ("drive-tree: unsafe ancestor implementation:\n" ++ˢ unlines errs))
+    ... | [] = if elemᵇ _==ˢ_ name (map treeEpoch (sealedBases b))
                    ∨ not (allᵇ (Sandbox.checkObjectModuleSafe false) (baseCodes b))
       then IO.return (rejected "drive-tree: cyclic or unsafe ancestor")
       else withTempDirectory (ws ++ˢ "/tmp/ancestors") λ dir → do
         writeCodes dir (baseCodes b)
-        dispatch b (dir ∷ []) (chooseLift (baseCodes b) liftSrc) (chooseTransport (sealedBases b) transportSrc)
+        dispatch frontend b (dir ∷ []) (chooseLift (baseCodes b) liftSrc) (chooseTransport (sealedBases b) transportSrc)
 
-    action : IO.IO ActionResult
-    action = if safeTree name ∧ not (elemᵇ _==ˢ_ name bases) then
+    action : Sandbox.ScopeFrontend → IO.IO ActionResult
+    action frontend = if safeTree name ∧ not (elemᵇ _==ˢ_ name bases) then
       (loadClosure ws bases >>= λ where
         nothing → IO.return (rejected "baseTrees: missing, conflicting or invalid ancestor")
-        (just b) → runTree b)
+        (just b) → runTree frontend b)
       else IO.return (rejected "drive-tree: unsafe treeName or direct self-dependency")
 
 driveTree : SessionConfig → String → String → List String → Maybe String → IO.IO ActionResult
@@ -545,14 +580,14 @@ auditTrees cfg names = loadTrees names >>= λ where
     owned (_ , b) = concatMap (λ t → NT.exported (snapshot t))
       (filterᵇ (λ t → elemᵇ _==ˢ_ (tip t) (directTips b)) (sealedBases b))
 
-    audit : String → List Code → List Code → IO.IO (Maybe String)
-    audit name current [] = IO.return nothing
-    audit name current (c ∷ cs) = readIfExists file >>= λ src →
-      if (src ==ˢ render c) ∧ nullᵇ (closedImplOK [] c) then
+    audit : String → List (Code × String) → List Code → List Code → IO.IO (Maybe String)
+    audit name views current [] = IO.return nothing
+    audit name views current (c ∷ cs) = readIfExists file >>= λ src →
+      if (src ==ˢ viewText views c) ∧ nullᵇ (closedImplOK [] c) then
         (resolveBackendMode leanPrism >>= λ mode →
          switchCheck mode (repository cfg) (ws ++ˢ "/tmp/audit") []
           (agdaCheck c (filterᵇ (λ d → not (modName c ==ᴺ modName d)) current)) >>= λ where
-            Code.Transport.pass → audit name current cs
+            Code.Transport.pass → audit name views current cs
             (Code.Transport.fail e) → IO.return (just ("finish: exported module no longer typechecks\n" ++ˢ e)))
       else IO.return (just ("finish: exported source differs from verified tree: " ++ˢ file))
       where file = ws ++ˢ "/generated/" ++ˢ name ++ˢ "/" ++ˢ modulePath c
@@ -561,7 +596,7 @@ auditTrees cfg names = loadTrees names >>= λ where
     -- survive an in-place ancestor revision only if it still typechecks.
     auditAll : List Code → List Tree → IO.IO (Maybe String)
     auditAll current [] = IO.return nothing
-    auditAll current (t@(n , b) ∷ ts) = audit n
+    auditAll current (t@(n , b) ∷ ts) = publishedViews ws n >>= λ views → audit n views
       (filterᵇ (λ d → elemᵇ _==ᴺ_ (modName d) (map modName (baseCodes b))) current) (owned t) >>= λ where
         nothing → auditAll current ts
         (just err) → IO.return (just err)
@@ -611,8 +646,9 @@ persistFinish cfg summary = successfulTrees ws >>= λ trees → treeManifests ws
 {-# NON_TERMINATING #-}
 sessionLoop : SessionConfig → RunningIO AIReq AIReply (⊤ × ⊤) → List String → String → IO.IO ⊤
 sessionLoop cfg ai memory diagnostic =
-  onCall ai (propose prompt (not (diagnostic ==ˢ ""))) >>= λ reply →
-  respond (parseSessionAction (AIReply.text reply))
+  onCall ai (propose prompt (not (diagnostic ==ˢ "")) "") >>= λ reply →
+  let rawTxt = AIReply.text reply in
+  respond rawTxt (parseSessionAction rawTxt)
   where
     prompt = unlines (sessionTemplate ∷ sessionTransportHelp ∷ "GOAL" ∷ goal cfg ∷ "REFERENCE TARGET" ∷ showSExpr (encodeRefSpec (reference cfg))
       ∷ "ACCEPTED SESSION MEMORY" ∷ showSExpr (list (map str memory)) ∷ "TRANSIENT DIAGNOSTIC" ∷ diagnostic ∷ [])
@@ -624,9 +660,12 @@ sessionLoop cfg ai memory diagnostic =
       F.putStrLn ("Session retry: " ++ˢ detail) >> sessionLoop cfg ai memory detail
     continue action (accepted observation) = commit (actionReason action ++ˢ "\n" ++ˢ observation) >>= λ next → sessionLoop cfg ai next ""
     continue action (finished summary) = commit (actionReason action) >>= λ _ → persistFinish cfg summary
-    respond : Maybe SessionAction → IO.IO ⊤
-    respond nothing = sessionLoop cfg ai memory "session-action: malformed envelope or source block"
-    respond (just action) = executeAction cfg action >>= continue action
+    respond : String → Maybe SessionAction → IO.IO ⊤
+    respond rawTxt nothing =
+      let detail = "session-action: malformed envelope or source block — " ++ˢ explainSessionActionFailure rawTxt in
+      F.putStrLn ("Session retry: " ++ˢ detail) >>
+      sessionLoop cfg ai memory detail
+    respond _ (just action) = executeAction cfg action >>= continue action
 
 runAutonomousSession : SessionConfig → IO.IO ⊤
 runAutonomousSession cfg = enableLineBuffering >> trackedService (workspace cfg ++ˢ "/threads") (sessionBackend cfg) >>= λ ai →

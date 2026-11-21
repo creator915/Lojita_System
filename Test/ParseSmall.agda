@@ -32,3 +32,17 @@ _ = refl
 
 _ : map shown (unitNames (parse C-sexp)) ≡ ("one" ∷ "two" ∷ "double" ∷ "f" ∷ [])
 _ = refl
+
+-- A scope-level overload survives the backend wire round trip. Object identity
+-- and the presentation-independent hash keep their existing primary path.
+open import Code.Encode using (encQ; canonical)
+open import Code.SExpr using (str)
+
+overloadedCons : QName
+overloadedCons = scopedQName ("List" ∷ "_∷_" ∷ []) "_∷_" ("All._∷_" ∷ [])
+
+_ : decodeQ (encQ overloadedCons) ≡ just overloadedCons
+_ = refl
+
+_ : canonical (encQ overloadedCons) ≡ str "List._∷_"
+_ = refl

@@ -1,0 +1,34 @@
+module Gen.T2.JsonInput.Comparison.Primitive.Reflection where
+
+open import Agda.Builtin.Char using (primCharEquality)
+open import Agda.Builtin.String using (primStringEquality)
+open import Data.Bool using (true; false)
+open import Data.Char using (Char)
+open import Data.String using (String)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; trans)
+open import Data.Empty using (⊥-elim)
+open import Relation.Nullary using (Dec; does; yes; no; ¬_)
+import Data.Char as Char using (_≟_)
+import Data.String as String using (_≟_)
+import Gen.T2.JsonInput.Comparison.Primitive.Reflection.NativeAgreement as Agreement
+
+private
+  decide-true : {P : Set} → (p : Dec P) → P → does p ≡ true
+  decide-true (yes _) _ = refl
+  decide-true (no not-p) p = ⊥-elim (not-p p)
+
+  decide-false : {P : Set} → (p : Dec P) → ¬ P → does p ≡ false
+  decide-false (yes p) not-p = ⊥-elim (not-p p)
+  decide-false (no _) _ = refl
+
+stringEqual : (s t : String) → (s ≡ t) → primStringEquality s t ≡ true
+stringEqual s t eq = trans (Agreement.string-agrees s t) (decide-true (s String.≟ t) eq)
+
+stringDifferent : (s t : String) → (s ≢ t) → primStringEquality s t ≡ false
+stringDifferent s t neq = trans (Agreement.string-agrees s t) (decide-false (s String.≟ t) neq)
+
+charEqual : (c d : Char) → (c ≡ d) → primCharEquality c d ≡ true
+charEqual c d eq = trans (Agreement.char-agrees c d) (decide-true (c Char.≟ d) eq)
+
+charDifferent : (c d : Char) → (c ≢ d) → primCharEquality c d ≡ false
+charDifferent c d neq = trans (Agreement.char-agrees c d) (decide-false (c Char.≟ d) neq)

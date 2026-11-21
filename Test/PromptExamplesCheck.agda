@@ -13,14 +13,14 @@ open import IO.Primitive using (IO; return; _>>=_)
 import IO.Primitive.Finite as F
 open import System.Environment.Primitive using (getArgs)
 open import OwnershipIO.FFI using (failIO)
-open import Code using (Code; modName; decls; _==ˢ_; _==ᴺ_; closedImplOK; validRefutation)
+open import Code using (Code; modName; decls; _==ˢ_; _==ᴺ_; closedImplOK; validRefutation; validIndependence)
 open import Code.Transport using (nullᵇ; specProblem; satisfies; specΔ)
 open import Code.Parse using (parse; parseLift)
 import Code.Lift as L
 import Code.PolyTransport as P
 open import Code.SessionProtocol
 open import Code.SessionRunner using (sessionEnvSource)
-open import Code.Submission using (parseSubmission; submitPlan; addMoves; refute)
+open import Code.Submission using (parseSubmission; submitPlan; addMoves; refute; independent)
 open import Code.Prompt public using
   ( PromptHeader; nativeHeader; closedWorldTemplate; sessionTemplate; sessionTransportHelp
   ; refuteExtraText; nodePrompt; showProblem; showImplProblem; showLiftProblem; showRefuteProblem )
@@ -52,6 +52,7 @@ private
       children n ((_ , code) ∷ rest) =
         save dir ("subspec-" ++ˢ show n) code >>= λ _ → children (suc n) rest
   ... | just (refute src) = save dir "refute" src
+  ... | just (independent _ src) = save dir "refute" src
   ... | just (addMoves _ nothing) = return tt
   ... | just (addMoves _ (just src)) = save dir "main" src
 
@@ -106,10 +107,13 @@ private
   cli ("refutation" ∷ spec ∷ proof ∷ []) =
     readCode spec >>= λ s → readCode proof >>= λ p →
     assert (nullᵇ (validRefutation (modName s) [] p)) "invalid refutation"
+  cli ("independence" ∷ spec ∷ proof ∷ []) =
+    readCode spec >>= λ s → readCode proof >>= λ p →
+    assert (nullᵇ (validIndependence (modName s) [] p)) "invalid independence witness"
   cli ("squares" ∷ envelope ∷ old ∷ impl ∷ spec ∷ []) =
     F.readFile envelope >>= λ txt → readCode old >>= λ o → readCode impl >>= λ i →
     readCode spec >>= squares txt o i
-  cli _ = failIO "expected env, node, session, dump, refutation or squares"
+  cli _ = failIO "expected env, node, session, dump, refutation, independence or squares"
 
 main : IO ⊤
 main = getArgs >>= cli

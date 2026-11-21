@@ -104,6 +104,11 @@ else:
         "name": "check_agda", "arguments": {"main_block": "main"}
     }})
     assert r_good["result"]["isError"] is False, f"expected check_agda pass: {r_good}"
+    plan = '(submission (kind plan) (why "double via addition") (main @main) (moves))'
+    preview = rpc({"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {
+        "name": "check_plan", "arguments": {"submission": plan}
+    }})["result"]
+    assert preview["structuredContent"]["ok"] and not preview["isError"], preview
     proc.stdin.close()
     proc.wait(timeout=5)
 
@@ -114,7 +119,7 @@ else:
 
     # Notice: return ONLY the compact `(submission ...)` envelope referencing `@main`
     # WITHOUT inline `agda main` fence — verifying `Code/AI.agda` auto-attaches saved drafts!
-    reply = '```sexp\n(submission (kind plan) (why "double via addition") (main @main) (moves))\n```\n'
+    reply = '```sexp\n' + plan + '\n```\n'
 
 if out_file:
     open(out_file, "w", encoding="utf-8").write(reply)

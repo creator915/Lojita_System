@@ -1,0 +1,334 @@
+module Gen.T2.JsonInput where
+
+open import Agda.Builtin.Char using (primCharEquality; primNatToChar)
+open import Agda.Builtin.String using (primStringEquality)
+open import Data.Bool using (Bool; false; true; _∧_; _∨_)
+open import Data.Char using (Char; toℕ)
+open import Data.List using (List; []; _∷_; [_]; _++_; any; take)
+open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Nat using (ℕ; zero; suc; _+_; _*_; _∸_; _<ᵇ_; _≡ᵇ_)
+open import Data.Nat.DivMod using (_/_; _%_)
+open import Data.Product using (_×_; _,_)
+open import Data.String using (String; fromList; toList) renaming (_++_ to _++ˢ_)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_)
+data Json : Set where
+  jsonNull : Json
+  jsonBool : Bool → Json
+  jsonNumber : String → Json
+  jsonText : String → Json
+  jsonObject : List (String × Json) → Json
+  jsonArray : List Json → Json
+
+data Document : Set where
+  parsed : Json → Document
+  rejected : String → Document
+
+record StreamReply : Set where
+  constructor streamReply
+  field
+    status : ℕ
+    values : List Json
+    diagnostic : String
+
+data Expectation : Set where
+  valueStart : Expectation
+  inWord : String → Char → Expectation
+  objectKey : Expectation
+  afterKey : Expectation
+  afterMember : Expectation
+  afterElement : Expectation
+  integerDigit : Expectation
+  fractionalDigit : Expectation
+  exponentDigit : Expectation
+  insideString : Expectation
+  afterEscape : Expectation
+  unicodeDigit : Expectation
+  afterDocument : Expectation
+  exceededDepth : Expectation
+
+data Fault : Set where
+  missingDocument : Fault
+  incompleteDocument : Fault
+  unexpected : Char → Expectation → Fault
+
+data Prefix (A : Set) : Set where
+  consumed : A → List Char → Prefix A
+  failed : Fault → Prefix A
+
+postulate
+  whitespace : Char → Bool
+  jsonWhitespace : ∀ c → whitespace c ≡ (primCharEquality c ' ' ∨ (primCharEquality c '\t' ∨ (primCharEquality c '\r' ∨ primCharEquality c '\n')))
+  skipWhitespace : List Char → List Char
+  skipEmpty : skipWhitespace [] ≡ []
+  skipSpace : ∀ c xs → whitespace c ≡ true → skipWhitespace (c ∷ xs) ≡ skipWhitespace xs
+  keepNonspace : ∀ c xs → whitespace c ≡ false → skipWhitespace (c ∷ xs) ≡ (c ∷ xs)
+
+  diagnosticGlyph : Char → String
+  printableAscii : ∀ c → ((31 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 127)) ≡ true → primCharEquality c '\'' ≡ false → primCharEquality c '\\' ≡ false → diagnosticGlyph c ≡ fromList [ c ]
+  apostropheGlyph : diagnosticGlyph '\'' ≡ "\\'"
+  backslashGlyph : diagnosticGlyph '\\' ≡ "\\\\"
+  bellGlyph : diagnosticGlyph (primNatToChar 7) ≡ "\\a"
+  verticalTabGlyph : diagnosticGlyph (primNatToChar 11) ≡ "\\v"
+  backspaceGlyph : diagnosticGlyph (primNatToChar 8) ≡ "\\b"
+  tabGlyph : diagnosticGlyph '\t' ≡ "\\t"
+  newlineGlyph : diagnosticGlyph '\n' ≡ "\\n"
+  formfeedGlyph : diagnosticGlyph (primNatToChar 12) ≡ "\\f"
+  returnGlyph : diagnosticGlyph '\r' ≡ "\\r"
+  diagnosticNibble : ℕ → Char
+  decimalNibble : ∀ n → (n <ᵇ 10) ≡ true → diagnosticNibble n ≡ primNatToChar (48 + n)
+  alphabeticNibble : ∀ n → ((9 <ᵇ n) ∧ (n <ᵇ 16)) ≡ true → diagnosticNibble n ≡ primNatToChar (87 + n)
+  hexControlGlyph : ∀ c → ((toℕ c <ᵇ 32) ∨ (toℕ c ≡ᵇ 127)) ≡ true → any (primCharEquality c) (primNatToChar 7 ∷ (primNatToChar 8 ∷ ('\t' ∷ ('\n' ∷ (primNatToChar 11 ∷ (primNatToChar 12 ∷ ('\r' ∷ []))))))) ≡ false → diagnosticGlyph c ≡ ("\\x" ++ˢ fromList (diagnosticNibble (toℕ c / 16) ∷ (diagnosticNibble (toℕ c % 16) ∷ [])))
+  glyphTwoBytes : ∀ c → ((127 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 2048)) ≡ true → diagnosticGlyph c ≡ fromList [ primNatToChar (192 + toℕ c / 64) ]
+  glyphThreeBytes : ∀ c → ((2047 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 65536)) ≡ true → diagnosticGlyph c ≡ fromList [ primNatToChar (224 + toℕ c / 4096) ]
+  glyphFourBytes : ∀ c → (65535 <ᵇ toℕ c) ≡ true → diagnosticGlyph c ≡ fromList [ primNatToChar (240 + toℕ c / 262144) ]
+
+  contextText : Expectation → String
+  startingValueMessage : contextText valueStart ≡ " looking for beginning of value"
+  unfinishedWordMessage : ∀ word c → contextText (inWord word c) ≡ (" in literal " ++ˢ (word ++ˢ (" (expecting '" ++ˢ (fromList [ c ] ++ˢ "')"))))
+  objectKeyMessage : contextText objectKey ≡ " looking for beginning of object key string"
+  colonMessage : contextText afterKey ≡ " after object key"
+  memberMessage : contextText afterMember ≡ " after object key:value pair"
+  elementMessage : contextText afterElement ≡ " after array element"
+  integerMessage : contextText integerDigit ≡ " in numeric literal"
+  fractionMessage : contextText fractionalDigit ≡ " after decimal point in numeric literal"
+  exponentMessage : contextText exponentDigit ≡ " in exponent of numeric literal"
+  stringMessage : contextText insideString ≡ " in string literal"
+  escapeMessage : contextText afterEscape ≡ " in string escape code"
+  unicodeMessage : contextText unicodeDigit ≡ " in \\u hexadecimal character escape"
+  trailingMessage : contextText afterDocument ≡ " after top-level value"
+  depthMessage : contextText exceededDepth ≡ " exceeded max depth"
+  faultText : Fault → String
+  missingMessage : faultText missingDocument ≡ "EOF"
+  incompleteMessage : faultText incompleteDocument ≡ "unexpected EOF"
+  invalidMessage : ∀ c site → faultText (unexpected c site) ≡ ("invalid character '" ++ˢ (diagnosticGlyph c ++ˢ ("'" ++ˢ contextText site)))
+
+  decimalDigit : Char → Bool
+  decimalRange : ∀ c → decimalDigit c ≡ ((47 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 58))
+  hexadecimalDigit : Char → Maybe ℕ
+  hexDecimal : ∀ c → decimalDigit c ≡ true → hexadecimalDigit c ≡ just (toℕ c ∸ 48)
+  hexUppercase : ∀ c → ((64 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 71)) ≡ true → hexadecimalDigit c ≡ just (toℕ c ∸ 55)
+  hexLowercase : ∀ c → ((96 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 103)) ≡ true → hexadecimalDigit c ≡ just (toℕ c ∸ 87)
+  nonHex : ∀ c → (decimalDigit c ∨ (((64 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 71)) ∨ ((96 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 103)))) ≡ false → hexadecimalDigit c ≡ nothing
+  hexPrefix : ℕ → ℕ → List Char → Prefix ℕ
+  hexComplete : ∀ acc xs → hexPrefix 0 acc xs ≡ consumed acc xs
+  hexIncomplete : ∀ n acc → hexPrefix (suc n) acc [] ≡ failed incompleteDocument
+  hexUnexpected : ∀ n acc c xs → hexadecimalDigit c ≡ nothing → hexPrefix (suc n) acc (c ∷ xs) ≡ failed (unexpected c unicodeDigit)
+  hexNext : ∀ n acc c xs d → hexadecimalDigit c ≡ just d → hexPrefix (suc n) acc (c ∷ xs) ≡ hexPrefix n (16 * acc + d) xs
+
+  isHighSurrogate : ℕ → Bool
+  isLowSurrogate : ℕ → Bool
+  highRange : ∀ n → isHighSurrogate n ≡ ((55295 <ᵇ n) ∧ (n <ᵇ 56320))
+  lowRange : ∀ n → isLowSurrogate n ≡ ((56319 <ᵇ n) ∧ (n <ᵇ 57344))
+  utf16Escape : ℕ → List Char → Prefix Char
+  ordinaryUnit : ∀ n xs → (n <ᵇ 65536) ≡ true → (isHighSurrogate n ∨ isLowSurrogate n) ≡ false → utf16Escape n xs ≡ consumed (primNatToChar n) xs
+  isolatedLow : ∀ n xs → isLowSurrogate n ≡ true → utf16Escape n xs ≡ consumed (primNatToChar 65533) xs
+  noSecondUnit : ∀ n xs → isHighSurrogate n ≡ true → take 2 xs ≢ ('\\' ∷ ('u' ∷ [])) → utf16Escape n xs ≡ consumed (primNatToChar 65533) xs
+  malformedSecondUnit : ∀ n xs fault → isHighSurrogate n ≡ true → hexPrefix 4 0 xs ≡ failed fault → utf16Escape n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar 65533) ('\\' ∷ ('u' ∷ xs))
+  unmatchedSecondUnit : ∀ n m xs rest → isHighSurrogate n ≡ true → hexPrefix 4 0 xs ≡ consumed m rest → isLowSurrogate m ≡ false → utf16Escape n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar 65533) ('\\' ∷ ('u' ∷ xs))
+  pairedUnits : ∀ n m xs rest → isHighSurrogate n ≡ true → hexPrefix 4 0 xs ≡ consumed m rest → isLowSurrogate m ≡ true → utf16Escape n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar (65536 + (1024 * (n ∸ 55296) + (m ∸ 56320)))) rest
+
+  escapePrefix : List Char → Prefix Char
+  absentEscape : escapePrefix [] ≡ failed incompleteDocument
+  quoteEscape : ∀ xs → escapePrefix ('"' ∷ xs) ≡ consumed '"' xs
+  slashEscape : ∀ xs → escapePrefix ('/' ∷ xs) ≡ consumed '/' xs
+  backslashEscape : ∀ xs → escapePrefix ('\\' ∷ xs) ≡ consumed '\\' xs
+  backspaceEscape : ∀ xs → escapePrefix ('b' ∷ xs) ≡ consumed (primNatToChar 8) xs
+  formfeedEscape : ∀ xs → escapePrefix ('f' ∷ xs) ≡ consumed (primNatToChar 12) xs
+  newlineEscape : ∀ xs → escapePrefix ('n' ∷ xs) ≡ consumed '\n' xs
+  returnEscape : ∀ xs → escapePrefix ('r' ∷ xs) ≡ consumed '\r' xs
+  tabEscape : ∀ xs → escapePrefix ('t' ∷ xs) ≡ consumed '\t' xs
+  escapedUnit : ∀ xs n rest → hexPrefix 4 0 xs ≡ consumed n rest → escapePrefix ('u' ∷ xs) ≡ utf16Escape n rest
+  malformedUnit : ∀ xs err → hexPrefix 4 0 xs ≡ failed err → escapePrefix ('u' ∷ xs) ≡ failed err
+  unknownEscape : ∀ c xs → any (primCharEquality c) (toList "\"/\\bfnrtu") ≡ false → escapePrefix (c ∷ xs) ≡ failed (unexpected c afterEscape)
+
+  stringBody : List Char → Prefix String
+  bodyUnclosed : stringBody [] ≡ failed incompleteDocument
+  bodyClosed : ∀ xs → stringBody ('"' ∷ xs) ≡ consumed "" xs
+  bodyControl : ∀ c xs → (toℕ c <ᵇ 32) ≡ true → stringBody (c ∷ xs) ≡ failed (unexpected c insideString)
+  bodyCharacter : ∀ c xs s rest → (toℕ c <ᵇ 32) ≡ false → any (primCharEquality c) (toList "\"\\") ≡ false → stringBody xs ≡ consumed s rest → stringBody (c ∷ xs) ≡ consumed (fromList [ c ] ++ˢ s) rest
+  bodyAfterCharacterError : ∀ c xs e → (toℕ c <ᵇ 32) ≡ false → any (primCharEquality c) (toList "\"\\") ≡ false → stringBody xs ≡ failed e → stringBody (c ∷ xs) ≡ failed e
+  bodyEscape : ∀ xs c mid s rest → escapePrefix xs ≡ consumed c mid → stringBody mid ≡ consumed s rest → stringBody ('\\' ∷ xs) ≡ consumed (fromList [ c ] ++ˢ s) rest
+  bodyEscapeError : ∀ xs e → escapePrefix xs ≡ failed e → stringBody ('\\' ∷ xs) ≡ failed e
+  bodyAfterEscapeError : ∀ xs c mid e → escapePrefix xs ≡ consumed c mid → stringBody mid ≡ failed e → stringBody ('\\' ∷ xs) ≡ failed e
+
+  digitSpan : List Char → List Char × List Char
+  noDigitInput : digitSpan [] ≡ ([] , [])
+  stopDigitSpan : ∀ c xs → decimalDigit c ≡ false → digitSpan (c ∷ xs) ≡ ([] , (c ∷ xs))
+  extendDigitSpan : ∀ c xs ds rest → decimalDigit c ≡ true → digitSpan xs ≡ (ds , rest) → digitSpan (c ∷ xs) ≡ ((c ∷ ds) , rest)
+  requiredDigits : Expectation → List Char → Prefix (List Char)
+  missingDigits : ∀ site → requiredDigits site [] ≡ failed incompleteDocument
+  rejectedDigits : ∀ site c xs → decimalDigit c ≡ false → requiredDigits site (c ∷ xs) ≡ failed (unexpected c site)
+  acceptedDigits : ∀ site c xs ds rest → decimalDigit c ≡ true → digitSpan xs ≡ (ds , rest) → requiredDigits site (c ∷ xs) ≡ consumed (c ∷ ds) rest
+
+  unsignedInteger : List Char → Prefix (List Char)
+  zeroInteger : ∀ xs → unsignedInteger ('0' ∷ xs) ≡ consumed [ '0' ] xs
+  otherInteger : ∀ xs → take 1 xs ≢ [ '0' ] → unsignedInteger xs ≡ requiredDigits integerDigit xs
+  signedInteger : List Char → Prefix (List Char)
+  positiveInteger : ∀ xs → take 1 xs ≢ [ '-' ] → signedInteger xs ≡ unsignedInteger xs
+  negativeInteger : ∀ xs ds rest → unsignedInteger xs ≡ consumed ds rest → signedInteger ('-' ∷ xs) ≡ consumed ('-' ∷ ds) rest
+  negativeIntegerError : ∀ xs e → unsignedInteger xs ≡ failed e → signedInteger ('-' ∷ xs) ≡ failed e
+
+  fraction : List Char → Prefix (List Char)
+  noFraction : ∀ xs → take 1 xs ≢ [ '.' ] → fraction xs ≡ consumed [] xs
+  fractionWithDigits : ∀ xs ds rest → requiredDigits fractionalDigit xs ≡ consumed ds rest → fraction ('.' ∷ xs) ≡ consumed ('.' ∷ ds) rest
+  fractionWithoutDigits : ∀ xs e → requiredDigits fractionalDigit xs ≡ failed e → fraction ('.' ∷ xs) ≡ failed e
+
+  exponentBody : List Char → Prefix (List Char)
+  exponentWithoutSign : ∀ xs → take 1 xs ≢ [ '+' ] → take 1 xs ≢ [ '-' ] → exponentBody xs ≡ requiredDigits exponentDigit xs
+  exponentWithSign : ∀ c xs ds rest → (primCharEquality c '+' ∨ primCharEquality c '-') ≡ true → requiredDigits exponentDigit xs ≡ consumed ds rest → exponentBody (c ∷ xs) ≡ consumed (c ∷ ds) rest
+  exponentSignError : ∀ c xs e → (primCharEquality c '+' ∨ primCharEquality c '-') ≡ true → requiredDigits exponentDigit xs ≡ failed e → exponentBody (c ∷ xs) ≡ failed e
+  exponent : List Char → Prefix (List Char)
+  noExponent : ∀ xs → take 1 xs ≢ [ 'e' ] → take 1 xs ≢ [ 'E' ] → exponent xs ≡ consumed [] xs
+  exponentWithDigits : ∀ c xs ds rest → (primCharEquality c 'e' ∨ primCharEquality c 'E') ≡ true → exponentBody xs ≡ consumed ds rest → exponent (c ∷ xs) ≡ consumed (c ∷ ds) rest
+  exponentWithoutDigits : ∀ c xs e → (primCharEquality c 'e' ∨ primCharEquality c 'E') ≡ true → exponentBody xs ≡ failed e → exponent (c ∷ xs) ≡ failed e
+
+  numberPrefix : List Char → Prefix String
+  numberWithParts : ∀ xs i r f q d rest → signedInteger xs ≡ consumed i r → fraction r ≡ consumed f q → exponent q ≡ consumed d rest → numberPrefix xs ≡ consumed (fromList (i ++ (f ++ d))) rest
+  numberIntegerError : ∀ xs e → signedInteger xs ≡ failed e → numberPrefix xs ≡ failed e
+  numberFractionError : ∀ xs i r e → signedInteger xs ≡ consumed i r → fraction r ≡ failed e → numberPrefix xs ≡ failed e
+  numberExponentError : ∀ xs i r f q e → signedInteger xs ≡ consumed i r → fraction r ≡ consumed f q → exponent q ≡ failed e → numberPrefix xs ≡ failed e
+
+  literalSuffix : Json → String → List Char → List Char → Prefix Json
+  wordComplete : ∀ a word xs → literalSuffix a word [] xs ≡ consumed a xs
+  wordIncomplete : ∀ a word c cs → literalSuffix a word (c ∷ cs) [] ≡ failed incompleteDocument
+  wordMatched : ∀ a word c cs xs → literalSuffix a word (c ∷ cs) (c ∷ xs) ≡ literalSuffix a word cs xs
+  wordMismatch : ∀ a word c d cs xs → primCharEquality c d ≡ false → literalSuffix a word (c ∷ cs) (d ∷ xs) ≡ failed (unexpected d (inWord word c))
+
+  matchingValues : String → List (String × Json) → List Json
+  noMatchingValues : ∀ k → matchingValues k [] ≡ []
+  nextMatchingValue : ∀ k v fields → matchingValues k ((k , v) ∷ fields) ≡ (matchingValues k fields ++ [ v ])
+  otherMatchingValue : ∀ k l v fields → primStringEquality k l ≡ false → matchingValues k ((l , v) ∷ fields) ≡ matchingValues k fields
+  resolveFields : List (String × Json) → List (String × Json)
+  resolveEmpty : resolveFields [] ≡ []
+  resolveAbsent : ∀ k fields → matchingValues k fields ≡ [] → matchingValues k (resolveFields fields) ≡ []
+  resolveNewest : ∀ k v older fields → matchingValues k fields ≡ (v ∷ older) → matchingValues k (resolveFields fields) ≡ [ v ]
+
+  maxNesting : ℕ
+  nestingCapacity : maxNesting ≡ 10000
+  valueAtDepth : ℕ → List Char → Prefix Json
+  valuePrefix : List Char → Prefix Json
+  arrayItems : ℕ → Bool → List Char → Prefix (List Json)
+  arrayTail : ℕ → List Char → Prefix (List Json)
+  objectItems : ℕ → Bool → List Char → Prefix (List (String × Json))
+  objectTail : ℕ → List Char → Prefix (List (String × Json))
+  memberPrefix : ℕ → List Char → Prefix (String × Json)
+  memberValue : ℕ → List Char → Prefix Json
+  topLevelBudget : ∀ xs → valuePrefix xs ≡ valueAtDepth maxNesting xs
+
+  emptyPrefix : ∀ budget → valueAtDepth budget [] ≡ failed missingDocument
+  leadingSpace : ∀ budget c xs → whitespace c ≡ true → valueAtDepth budget (c ∷ xs) ≡ valueAtDepth budget xs
+  unexpectedStart : ∀ budget c xs → (whitespace c ∨ (decimalDigit c ∨ any (primCharEquality c) (toList "-tfn\"[{"))) ≡ false → valueAtDepth budget (c ∷ xs) ≡ failed (unexpected c valueStart)
+  truePrefix : ∀ budget xs → valueAtDepth budget ('t' ∷ xs) ≡ literalSuffix (jsonBool true) "true" (toList "rue") xs
+  falsePrefix : ∀ budget xs → valueAtDepth budget ('f' ∷ xs) ≡ literalSuffix (jsonBool false) "false" (toList "alse") xs
+  nullPrefix : ∀ budget xs → valueAtDepth budget ('n' ∷ xs) ≡ literalSuffix jsonNull "null" (toList "ull") xs
+  numberValue : ∀ budget c xs s rest → (decimalDigit c ∨ primCharEquality c '-') ≡ true → numberPrefix (c ∷ xs) ≡ consumed s rest → valueAtDepth budget (c ∷ xs) ≡ consumed (jsonNumber s) rest
+  numberValueError : ∀ budget c xs e → (decimalDigit c ∨ primCharEquality c '-') ≡ true → numberPrefix (c ∷ xs) ≡ failed e → valueAtDepth budget (c ∷ xs) ≡ failed e
+  stringValue : ∀ budget xs s rest → stringBody xs ≡ consumed s rest → valueAtDepth budget ('"' ∷ xs) ≡ consumed (jsonText s) rest
+  stringValueError : ∀ budget xs e → stringBody xs ≡ failed e → valueAtDepth budget ('"' ∷ xs) ≡ failed e
+  arrayValue : ∀ budget xs vs rest → arrayItems budget true xs ≡ consumed vs rest → valueAtDepth (suc budget) ('[' ∷ xs) ≡ consumed (jsonArray vs) rest
+  arrayValueError : ∀ budget xs e → arrayItems budget true xs ≡ failed e → valueAtDepth (suc budget) ('[' ∷ xs) ≡ failed e
+  objectValue : ∀ budget xs fields rest → objectItems budget true xs ≡ consumed fields rest → valueAtDepth (suc budget) ('{' ∷ xs) ≡ consumed (jsonObject (resolveFields fields)) rest
+  objectValueError : ∀ budget xs e → objectItems budget true xs ≡ failed e → valueAtDepth (suc budget) ('{' ∷ xs) ≡ failed e
+  arrayAtDepthLimit : ∀ xs → valueAtDepth zero ('[' ∷ xs) ≡ failed (unexpected '[' exceededDepth)
+  objectAtDepthLimit : ∀ xs → valueAtDepth zero ('{' ∷ xs) ≡ failed (unexpected '{' exceededDepth)
+
+  arrayItemsEOF : ∀ budget empty xs → skipWhitespace xs ≡ [] → arrayItems budget empty xs ≡ failed incompleteDocument
+  arrayEmpty : ∀ budget xs rest → skipWhitespace xs ≡ (']' ∷ rest) → arrayItems budget true xs ≡ consumed [] rest
+  arrayItem : ∀ budget empty xs c cs v mid vs rest → skipWhitespace xs ≡ (c ∷ cs) → (empty ∧ primCharEquality c ']') ≡ false → valueAtDepth budget (c ∷ cs) ≡ consumed v mid → arrayTail budget mid ≡ consumed vs rest → arrayItems budget empty xs ≡ consumed (v ∷ vs) rest
+  arrayItemError : ∀ budget empty xs c cs e → skipWhitespace xs ≡ (c ∷ cs) → (empty ∧ primCharEquality c ']') ≡ false → valueAtDepth budget (c ∷ cs) ≡ failed e → arrayItems budget empty xs ≡ failed e
+  arrayAfterItemError : ∀ budget empty xs c cs v mid e → skipWhitespace xs ≡ (c ∷ cs) → (empty ∧ primCharEquality c ']') ≡ false → valueAtDepth budget (c ∷ cs) ≡ consumed v mid → arrayTail budget mid ≡ failed e → arrayItems budget empty xs ≡ failed e
+  arrayTailEOF : ∀ budget xs → skipWhitespace xs ≡ [] → arrayTail budget xs ≡ failed incompleteDocument
+  arrayTailClose : ∀ budget xs rest → skipWhitespace xs ≡ (']' ∷ rest) → arrayTail budget xs ≡ consumed [] rest
+  arrayTailComma : ∀ budget xs rest → skipWhitespace xs ≡ (',' ∷ rest) → arrayTail budget xs ≡ arrayItems budget false rest
+  arrayTailUnexpected : ∀ budget xs c rest → skipWhitespace xs ≡ (c ∷ rest) → (primCharEquality c ']' ∨ primCharEquality c ',') ≡ false → arrayTail budget xs ≡ failed (unexpected c afterElement)
+
+  objectItemsEOF : ∀ budget empty xs → skipWhitespace xs ≡ [] → objectItems budget empty xs ≡ failed incompleteDocument
+  objectEmpty : ∀ budget xs rest → skipWhitespace xs ≡ ('}' ∷ rest) → objectItems budget true xs ≡ consumed [] rest
+  objectItem : ∀ budget empty xs c cs entry mid fields rest → skipWhitespace xs ≡ (c ∷ cs) → (empty ∧ primCharEquality c '}') ≡ false → memberPrefix budget (c ∷ cs) ≡ consumed entry mid → objectTail budget mid ≡ consumed fields rest → objectItems budget empty xs ≡ consumed (entry ∷ fields) rest
+  objectItemError : ∀ budget empty xs c cs e → skipWhitespace xs ≡ (c ∷ cs) → (empty ∧ primCharEquality c '}') ≡ false → memberPrefix budget (c ∷ cs) ≡ failed e → objectItems budget empty xs ≡ failed e
+  objectAfterItemError : ∀ budget empty xs c cs entry mid e → skipWhitespace xs ≡ (c ∷ cs) → (empty ∧ primCharEquality c '}') ≡ false → memberPrefix budget (c ∷ cs) ≡ consumed entry mid → objectTail budget mid ≡ failed e → objectItems budget empty xs ≡ failed e
+  objectTailEOF : ∀ budget xs → skipWhitespace xs ≡ [] → objectTail budget xs ≡ failed incompleteDocument
+  objectTailClose : ∀ budget xs rest → skipWhitespace xs ≡ ('}' ∷ rest) → objectTail budget xs ≡ consumed [] rest
+  objectTailComma : ∀ budget xs rest → skipWhitespace xs ≡ (',' ∷ rest) → objectTail budget xs ≡ objectItems budget false rest
+  objectTailUnexpected : ∀ budget xs c rest → skipWhitespace xs ≡ (c ∷ rest) → (primCharEquality c '}' ∨ primCharEquality c ',') ≡ false → objectTail budget xs ≡ failed (unexpected c afterMember)
+
+  memberEOF : ∀ budget → memberPrefix budget [] ≡ failed incompleteDocument
+  memberBadStart : ∀ budget c xs → primCharEquality c '"' ≡ false → memberPrefix budget (c ∷ xs) ≡ failed (unexpected c objectKey)
+  memberWithValue : ∀ budget xs k mid v rest → stringBody xs ≡ consumed k mid → memberValue budget mid ≡ consumed v rest → memberPrefix budget ('"' ∷ xs) ≡ consumed (k , v) rest
+  memberKeyError : ∀ budget xs e → stringBody xs ≡ failed e → memberPrefix budget ('"' ∷ xs) ≡ failed e
+  memberValueError : ∀ budget xs k mid e → stringBody xs ≡ consumed k mid → memberValue budget mid ≡ failed e → memberPrefix budget ('"' ∷ xs) ≡ failed e
+  valueAfterColon : ∀ budget xs rest → skipWhitespace xs ≡ (':' ∷ rest) → valueAtDepth budget rest ≢ failed missingDocument → memberValue budget xs ≡ valueAtDepth budget rest
+  valueEOF : ∀ budget xs → skipWhitespace xs ≡ [] → memberValue budget xs ≡ failed incompleteDocument
+  valueAfterColonEOF : ∀ budget xs rest → skipWhitespace xs ≡ (':' ∷ rest) → valueAtDepth budget rest ≡ failed missingDocument → memberValue budget xs ≡ failed incompleteDocument
+  memberMissingColon : ∀ budget xs c rest → skipWhitespace xs ≡ (c ∷ rest) → primCharEquality c ':' ≡ false → memberValue budget xs ≡ failed (unexpected c afterKey)
+
+  firstDocument : List Char → Document
+  firstDocumentFound : ∀ xs v rest → valuePrefix xs ≡ consumed v rest → firstDocument xs ≡ parsed v
+  firstDocumentFault : ∀ xs e → valuePrefix xs ≡ failed e → firstDocument xs ≡ rejected (faultText e)
+  readDocument : String → Document
+  readDocumentLaw : ∀ s → readDocument s ≡ firstDocument (toList s)
+
+  strictDocument : List Char → Document
+  strictDocumentFound : ∀ xs v rest → valuePrefix xs ≡ consumed v rest → skipWhitespace rest ≡ [] → strictDocument xs ≡ parsed v
+  strictDocumentTrailing : ∀ xs v rest c cs → valuePrefix xs ≡ consumed v rest → skipWhitespace rest ≡ (c ∷ cs) → strictDocument xs ≡ rejected (faultText (unexpected c afterDocument))
+  strictDocumentInvalid : ∀ xs c site → valuePrefix xs ≡ failed (unexpected c site) → strictDocument xs ≡ rejected (faultText (unexpected c site))
+  strictDocumentMissing : ∀ xs → valuePrefix xs ≡ failed missingDocument → strictDocument xs ≡ rejected "unexpected end of JSON input"
+  strictDocumentIncomplete : ∀ xs → valuePrefix xs ≡ failed incompleteDocument → strictDocument xs ≡ rejected "unexpected end of JSON input"
+
+record FrameScan : Set where
+  constructor frameScan
+  field
+    frames : List (List Char)
+    tooLong : Bool
+
+postulate
+  utf8Width : Char → ℕ
+  asciiWidth : ∀ c → (toℕ c <ᵇ 128) ≡ true → utf8Width c ≡ 1
+  twoByteWidth : ∀ c → ((127 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 2048)) ≡ true → utf8Width c ≡ 2
+  threeByteWidth : ∀ c → ((2047 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 65536)) ≡ true → utf8Width c ≡ 3
+  fourByteWidth : ∀ c → (65535 <ᵇ toℕ c) ≡ true → utf8Width c ≡ 4
+  byteCount : List Char → ℕ
+  noBytes : byteCount [] ≡ 0
+  moreBytes : ∀ c xs → byteCount (c ∷ xs) ≡ (utf8Width c + byteCount xs)
+  lineContent : List Char → List Char
+  noLineContent : lineContent [] ≡ []
+  stripFinalCR : ∀ xs → lineContent (xs ++ [ '\r' ]) ≡ xs
+  keepFinalChar : ∀ xs c → primCharEquality c '\r' ≡ false → lineContent (xs ++ [ c ]) ≡ (xs ++ [ c ])
+  frameLimit : ℕ
+  lineBufferCapacity : frameLimit ≡ 1048576
+  physicalLines : List Char → FrameScan
+  noPhysicalLines : physicalLines [] ≡ frameScan [] false
+  terminatedLine : ∀ xs ys ls capped → any (primCharEquality '\n') xs ≡ false → (byteCount xs <ᵇ frameLimit) ≡ true → physicalLines ys ≡ frameScan ls capped → physicalLines (xs ++ ('\n' ∷ ys)) ≡ frameScan (lineContent xs ∷ ls) capped
+  finalLine : ∀ c xs → any (primCharEquality '\n') (c ∷ xs) ≡ false → (byteCount (c ∷ xs) <ᵇ frameLimit) ≡ true → physicalLines (c ∷ xs) ≡ frameScan [ lineContent (c ∷ xs) ] false
+  oversizedLine : ∀ xs ys → any (primCharEquality '\n') xs ≡ false → (byteCount xs <ᵇ frameLimit) ≡ false → physicalLines (xs ++ ('\n' ∷ ys)) ≡ frameScan [] true
+  oversizedFinalLine : ∀ c xs → any (primCharEquality '\n') (c ∷ xs) ≡ false → (byteCount (c ∷ xs) <ᵇ frameLimit) ≡ false → physicalLines (c ∷ xs) ≡ frameScan [] true
+
+record DocumentSequence : Set where
+  constructor documentSequence
+  field
+    documents : List Json
+    interruption : Maybe String
+
+postulate
+  decodeLines : List (List Char) → DocumentSequence
+  decodeWithoutLines : decodeLines [] ≡ documentSequence [] nothing
+  decodeUntilFault : ∀ line more e → firstDocument line ≡ rejected e → decodeLines (line ∷ more) ≡ documentSequence [] (just e)
+  decodeNextLine : ∀ line more v vs e → firstDocument line ≡ parsed v → decodeLines more ≡ documentSequence vs e → decodeLines (line ∷ more) ≡ documentSequence (v ∷ vs) e
+
+postulate
+  readStream : String → StreamReply
+  streamReadComplete : ∀ s ls vs → physicalLines (toList s) ≡ frameScan ls false → decodeLines ls ≡ documentSequence vs nothing → readStream s ≡ streamReply 0 vs ""
+  streamReadMalformed : ∀ s ls capped vs e → physicalLines (toList s) ≡ frameScan ls capped → decodeLines ls ≡ documentSequence vs (just e) → readStream s ≡ streamReply 3 vs ("failed to form statements: " ++ˢ (e ++ˢ "\n"))
+  streamReadCapped : ∀ s ls vs → physicalLines (toList s) ≡ frameScan ls true → decodeLines ls ≡ documentSequence vs nothing → readStream s ≡ streamReply 3 vs "error reading multiline input: bufio.Scanner: token too long: %!s(MISSING)\n"
+
+  numberPrefixFixture : readDocument " \t\r\n1x" ≡ parsed (jsonNumber "1")
+  leadingZeroFixture : readDocument "[01]" ≡ rejected "invalid character '1' after array element"
+  failureAfterExponentFixture : readDocument "[1e+]" ≡ rejected "invalid character ']' in exponent of numeric literal"
+  nulFixture : readDocument (fromList [ primNatToChar 0 ]) ≡ rejected "invalid character '\\x00' looking for beginning of value"
+  decodedDuplicateFixture : ∀ fs → readDocument "{\"a\":{\"x\":1},\"a\":{\"y\":2},\"\\u0062\":0,\"b\":1}" ≡ parsed (jsonObject fs) → (matchingValues "a" fs ≡ (jsonObject (("y" , (jsonNumber "2")) ∷ []) ∷ [])) × (matchingValues "b" fs ≡ ((jsonNumber "1") ∷ []))
+  surrogateFixture : readDocument "[\"\\uD83D\\uDE00\",\"\\uD800\",\"\\uDC00\",\"\\uD800\\u0041\",\"a\\/b\"]" ≡ parsed (jsonArray ((jsonText (fromList [ primNatToChar 128512 ])) ∷ ((jsonText (fromList [ primNatToChar 65533 ])) ∷ ((jsonText (fromList [ primNatToChar 65533 ])) ∷ ((jsonText (fromList (primNatToChar 65533 ∷ [ 'A' ]))) ∷ [ (jsonText "a/b") ])))))
+  quotedCRLFFixture : readStream "\"a\r\n" ≡ streamReply 3 [] "failed to form statements: unexpected EOF\n"
+  strictTailFixture : strictDocument (toList "[[\"a\"],1][[\"b\"],2]") ≡ rejected "invalid character '[' after top-level value"
+  strictBlankFixture : strictDocument (toList " \r\t") ≡ rejected "unexpected end of JSON input"
+  oneValueOnLineFixture : readStream "true null\n" ≡ streamReply 0 ((jsonBool true) ∷ []) ""
+  blankLineStopsFixture : readStream "true\n\nnull\n" ≡ streamReply 3 ((jsonBool true) ∷ []) "failed to form statements: EOF\n"

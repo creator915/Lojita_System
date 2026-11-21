@@ -1,0 +1,19 @@
+module Gen.T1.NotationCheck where
+
+open import Agda.Builtin.Nat using (div-helper; mod-helper)
+open import Agda.Builtin.String using (primShowNat)
+open import Data.Bool using (Bool)
+open import Data.Char using (Char; toℕ; fromℕ)
+open import Data.List using (List; []; _∷_; [_]; _++_; any; map)
+open import Data.Nat using (ℕ; _<_)
+open import Data.String using (String; toList)
+open import Data.String.Properties using (_≟_)
+open import Relation.Binary.PropositionalEquality using (_≡_)
+open import Relation.Nullary.Decidable using (isYes)
+
+postulate
+  reserved : String → Bool
+  reserved-member : ∀ s words → reserved s ≡ any (λ w → isYes (s ≟ w)) words → Bool
+  character : ∀ c → fromℕ (toℕ c) ≡ c → Bool
+  division : ∀ n → div-helper 0 15 n 15 < 16 → mod-helper 0 15 n 15 < 16 → Bool
+  row : ∀ n parts → map (λ p → p ++ toList (primShowNat n)) parts ≡ [] → Bool

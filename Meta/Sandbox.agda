@@ -1,7 +1,7 @@
 {-# OPTIONS --guardedness #-}
 module Meta.Sandbox where
 
-open import Data.Bool.Base using (Bool; true; false; if_then_else_)
+open import Data.Bool.Base using (Bool; true; false; _∧_; if_then_else_)
 open import Data.List.Base using (List; []; _∷_; _++_; concatMap)
 open import Data.Maybe.Base using (Maybe; just; nothing)
 open import Data.Nat.Base using (ℕ; zero; suc)
@@ -18,8 +18,9 @@ open import Code.Encode using (encodeCode)
 open import Code.Parse using (decodeQ; parse)
 open import Code.Render using (render)
 open import Code.AgdaTool using (parentPath)
-open import Code.Protocol using (AgdaCheckReq; agdaCheck; DumpReq; dumpReq; DumpResult; dumped; dumpFailed)
+open import Code.Protocol using (AgdaCheckReq; checkRequest; narrowedSubspec; DumpReq; scopeRequest; DumpResult; dumped; dumpFailed)
 open import Code.Transport using (CheckResult; pass; fail)
+open import Code.HarnessCore using (NarrowingCertificate; certificate; showCertificate; subspecCertificates; unsafeCertificate)
 open import Meta.Boundary public
 
 private
@@ -82,26 +83,54 @@ withWhitelistView repo scratch ancestors use = withPrivateTemp scratch λ tmp �
   sealed ← copyAncestors repo tmp 0 ancestors
   use ((tmp / "context") ∷ "/usr/share/agda-stdlib" ∷ sealed)
 
+logCertificate : String → String → NarrowingCertificate → IO ⊤
+logCertificate path mod (certificate k w c d) = appendCertificate path mod k w c d
+
+recordSubspecRejection : String → Code → String → String → IO CheckResult
+recordSubspecRejection path c legacy detail = do
+  appendNarrowingEvent path legacy mod detail
+  logAll (subspecCertificates c)
+  return (fail detail)
+  where
+    mod = intersperse "." (full (modName c))
+    logAll : List NarrowingCertificate → IO ⊤
+    logAll [] = return tt
+    logAll (x ∷ xs) = logCertificate path mod x >>= λ _ → logAll xs
+
+rejectModulePaths : ∀ {A : Set} → String → ModulePath → List ModulePath → IO A
+rejectModulePaths log path imps with firstUnsafePath (path ∷ imps)
+... | nothing = failIO ("sandbox: forbidden module name or import in " ++ˢ intersperse "." path)
+... | just bad = logCertificate log (intersperse "." path) cert >>= λ _ → failIO detail
+  where
+    cert = unsafeCertificate (intersperse "." bad)
+    detail = "sandbox: forbidden module name or import in " ++ˢ intersperse "." path ++ˢ "\n" ++ˢ showCertificate cert
+
 private
   Source = ModulePath × String
-
-  reject : ∀ {A : Set} → ModulePath → IO A
-  reject path = failIO ("sandbox: forbidden module name or import in " ++ˢ intersperse "." path)
 
   -- Inspect all input before writing any filename or invoking either tool.
   -- Parsing the rendered source also checks raw pragma and presentation text
   -- in constructed ASTs, using the exact bytes that the tool will receive.
-  prepareSource : String → IO Source
-  prepareSource src = inspectSource src >>= λ where
+  prepareSource : String → String → IO Source
+  prepareSource log src = inspectSource src >>= λ where
     (just (path ∷ imports)) → if checkModulePaths false path imports
-      then return (path , src) else reject path
-    _ → failIO "sandbox: expected a named Agda module"
+      then return (path , src) else rejectModulePaths log path imports
+    _ → inspectSourceDiag src >>= λ diag →
+      failIO ("sandbox: expected a named Agda module — " ++ˢ diag)
 
   prepareCode : Code → IO Source
   prepareCode c = if checkObjectModuleSafe false c then
-    (prepareSource (render c) >>= λ { unit@(path , _) →
-      if eqList _==ˢ_ path (full (modName c)) then return unit else reject path })
-    else reject (full (modName c))
+    (let rendered = render c
+         mName = intersperse "." (full (modName c))
+     in inspectSource rendered >>= λ where
+       (just (path ∷ imports)) →
+         if checkModulePaths false path imports ∧ eqList _==ˢ_ path (full (modName c))
+           then return (path , rendered) else rejectModulePaths "" path imports
+       _ → inspectSourceDiag rendered >>= λ diag →
+         appendNarrowingEvent "" "roundtrip_reparse_fail" mName diag >>
+         failIO ("sandbox: expected a named Agda module — rendered AST of " ++ˢ mName
+                 ++ˢ " failed Agda re-parse (renderer narrowing gate; rewrite the offending literal/syntax shown below):\n" ++ˢ diag))
+    else rejectModulePaths "" (full (modName c)) (importPaths c)
 
   prepareAll : ∀ {A : Set} → (A → IO Source) → List A → IO (List Source)
   prepareAll f [] = return []
@@ -137,7 +166,9 @@ private
         (("AGDA_DIR=" ++ˢ config) ∷ bin ∷ flags ++ args ++ (("./" ++ˢ fileName path) ∷ [])) ""
 
 sandboxAgdaCheck : (repo scratch : String) → List String → AgdaCheckReq → IO CheckResult
-sandboxAgdaCheck repo scratch ancestors (agdaCheck c deps) = catchIO check λ e → return (fail e)
+sandboxAgdaCheck _ _ _ (checkRequest c _ (narrowedSubspec kind detail)) =
+  recordSubspecRejection "" c kind detail
+sandboxAgdaCheck repo scratch ancestors (checkRequest c deps _) = catchIO check λ e → return (fail e)
   where
   check : IO CheckResult
   check = do
@@ -147,21 +178,42 @@ sandboxAgdaCheck repo scratch ancestors (agdaCheck c deps) = catchIO check λ e 
       (procResult zero _ _) → return pass
       (procResult (suc _) out err) → return (fail (stripStdlibWarnings (out ++ˢ err)))
 
-sandboxDump : (dumpBin repo scratch : String) → List String → DumpReq → IO DumpResult
-sandboxDump dumpBin repo scratch ancestors (dumpReq src raw codes) = catchIO dump λ e → return (dumpFailed e)
+ScopeFrontend : Set
+ScopeFrontend = Bool → List String → String → IO String
+
+sandboxDumpUsing : (log repo scratch : String) → List String → ScopeFrontend → DumpReq → IO DumpResult
+sandboxDumpUsing log repo scratch ancestors frontend (scopeRequest src raw codes complete) = catchIO dump λ e → return (dumpFailed e)
   where
   dump : IO DumpResult
   dump = do
-    main ← prepareSource src
+    main ← prepareSource log src
     cs ← prepareAll prepareCode codes
-    ds ← prepareAll (λ pair → prepareSource (proj₂ pair)) raw
-    bin ← absolutePath dumpBin
-    runTool repo scratch ancestors bin [] main (cs ++ ds) >>= λ where
-      (procResult (suc _) out err) → return (dumpFailed (out ++ˢ err))
-      (procResult zero out _) → caseOutput (parse out) (proj₁ main)
+    ds ← prepareAll (λ pair → prepareSource log (proj₂ pair)) raw
+    withPrivateTemp scratch λ work → do
+      let local = work / "src"
+          context = work / "context"
+      mkdirP local
+      writeUTF8 (work / "object.agda-lib") "name: object-view\ninclude: src\n"
+      linkScopeContext repo context
+      sealed ← copyAncestors repo work 0 ancestors
+      writeSources local (cs ++ ds ++ (main ∷ []))
+      out ← frontend complete (local ∷ context ∷ "/usr/share/agda-stdlib" ∷ sealed) (local / fileName (proj₁ main))
+      caseOutput (parse out) (proj₁ main)
     where
     caseOutput : Maybe Code → ModulePath → IO DumpResult
     caseOutput nothing path = return (dumpFailed "sandbox: unsupported dump output")
     caseOutput (just c) path = if eqList _==ˢ_ (full (modName c)) path
-      then (if checkObjectModuleSafe false c then return (dumped c) else reject path)
-      else reject path
+      then (if checkObjectModuleSafe false c then return (dumped c) else rejectModulePaths log path (importPaths c))
+      else rejectModulePaths log path []
+
+sandboxDumpWithLog : (log dumpBin repo scratch : String) → List String → DumpReq → IO DumpResult
+sandboxDumpWithLog log dumpBin repo scratch ancestors req = absolutePath dumpBin >>= λ bin →
+  sandboxDumpUsing log repo scratch ancestors (request bin) req
+  where
+    request : String → ScopeFrontend
+    request bin complete dirs path = readProcessAt "" 120000 bin ((if complete then "--require-complete" ∷ [] else []) ++ concatMap (λ i → "-i" ∷ i ∷ []) dirs ++ (path ∷ [])) "" >>= λ where
+      (procResult zero out _) → return out
+      (procResult _ out err) → failIO (out ++ˢ err)
+
+sandboxDump : (dumpBin repo scratch : String) → List String → DumpReq → IO DumpResult
+sandboxDump = sandboxDumpWithLog ""

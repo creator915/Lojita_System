@@ -1,12 +1,14 @@
 module Code.SessionProtocol where
 
 open import Data.Bool using (Bool; true; false; if_then_else_)
-open import Data.List using (List; []; _∷_)
+open import Data.List using (List; []; _∷_; map; take)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
-open import Data.String using (String; lines; unlines)
+open import Data.Product using (proj₁)
+open import Data.String using (String; toList; fromList; lines; unlines; intersperse) renaming (_++_ to _++ˢ_)
+open import Code using (_==ˢ_)
 open import Code.SExpr
-open import Code.Submission using (extract; Blocks; resolveBlocks; getField; textField; uniqueFields; allowedFields)
+open import Code.Submission using (extract; Blocks; resolveBlocks; getField; textField; uniqueFields; allowedFields; unresolvedAtRefs; quotedAtRefs)
 
 data ExeMode : Set where
   cliMode reactiveMode : ExeMode
@@ -76,6 +78,38 @@ decodeSessionAction _ = nothing
 parseSessionAction : String → Maybe SessionAction
 parseSessionAction txt = let b = extract (lines txt) in
   parseSExpr (unlines (Blocks.envelope b)) >>= resolveBlocks (Blocks.sources b) >>= decodeSessionAction
+
+explainSessionActionFailure : String → String
+explainSessionActionFailure txt with txt ==ˢ ""
+... | true = "session-action: empty AI reply"
+... | false =
+  let b   = extract (lines txt)
+      env = unlines (Blocks.envelope b)
+  in if env ==ˢ "" then
+       "session-action: missing envelope or unclosed ```agda / ```sexp fence (ensure every ``` fence has a matching closing ``` line)"
+     else inspectEnv (parseSExpr env)
+  where
+    b = extract (lines txt)
+    env = unlines (Blocks.envelope b)
+    avail = intersperse ", " (map proj₁ (Blocks.sources b))
+    availNote = if avail ==ˢ "" then "(none attached or saved)" else avail
+    inspectResolved : SExpr → String
+    inspectResolved r with unresolvedAtRefs r | quotedAtRefs r
+    ... | u@(_ ∷ _) | _ =
+      "session-action: unresolved @block reference(s) " ++ˢ intersperse ", " u
+      ++ˢ " (available blocks: " ++ˢ availNote ++ˢ "; save draft via write_draft first or attach ```agda <name> fence)"
+    ... | [] | q@(_ ∷ _) =
+      "session-action: malformed field value (found quoted string " ++ˢ intersperse ", " q
+      ++ˢ " — write bare @name WITHOUT double quotes to reference a draft/fence block!)"
+    ... | [] | [] =
+      "session-action: envelope parsed as S-expression, but failed schema check (expected `(session-action (kind run-script|drive-tree|build-exe|finish) ...)` with unique valid fields; note `maybeLiftSrc` must be `nothing` or `(just \"(lift ...)\")`)"
+    inspectEnv : Maybe SExpr → String
+    inspectEnv nothing =
+      "session-action: top-level text outside ```agda fences is not a single valid S-expression (output ONLY the `(session-action ...)` S-expression without narrative prose!). Prefix seen:\n"
+      ++ˢ fromList (take 240 (toList env))
+    inspectEnv (just raw) with resolveBlocks (Blocks.sources b) raw
+    ... | nothing = "session-action: failed resolving @block references"
+    ... | just r  = inspectResolved r
 
 -- Ref configuration is data, never a shell command. Optional args precede the
 -- arguments of each request; timeoutMs bounds every batch invocation.

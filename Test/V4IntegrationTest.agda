@@ -154,7 +154,8 @@ private
                 (bindNode n _) → writeIORef slotRef n >> return (aiReply "bound" n)
                 (forkNode n)   → return (aiReply "" n)
                 (accept _)     → return (aiReply "accepted" "")
-                (propose _ _)  → readIORef slotRef >>= λ s →
+                (propose prompt true _) → failIO ("P0 unexpected retry:\n" ++ˢ prompt)
+                (propose _ false _) → readIORef slotRef >>= λ s →
                   if s ==ˢ "Gen.P0.Root" then return (aiReply parallelRootPlan s)
                   else if s ==ˢ "Gen.P0.Root.SubA" then runTimedSibling startA endA "Gen.P0.Root.SubA" "fa" 1
                   else if s ==ˢ "Gen.P0.Root.SubB" then runTimedSibling startB endB "Gen.P0.Root.SubB" "fb" 2
@@ -254,8 +255,10 @@ private
                 (bindNode n _) → writeIORef slotRef n >> return (aiReply "bound" n)
                 (forkNode n)   → return (aiReply "" n)
                 (accept _)     → return (aiReply "accepted" "")
-                (propose prompt _) → readIORef slotRef >>= λ s →
-                  if s ==ˢ "Gen.C0.Root" then
+                (propose prompt retry _) → readIORef slotRef >>= λ s →
+                  if retry ∧ not (s ==ˢ "Gen.C0.Root" ∧ contains "child contradiction" prompt) then
+                    failIO ("C0 unexpected retry:\n" ++ˢ prompt)
+                  else if s ==ˢ "Gen.C0.Root" then
                     return (aiReply (if contains "child contradiction" prompt then fixedPlan else firstPlan) s)
                   else if s ==ˢ "Gen.C0.Root.FastBad" then return (aiReply refuteFast s)
                   else if s ==ˢ "Gen.C0.Root.SlowUnused" then
@@ -360,7 +363,7 @@ private
                 (bindNode n _) → writeIORef slotRef n >> writeIORef turnsRef zero >> return (aiReply "bound" n)
                 (forkNode n)   → return (aiReply "" n)
                 (accept _)     → return (aiReply "accepted" "")
-                (propose prompt isRetry) → do
+                (propose prompt isRetry _) → do
                   s  ← readIORef slotRef
                   tc ← readIORef turnsRef
                   writeIORef turnsRef (suc tc)
@@ -624,7 +627,7 @@ main : IO ⊤
 main = do
   repo ← currentDirectory
   (mockCodex ∷ []) ← getArgs where _ → failIO "usage: V4IntegrationTest /path/to/mock-mcp-codex"
-  withPrivateTemp "/tmp" λ tmp → do
+  withPrivateTemp (repo / "tmp/v4-integration") λ tmp → do
     setEnv "V4_MCP_LOG" (tmp / "mcp-codex-flags.log")
     setEnv "CODEX_HOME" (tmp / "codex-home")
     testParallelSiblings repo tmp

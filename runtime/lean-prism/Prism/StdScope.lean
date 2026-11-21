@@ -1,4 +1,4 @@
-import Prism.MixfixDAG
+import Prism.Outcome
 
 set_option autoImplicit false
 set_option relaxedAutoImplicit false
@@ -8,22 +8,6 @@ set_option relaxedAutoImplicit false
 -/
 
 namespace Prism
-
-inductive SymKind : Type where
-  | defSym
-  | conSym
-  | typeSym
-  | projSym : Nat → SymKind   -- record projection with number of erased record type params
-  deriving Repr, BEq
-
-structure SymInfo : Type where
-  localName : String
-  canonPath : List String
-  kind      : SymKind
-  fixity    : FixLevel := defaultAgdaFixity
-  leanName  : String
-  conArity  : Nat := 0        -- number of visible constructor args (for pattern checking)
-  deriving Repr, BEq
 
 private def mkSym (loc : String) (canon : String) (k : SymKind) (lean : String)
     (fx : FixLevel := defaultAgdaFixity) (ar : Nat := 0) : SymInfo :=
@@ -70,6 +54,14 @@ def dataNatExports : List SymInfo :=
 
 def dataNatPropsExports : List SymInfo :=
   [ mkSym "_≟_"    "Data.Nat.Properties._≟_"    .defSym "AgdaMirror.agdaNatDecEq" (.related 4 .infixN)
+  , mkSym "≡ᵇ⇒≡"        "Data.Nat.Properties.≡ᵇ⇒≡"        .defSym "AgdaMirror.agdaNatEqbToEq"
+  , mkSym "+-identityʳ" "Data.Nat.Properties.+-identityʳ" .defSym "AgdaMirror.agdaAddIdentityR"
+  , mkSym "+-assoc"     "Data.Nat.Properties.+-assoc"     .defSym "AgdaMirror.agdaAddAssoc"
+  , mkSym "*-identityˡ" "Data.Nat.Properties.*-identityˡ" .defSym "AgdaMirror.agdaMulIdentityL"
+  , mkSym "*-identityʳ" "Data.Nat.Properties.*-identityʳ" .defSym "AgdaMirror.agdaMulIdentityR"
+  , mkSym "<ᵇ⇒<"        "Data.Nat.Properties.<ᵇ⇒<"        .defSym "AgdaMirror.agdaNatLtbToLt"
+  , mkSym "≤-trans"     "Data.Nat.Properties.≤-trans"     .defSym "AgdaMirror.agdaNatLeTrans"
+  , mkSym "<-irrefl"    "Data.Nat.Properties.<-irrefl"    .defSym "AgdaMirror.agdaNatLtIrrefl"
   , mkSym "_≤?_"   "Data.Nat.Properties._≤?_"   .defSym "AgdaMirror.agdaNatLeDec" (.related 4 .infixN)
   , mkSym "m≤n+m"  "Data.Nat.Properties.m≤n+m"  .defSym "AgdaMirror.agdaNatMLeNM" ]
 
@@ -179,6 +171,24 @@ def dataListAllExports : List SymInfo :=
   , mkSym "_∷_" "Data.List.Relation.Unary.All.All._∷_" .conSym  "AgdaMirror.AgdaAll.cons" (.related 5 .infixR) 2
   ]
 
+def dataPermutationExports (modName : String) : List SymInfo :=
+  let rel := modName ++ "._↭_"
+  [ mkSym "_↭_" rel .typeSym "AgdaMirror.AgdaPermutation" (.related 3 .infixN)
+  , mkSym "refl" (rel ++ ".refl") .conSym "AgdaMirror.AgdaPermutation.refl" .unrelated 0
+  , mkSym "prep" (rel ++ ".prep") .conSym "AgdaMirror.AgdaPermutation.prep" .unrelated 2
+  , mkSym "swap" (rel ++ ".swap") .conSym "AgdaMirror.AgdaPermutation.swap" .unrelated 3
+  , mkSym "trans" (rel ++ ".trans") .conSym "AgdaMirror.AgdaPermutation.trans" .unrelated 2
+  ]
+
+def dataListPropsExports : List SymInfo :=
+  [ mkSym "++-assoc"     "Data.List.Properties._.++-assoc"     .defSym "AgdaMirror.agdaAppendAssoc"
+  , mkSym "++-identityˡ" "Data.List.Properties._.++-identityˡ" .defSym "AgdaMirror.agdaAppendIdentityL"
+  , mkSym "++-identityʳ" "Data.List.Properties._.++-identityʳ" .defSym "AgdaMirror.agdaAppendIdentityR"
+  ]
+
+def builtinCharPropsExports : List SymInfo :=
+  [ mkSym "primCharToNatInjective" "Agda.Builtin.Char.Properties.primCharToNatInjective" .defSym "AgdaMirror.agdaCharToNatInjective" ]
+
 def builtinListExports : List SymInfo :=
   [ mkSym "List" "Agda.Builtin.List.List"     .typeSym "List"
   , mkSym "[]"   "Agda.Builtin.List.List.[]"  .conSym  "List.nil"  .unrelated 0
@@ -199,8 +209,16 @@ def dataMaybeExports : List SymInfo :=
   , mkSym "zipWith"    "Data.Maybe.Base.zipWith"          .defSym  "AgdaMirror.maybeZipWith"
   ]
 
+def builtinSigmaExports : List SymInfo :=
+  [ mkSym "Σ"   "Agda.Builtin.Sigma.Σ"     .typeSym "AgdaMirror.AgdaSigma"
+  , mkSym "_,_" "Agda.Builtin.Sigma._,_"   .conSym "AgdaMirror.AgdaSigma.mk" (.related 4 .infixR) 2
+  , mkSym "fst" "Agda.Builtin.Sigma.Σ.fst" (.projSym 2) "AgdaMirror.AgdaSigma.proj₁"
+  , mkSym "snd" "Agda.Builtin.Sigma.Σ.snd" (.projSym 2) "AgdaMirror.AgdaSigma.proj₂"
+  ]
+
 def dataProductExports : List SymInfo :=
   [ mkSym "Σ"     "Agda.Builtin.Sigma.Σ"     .typeSym "AgdaMirror.AgdaSigma"
+  , mkSym "∃"     "Data.Product.∃"           .typeSym "AgdaMirror.AgdaExists"
   , mkSym "_×_"   "Data.Product._×_"         .typeSym "AgdaMirror.AgdaProd"      (.related 2 .infixR)
   , mkSym "_,_"   "Agda.Builtin.Sigma._,_"   .conSym  "AgdaMirror.AgdaSigma.mk"  (.related 4 .infixR) 2
   , mkSym "proj₁" "Agda.Builtin.Sigma.Σ.fst" (.projSym 2) "AgdaMirror.AgdaSigma.proj₁"
@@ -215,6 +233,9 @@ def dataSumExports : List SymInfo :=
   , mkSym "inj₂"   "Data.Sum.Base._⊎_.inj₂"  .conSym  "AgdaMirror.AgdaSum.inj₂" .unrelated 1
   , mkSym "[_,_]"  "Data.Sum.Base.[_,_]"     .defSym  "AgdaMirror.agdaSumElim"
   , mkSym "[_,_]′" "Data.Sum.Base.[_,_]′"    .defSym  "AgdaMirror.agdaSumElim"
+  , mkSym "map"    "Data.Sum.Base.map"       .defSym  "AgdaMirror.agdaSumMap"
+  , mkSym "map₁"   "Data.Sum.Base.map₁"      .defSym  "AgdaMirror.agdaSumMap₁"
+  , mkSym "map₂"   "Data.Sum.Base.map₂"      .defSym  "AgdaMirror.agdaSumMap₂"
   ]
 
 def dataFinExports : List SymInfo :=
@@ -232,41 +253,65 @@ def dataCharExports : List SymInfo :=
   , mkSym "toℕ"              "Agda.Builtin.Char.primCharToNat"    .defSym  "AgdaMirror.agdaCharToNat"
   , mkSym "primCharToNat"    "Agda.Builtin.Char.primCharToNat"    .defSym  "AgdaMirror.agdaCharToNat"
   , mkSym "primNatToChar"    "Agda.Builtin.Char.primNatToChar"    .defSym  "AgdaMirror.agdaCharFromNat"
-  , mkSym "fromℕ"            "Data.Char.Base.fromℕ"               .defSym  "AgdaMirror.agdaCharFromNat"
-  , mkSym "isSpace"          "Data.Char.Base.isSpace"             .defSym  "AgdaMirror.agdaIsSpace"
-  , mkSym "isDigit"          "Data.Char.Base.isDigit"             .defSym  "AgdaMirror.agdaIsDigit"
-  , mkSym "isAlpha"          "Data.Char.Base.isAlpha"             .defSym  "AgdaMirror.agdaIsAlpha"
+  , mkSym "fromℕ"            "Agda.Builtin.Char.primNatToChar"    .defSym  "AgdaMirror.agdaCharFromNat"
+  , mkSym "isSpace"          "Agda.Builtin.Char.primIsSpace"      .defSym  "AgdaMirror.agdaIsSpace"
+  , mkSym "isPrint"          "Agda.Builtin.Char.primIsPrint"      .defSym  "AgdaMirror.agdaIsPrint"
+  , mkSym "isDigit"          "Agda.Builtin.Char.primIsDigit"      .defSym  "AgdaMirror.agdaIsDigit"
+  , mkSym "isAlpha"          "Agda.Builtin.Char.primIsAlpha"      .defSym  "AgdaMirror.agdaIsAlpha"
   , mkSym "_≟_"              "Data.Char.Properties._≟_"           .defSym  "AgdaMirror.agdaCharDecEq" (.related 4 .infixN)
   ]
 
 def dataCharPropsExports : List SymInfo :=
-  [ mkSym "_≟_" "Data.Char.Properties._≟_" .defSym "AgdaMirror.agdaCharDecEq" (.related 4 .infixN) ]
+  [ mkSym "_≟_" "Data.Char.Properties._≟_" .defSym "AgdaMirror.agdaCharDecEq" (.related 4 .infixN)
+  , mkSym "_==_" "Data.Char.Properties._==_" .defSym "AgdaMirror.agdaCharEqDecides" (.related 4 .infixN)
+  , mkSym "toℕ-injective" "Agda.Builtin.Char.Properties.primCharToNatInjective" .defSym "AgdaMirror.agdaCharToNatInjective"
+  ]
 
-def dataStringExports : List SymInfo :=
+def builtinStringExports : List SymInfo :=
   [ mkSym "String"             "Agda.Builtin.String.String"             .typeSym "String"
   , mkSym "primStringEquality" "Agda.Builtin.String.primStringEquality" .defSym  "AgdaMirror.agdaStrEq"
-  , mkSym "primShowString"     "Agda.Builtin.String.primShowString"     .defSym  "AgdaMirror.agdaShowString"
+  -- Agda and Lean escape control characters differently. Resolve the name for native Agda checking.
+  , mkSym "primShowString"     "Agda.Builtin.String.primShowString"     .defSym  ""
   , mkSym "primShowNat"        "Agda.Builtin.String.primShowNat"        .defSym  "AgdaMirror.agdaPrimShowNat"
-  , mkSym "show"               "Agda.Builtin.String.primShowString"     .defSym  "AgdaMirror.agdaShowString"
+  , mkSym "primStringToList"   "Agda.Builtin.String.primStringToList"   .defSym  "AgdaMirror.agdaToList"
+  , mkSym "primStringFromList" "Agda.Builtin.String.primStringFromList" .defSym  "AgdaMirror.agdaFromList"
+  , mkSym "primStringAppend"   "Agda.Builtin.String.primStringAppend"   .defSym  "AgdaMirror.agdaStrAppend"
+  ]
+
+def dataStringBaseExports : List SymInfo :=
+  [ mkSym "String"             "Agda.Builtin.String.String"             .typeSym "String"
+  , mkSym "show"               "Agda.Builtin.String.primShowString"     .defSym  ""
   , mkSym "_++_"               "Data.String.Base._++_"                  .defSym  "AgdaMirror.agdaStrAppend" (.related 5 .infixR)
   , mkSym "toList"             "Agda.Builtin.String.primStringToList"   .defSym  "AgdaMirror.agdaToList"
   , mkSym "fromList"           "Agda.Builtin.String.primStringFromList" .defSym  "AgdaMirror.agdaFromList"
   , mkSym "concat"             "Data.String.Base.concat"                .defSym  "AgdaMirror.agdaStrConcat"
   , mkSym "intersperse"        "Data.String.Base.intersperse"           .defSym  "AgdaMirror.agdaIntersperse"
   , mkSym "unlines"            "Data.String.Base.unlines"               .defSym  "AgdaMirror.agdaUnlines"
-  , mkSym "wordsBy"            "Data.String.wordsBy"                    .defSym  "AgdaMirror.agdaWordsBy"
+  ]
+
+def dataStringExports : List SymInfo := dataStringBaseExports ++
+  [ mkSym "wordsBy"            "Data.String.wordsBy"                    .defSym  "AgdaMirror.agdaWordsBy"
   , mkSym "words"              "Data.String.words"                      .defSym  "AgdaMirror.agdaWords"
   , mkSym "linesBy"            "Data.String.linesBy"                    .defSym  "AgdaMirror.agdaLinesByStr"
   , mkSym "lines"              "Data.String.lines"                      .defSym  "AgdaMirror.agdaLines"
   , mkSym "_≟_"                "Data.String.Properties._≟_"             .defSym  "AgdaMirror.agdaStrDecEq" (.related 4 .infixN)
   ]
 
+def builtinStringPropsExports : List SymInfo :=
+  [ mkSym "primStringToListInjective" "Agda.Builtin.String.Properties.primStringToListInjective" .defSym "AgdaMirror.agdaStrToListInjective"
+  , mkSym "primStringFromListInjective" "Agda.Builtin.String.Properties.primStringFromListInjective" .defSym "AgdaMirror.agdaStrFromListInjective"
+  ]
+
 def dataStringPropsExports : List SymInfo :=
-  [ mkSym "_≟_" "Data.String.Properties._≟_" .defSym "AgdaMirror.agdaStrDecEq" (.related 4 .infixN) ]
+  [ mkSym "_≟_" "Data.String.Properties._≟_" .defSym "AgdaMirror.agdaStrDecEq" (.related 4 .infixN)
+  , mkSym "_==_" "Data.String.Properties._==_" .defSym "AgdaMirror.agdaStrEqDecides" (.related 4 .infixN)
+  , mkSym "toList-injective" "Agda.Builtin.String.Properties.primStringToListInjective" .defSym "AgdaMirror.agdaStrToListInjective"
+  , mkSym "primStringFromListInjective" "Agda.Builtin.String.Properties.primStringFromListInjective" .defSym "AgdaMirror.agdaStrFromListInjective"
+  ]
 
 def dataUnitExports : List SymInfo :=
   [ mkSym "⊤"  "Agda.Builtin.Unit.⊤"    .typeSym "AgdaMirror.AgdaTop"
-  , mkSym "tt" "Agda.Builtin.Unit.⊤.tt" .conSym  "AgdaMirror.AgdaTop.tt" .unrelated 0
+  , mkSym "tt" "Agda.Builtin.Unit.tt"   .conSym  "AgdaMirror.AgdaTop.tt" .unrelated 0
   ]
 
 def dataPolyUnitExports : List SymInfo :=
@@ -281,10 +326,23 @@ def dataEmptyExports : List SymInfo :=
 
 def relNullaryExports : List SymInfo :=
   [ mkSym "Dec"  "Relation.Nullary.Dec"       .typeSym "AgdaMirror.AgdaDec"
-  , mkSym "yes"  "Relation.Nullary.Dec.yes"   .conSym  "AgdaMirror.AgdaDec.yes" .unrelated 1
-  , mkSym "no"   "Relation.Nullary.Dec.no"    .conSym  "AgdaMirror.AgdaDec.no"  .unrelated 1
+  , mkSym "yes"  "Relation.Nullary.yes"   .conSym  "AgdaMirror.AgdaDec.yes" .unrelated 1
+  , mkSym "no"   "Relation.Nullary.no"    .conSym  "AgdaMirror.AgdaDec.no"  .unrelated 1
   , mkSym "¬_"   "Relation.Nullary.¬_"        .typeSym "AgdaMirror.AgdaNeg"     (.related 3 .infixN)
-  , mkSym "does" "Relation.Nullary.Decidable.Core.does" .defSym "AgdaMirror.agdaDoes"
+  , mkSym "does" "Relation.Nullary.Dec.does" .defSym "AgdaMirror.agdaDoes"
+  ]
+
+def decidableCoreExports : List SymInfo :=
+  [ mkSym "isYes" "Relation.Nullary.Decidable.Core.isYes" .defSym "AgdaMirror.agdaIsYes"
+  , mkSym "⌊_⌋" "Relation.Nullary.Decidable.Core.⌊_⌋" .defSym "AgdaMirror.agdaIsYes"
+  , mkSym "isYes≗does" "Relation.Nullary.Decidable.Core.isYes≗does" .defSym "AgdaMirror.agdaIsYesDoes"
+  , mkSym "map′" "Relation.Nullary.Decidable.Core.map′" .defSym "AgdaMirror.agdaMapDec"
+  , mkSym "dec-true" "Relation.Nullary.Decidable.Core.dec-true" .defSym "AgdaMirror.agdaDecTrue"
+  , mkSym "dec-false" "Relation.Nullary.Decidable.Core.dec-false" .defSym "AgdaMirror.agdaDecFalse"
+  , mkSym "True" "Relation.Nullary.Decidable.Core.True" .defSym "AgdaMirror.agdaDecIsTrue"
+  , mkSym "False" "Relation.Nullary.Decidable.Core.False" .defSym "AgdaMirror.agdaDecIsFalse"
+  , mkSym "toWitness" "Relation.Nullary.Decidable.Core.toWitness" .defSym "AgdaMirror.agdaToWitness"
+  , mkSym "toWitnessFalse" "Relation.Nullary.Decidable.Core.toWitnessFalse" .defSym "AgdaMirror.agdaToWitnessFalse"
   ]
 
 def propEqExports : List SymInfo :=
@@ -294,7 +352,7 @@ def propEqExports : List SymInfo :=
   , mkSym "sym"   "Relation.Binary.PropositionalEquality.Core.sym"   .defSym "AgdaMirror.idSym"
   , mkSym "trans" "Relation.Binary.PropositionalEquality.Core.trans" .defSym "AgdaMirror.idTrans"
   , mkSym "cong"  "Relation.Binary.PropositionalEquality.Core.cong"  .defSym "AgdaMirror.idCong"
-  , mkSym "cong₂" "Relation.Binary.PropositionalEquality.cong₂"      .defSym "AgdaMirror.idCong2"
+  , mkSym "cong₂" "Relation.Binary.PropositionalEquality.Core.cong₂" .defSym "AgdaMirror.idCong2"
   , mkSym "subst" "Relation.Binary.PropositionalEquality.Core.subst" .defSym "AgdaMirror.idSubst"
   ]
 
@@ -304,6 +362,20 @@ def functionExports : List SymInfo :=
   , mkSym "_∘_"      "Function.Base._∘_"      .defSym "AgdaMirror.agdaComp" (.related 9 .infixR)
   , mkSym "_$_"      "Function.Base._$_"      .defSym "AgdaMirror.agdaApp"  (.related (-1) .infixR)
   , mkSym "case_of_" "Function.Base.case_of_" .defSym "(fun x f => f x)"    (.related 0 .infixN)
+  ]
+
+def tabooExports : List SymInfo :=
+  let ctor (agda lean : String) :=
+    mkSym agda ("Context.Taboo.SafeTaboo." ++ agda) .conSym ("AgdaMirror.Context.SafeTaboo." ++ lean) .unrelated 1
+  [ mkSym "SafeTaboo" "Context.Taboo.SafeTaboo" .typeSym "AgdaMirror.Context.SafeTaboo"
+  , ctor "taboo-⊥" "bottom"
+  , ctor "taboo-primStrRefl" "primStrRefl"
+  , ctor "taboo-primCharRefl" "primCharRefl"
+  , ctor "taboo-strRoundtrip" "strRoundtrip"
+  , ctor "taboo-listRoundtrip" "listRoundtrip"
+  , ctor "taboo-funExtBool" "funExtBool"
+  , ctor "taboo-wlpo" "wlpo"
+  , ctor "taboo-markov" "markov"
   ]
 
 def blueprintExports : List SymInfo :=
@@ -529,10 +601,10 @@ def ioExports : List SymInfo :=
   , mkSym "lift"           "IO.Base.IO.lift"          .conSym  "(fun x => x)" .unrelated 1
   , mkSym "putStr"         "IO.Finite.putStr"         .defSym  "AgdaMirror.agdaPutStr"
   , mkSym "putStrLn"       "IO.Finite.putStrLn"       .defSym  "AgdaMirror.agdaPutStrLn"
-  , mkSym "readFiniteFile" "IO.Finite.readFiniteFile" .defSym  "AgdaMirror.agdaReadFiniteFile"
-  , mkSym "pure"           "IO.Base.pure"             .defSym  "AgdaMirror.agdaIOPure"
-  , mkSym "_>>=_"          "IO.Base._>>=_"            .defSym  "AgdaMirror.agdaIOBind" (.related 1 .infixL)
-  , mkSym "_>>_"           "IO.Base._>>_"             .defSym  "AgdaMirror.agdaIOSeq"  (.related 1 .infixL)
+  , mkSym "readFiniteFile" "IO.Finite.readFile"        .defSym  "AgdaMirror.agdaReadFiniteFile"
+  , mkSym "pure"           "IO.Base.pure"              .defSym  "AgdaMirror.agdaIOPure"
+  , mkSym "_>>=_"          "IO.Base._._>>=_"           .defSym  "AgdaMirror.agdaIOBind" (.related 1 .infixL)
+  , mkSym "_>>_"           "IO.Base._._>>_"            .defSym  "AgdaMirror.agdaIOSeq"  (.related 1 .infixL)
   ]
 
 def primIOExports : List SymInfo :=
@@ -549,13 +621,19 @@ def primFiniteIOExports : List SymInfo :=
   ]
 
 def sysEnvExports : List SymInfo :=
-  [ mkSym "getArgs"   "System.Environment.getArgs"             .defSym "AgdaMirror.agdaGetArgs"
+  [ mkSym "getArgs"   "System.Environment.getArgs"   .defSym "AgdaMirror.agdaGetArgs"
+  , mkSym "lookupEnv" "System.Environment.lookupEnv" .defSym "AgdaMirror.agdaLookupEnv"
+  ]
+
+def primSysEnvExports : List SymInfo :=
+  [ mkSym "getArgs"   "System.Environment.Primitive.getArgs"   .defSym "AgdaMirror.agdaGetArgs"
   , mkSym "lookupEnv" "System.Environment.Primitive.lookupEnv" .defSym "AgdaMirror.agdaLookupEnv"
   ]
 
 def ffiSafeExports : List SymInfo :=
   [ mkSym "readStdin"           "OwnershipIO.FFI.readStdin"           .defSym "AgdaMirror.agdaReadStdin"
   , mkSym "exitFailure"         "OwnershipIO.FFI.exitFailure"         .defSym "AgdaMirror.agdaExitFailure0"
+  , mkSym "runPrismCatSelfChecks" "OwnershipIO.FFI.runPrismCatSelfChecks" .defSym "AgdaMirror.agdaRunPrismCatSelfChecks"
   , mkSym "enableLineBuffering" "OwnershipIO.FFI.enableLineBuffering" .defSym "AgdaMirror.agdaEnableLineBuffering"
   ]
 
@@ -1448,24 +1526,34 @@ def lookupStdModule (modPath : String) : Option (List SymInfo) :=
   | "Data.Bool.Properties"                     => some dataBoolPropsExports
   | "Agda.Builtin.List"                        => some builtinListExports
   | "Data.List" | "Data.List.Base"             => some dataListExports
+  | "Data.List.Properties"                     => some dataListPropsExports
   | "Data.List.Relation.Unary.Any"             => some dataListAnyExports
   | "Data.List.Relation.Unary.All"             => some dataListAllExports
+  | "Data.List.Relation.Binary.Permutation.Propositional"
+  | "Data.List.Relation.Binary.Permutation.Propositional.Core" => some (dataPermutationExports modPath)
   | "Agda.Builtin.Maybe" | "Data.Maybe" | "Data.Maybe.Base" => some dataMaybeExports
-  | "Agda.Builtin.Sigma" | "Data.Product"      => some dataProductExports
+  | "Agda.Builtin.Sigma"                       => some builtinSigmaExports
+  | "Data.Product"                             => some dataProductExports
   | "Data.Sum" | "Data.Sum.Base"               => some dataSumExports
   | "Data.Fin" | "Data.Fin.Base"               => some dataFinExports
   | "Agda.Builtin.Char" | "Data.Char" | "Data.Char.Base" => some dataCharExports
+  | "Agda.Builtin.Char.Properties"             => some builtinCharPropsExports
   | "Data.Char.Properties"                     => some dataCharPropsExports
-  | "Agda.Builtin.String" | "Data.String" | "Data.String.Base" => some dataStringExports
+  | "Agda.Builtin.String"                      => some builtinStringExports
+  | "Data.String.Base"                         => some dataStringBaseExports
+  | "Data.String"                              => some dataStringExports
+  | "Agda.Builtin.String.Properties"         => some builtinStringPropsExports
   | "Data.String.Properties"                   => some dataStringPropsExports
   | "Agda.Builtin.Unit" | "Data.Unit" | "Data.Unit.Base" => some dataUnitExports
   | "Data.Unit.Polymorphic" | "Data.Unit.Polymorphic.Base" => some dataPolyUnitExports
   | "Data.Empty"                               => some dataEmptyExports
+  | "Relation.Nullary.Decidable" | "Relation.Nullary.Decidable.Core" => some decidableCoreExports
   | "Relation.Nullary"                         => some relNullaryExports
   | "Agda.Builtin.Equality"
   | "Relation.Binary.PropositionalEquality"
   | "Relation.Binary.PropositionalEquality.Core" => some propEqExports
   | "Function" | "Function.Base"               => some functionExports
+  | "Context.Taboo"                            => some tabooExports
   | "Context.Blueprint"                        => some blueprintExports
   | "Context.PolyTransport"                    => some polyTransportExports
   | "Context.Terminal"                         => some terminalExports
@@ -1487,8 +1575,8 @@ def lookupStdModule (modPath : String) : Option (List SymInfo) :=
   | "IO"                                       => some ioExports
   | "Agda.Builtin.IO" | "IO.Primitive"         => some primIOExports
   | "IO.Primitive.Finite"                      => some primFiniteIOExports
-  | "System.Environment"
-  | "System.Environment.Primitive"             => some sysEnvExports
+  | "System.Environment"                       => some sysEnvExports
+  | "System.Environment.Primitive"             => some primSysEnvExports
   | "OwnershipIO.FFI"                          => some ffiSafeExports
   | "OwnershipIO.WorldRunner"                  => some worldRunnerExports
   | _                                          => none

@@ -1,0 +1,227 @@
+module Gen.T2.JsonInput.Grammar where
+
+open import Agda.Builtin.Char using (primCharEquality; primNatToChar)
+open import Agda.Builtin.String using (primStringEquality)
+open import Data.Bool using (Bool; false; true; _∧_; _∨_)
+open import Data.Char using (Char; toℕ)
+open import Data.List using (List; []; _∷_; [_]; _++_; any; take)
+open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Nat using (ℕ; zero; suc; _+_; _*_; _∸_; _<ᵇ_)
+open import Data.Product using (_×_; _,_)
+open import Data.String using (String; fromList; toList) renaming (_++_ to _++ˢ_)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_)
+
+data Expectation : Set where
+  valueStart : Expectation
+  inWord : String → Char → Expectation
+  objectKey : Expectation
+  afterKey : Expectation
+  afterMember : Expectation
+  afterElement : Expectation
+  integerDigit : Expectation
+  fractionalDigit : Expectation
+  exponentDigit : Expectation
+  insideString : Expectation
+  afterEscape : Expectation
+  unicodeDigit : Expectation
+  afterDocument : Expectation
+  exceededDepth : Expectation
+
+data Fault : Set where
+  missingDocument : Fault
+  incompleteDocument : Fault
+  unexpected : Char → Expectation → Fault
+
+data Prefix (A : Set) : Set where
+  consumed : A → List Char → Prefix A
+  failed : Fault → Prefix A
+
+record Comparison : Set where
+  constructor comparison
+  field
+    charRefl : (c : Char) → primCharEquality c c ≡ true
+    charReflects : (c d : Char) → primCharEquality c d ≡ true → c ≡ d
+    stringRefl : (s : String) → primStringEquality s s ≡ true
+    stringReflects : (s t : String) → primStringEquality s t ≡ true → s ≡ t
+
+record Layout : Set where
+  constructor layoutRules
+  field
+    isSpace : Char → Bool
+    spaceClass : (c : Char) → isSpace c ≡ (primCharEquality c ' ' ∨ (primCharEquality c '	' ∨ (primCharEquality c '\r' ∨ primCharEquality c '\n')))
+    trimSpace : List Char → List Char
+    trimEmpty : trimSpace [] ≡ []
+    trimHead : (c : Char) → (xs : List Char) → isSpace c ≡ true → trimSpace (c ∷ xs) ≡ trimSpace xs
+    keepHead : (c : Char) → (xs : List Char) → isSpace c ≡ false → trimSpace (c ∷ xs) ≡ (c ∷ xs)
+
+record Constructors (A : Set) : Set where
+  constructor constructors
+  field
+    nullValue : A
+    booleanValue : Bool → A
+    numericValue : String → A
+    textValue : String → A
+    objectValue : List (String × A) → A
+    arrayValue : List A → A
+
+postulate
+  decimalDigit : Char → Bool
+  hexadecimalDigit : Char → Maybe ℕ
+  hexPrefix : ℕ → ℕ → List Char → Prefix ℕ
+  isHighSurrogate : ℕ → Bool
+  isLowSurrogate : ℕ → Bool
+  utf16Escape : Comparison → ℕ → List Char → Prefix Char
+  escapePrefix : Comparison → List Char → Prefix Char
+  stringBody : Comparison → List Char → Prefix String
+  decimalRange : (c : _) → decimalDigit c ≡ ((47 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 58))
+  hexDecimal : (c : _) → (decimalDigit c ≡ true) → hexadecimalDigit c ≡ just (toℕ c ∸ 48)
+  hexUppercase : (c : _) → (((64 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 71)) ≡ true) → hexadecimalDigit c ≡ just (toℕ c ∸ 55)
+  hexLowercase : (c : _) → (((96 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 103)) ≡ true) → hexadecimalDigit c ≡ just (toℕ c ∸ 87)
+  nonHex : (c : _) → ((decimalDigit c ∨ (((64 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 71)) ∨ ((96 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 103)))) ≡ false) → hexadecimalDigit c ≡ nothing
+  hexComplete : (acc : _) → (xs : _) → hexPrefix 0 acc xs ≡ consumed acc xs
+  hexIncomplete : (n : _) → (acc : _) → hexPrefix (suc n) acc [] ≡ failed incompleteDocument
+  hexUnexpected : (n : _) → (acc : _) → (c : _) → (xs : _) → (hexadecimalDigit c ≡ nothing) → hexPrefix (suc n) acc (c ∷ xs) ≡ failed (unexpected c unicodeDigit)
+  hexNext : (n : _) → (acc : _) → (c : _) → (xs : _) → (d : _) → (hexadecimalDigit c ≡ just d) → hexPrefix (suc n) acc (c ∷ xs) ≡ hexPrefix n ((16 * acc) + d) xs
+  highRange : (n : _) → isHighSurrogate n ≡ ((55295 <ᵇ n) ∧ (n <ᵇ 56320))
+  lowRange : (n : _) → isLowSurrogate n ≡ ((56319 <ᵇ n) ∧ (n <ᵇ 57344))
+  ordinaryUnit : (eqs : Comparison) → (n : _) → (xs : _) → ((n <ᵇ 65536) ≡ true) → ((isHighSurrogate n ∨ isLowSurrogate n) ≡ false) → utf16Escape eqs n xs ≡ consumed (primNatToChar n) xs
+  isolatedLow : (eqs : Comparison) → (n : _) → (xs : _) → (isLowSurrogate n ≡ true) → utf16Escape eqs n xs ≡ consumed (primNatToChar 65533) xs
+  noSecondUnit : (eqs : Comparison) → (n : _) → (xs : _) → (isHighSurrogate n ≡ true) → (take 2 xs ≢ ('\\' ∷ ('u' ∷ []))) → utf16Escape eqs n xs ≡ consumed (primNatToChar 65533) xs
+  malformedSecondUnit : (eqs : Comparison) → (n : _) → (xs : _) → (fault : _) → (isHighSurrogate n ≡ true) → (hexPrefix 4 0 xs ≡ failed fault) → utf16Escape eqs n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar 65533) ('\\' ∷ ('u' ∷ xs))
+  unmatchedSecondUnit : (eqs : Comparison) → (n : _) → (m : _) → (xs : _) → (rest : _) → (isHighSurrogate n ≡ true) → (hexPrefix 4 0 xs ≡ consumed m rest) → (isLowSurrogate m ≡ false) → utf16Escape eqs n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar 65533) ('\\' ∷ ('u' ∷ xs))
+  pairedUnits : (eqs : Comparison) → (n : _) → (m : _) → (xs : _) → (rest : _) → (isHighSurrogate n ≡ true) → (hexPrefix 4 0 xs ≡ consumed m rest) → (isLowSurrogate m ≡ true) → utf16Escape eqs n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar (65536 + ((1024 * (n ∸ 55296)) + (m ∸ 56320)))) rest
+  absentEscape : (eqs : Comparison) → escapePrefix eqs [] ≡ failed incompleteDocument
+  quoteEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('\"' ∷ xs) ≡ consumed '\"' xs
+  slashEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('/' ∷ xs) ≡ consumed '/' xs
+  backslashEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('\\' ∷ xs) ≡ consumed '\\' xs
+  backspaceEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('b' ∷ xs) ≡ consumed (primNatToChar 8) xs
+  formfeedEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('f' ∷ xs) ≡ consumed (primNatToChar 12) xs
+  newlineEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('n' ∷ xs) ≡ consumed '\n' xs
+  returnEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('r' ∷ xs) ≡ consumed '\r' xs
+  tabEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('t' ∷ xs) ≡ consumed '	' xs
+  escapedUnit : (eqs : Comparison) → (xs : _) → (n : _) → (rest : _) → (hexPrefix 4 0 xs ≡ consumed n rest) → escapePrefix eqs ('u' ∷ xs) ≡ utf16Escape eqs n rest
+  malformedUnit : (eqs : Comparison) → (xs : _) → (err : _) → (hexPrefix 4 0 xs ≡ failed err) → escapePrefix eqs ('u' ∷ xs) ≡ failed err
+  unknownEscape : (eqs : Comparison) → (c : _) → (xs : _) → (any (primCharEquality c) (toList "\"/\\bfnrtu") ≡ false) → escapePrefix eqs (c ∷ xs) ≡ failed (unexpected c afterEscape)
+  bodyUnclosed : (eqs : Comparison) → stringBody eqs [] ≡ failed incompleteDocument
+  bodyClosed : (eqs : Comparison) → (xs : _) → stringBody eqs ('\"' ∷ xs) ≡ consumed "" xs
+  bodyControl : (eqs : Comparison) → (c : _) → (xs : _) → ((toℕ c <ᵇ 32) ≡ true) → stringBody eqs (c ∷ xs) ≡ failed (unexpected c insideString)
+  bodyCharacter : (eqs : Comparison) → (c : _) → (xs : _) → (s : _) → (rest : _) → ((toℕ c <ᵇ 32) ≡ false) → (any (primCharEquality c) (toList "\"\\") ≡ false) → (stringBody eqs xs ≡ consumed s rest) → stringBody eqs (c ∷ xs) ≡ consumed (fromList ([ c ]) ++ˢ s) rest
+  bodyAfterCharacterError : (eqs : Comparison) → (c : _) → (xs : _) → (e : _) → ((toℕ c <ᵇ 32) ≡ false) → (any (primCharEquality c) (toList "\"\\") ≡ false) → (stringBody eqs xs ≡ failed e) → stringBody eqs (c ∷ xs) ≡ failed e
+  bodyEscape : (eqs : Comparison) → (xs : _) → (c : _) → (mid : _) → (s : _) → (rest : _) → (escapePrefix eqs xs ≡ consumed c mid) → (stringBody eqs mid ≡ consumed s rest) → stringBody eqs ('\\' ∷ xs) ≡ consumed (fromList ([ c ]) ++ˢ s) rest
+  bodyEscapeError : (eqs : Comparison) → (xs : _) → (e : _) → (escapePrefix eqs xs ≡ failed e) → stringBody eqs ('\\' ∷ xs) ≡ failed e
+  bodyAfterEscapeError : (eqs : Comparison) → (xs : _) → (c : _) → (mid : _) → (e : _) → (escapePrefix eqs xs ≡ consumed c mid) → (stringBody eqs mid ≡ failed e) → stringBody eqs ('\\' ∷ xs) ≡ failed e
+
+  digitSpan : List Char → List Char × List Char
+  requiredDigits : Expectation → List Char → Prefix (List Char)
+  unsignedInteger : Comparison → List Char → Prefix (List Char)
+  signedInteger : Comparison → List Char → Prefix (List Char)
+  fraction : Comparison → List Char → Prefix (List Char)
+  exponentBody : Comparison → List Char → Prefix (List Char)
+  exponent : Comparison → List Char → Prefix (List Char)
+  numberPrefix : Comparison → List Char → Prefix String
+  literalSuffix : {A : Set} → Comparison → A → String → List Char → List Char → Prefix A
+  matchingValues : {A : Set} → Comparison → String → List (String × A) → List A
+  resolveFields : {A : Set} → Comparison → List (String × A) → List (String × A)
+  noDigitInput : digitSpan [] ≡ ([] , [])
+  stopDigitSpan : (c : _) → (xs : _) → (decimalDigit c ≡ false) → digitSpan (c ∷ xs) ≡ ([] , (c ∷ xs))
+  extendDigitSpan : (c : _) → (xs : _) → (ds : _) → (rest : _) → (decimalDigit c ≡ true) → (digitSpan xs ≡ (ds , rest)) → digitSpan (c ∷ xs) ≡ ((c ∷ ds) , rest)
+  missingDigits : (site : _) → requiredDigits site [] ≡ failed incompleteDocument
+  rejectedDigits : (site : _) → (c : _) → (xs : _) → (decimalDigit c ≡ false) → requiredDigits site (c ∷ xs) ≡ failed (unexpected c site)
+  acceptedDigits : (site : _) → (c : _) → (xs : _) → (ds : _) → (rest : _) → (decimalDigit c ≡ true) → (digitSpan xs ≡ (ds , rest)) → requiredDigits site (c ∷ xs) ≡ consumed (c ∷ ds) rest
+  zeroInteger : (eqs : Comparison) → (xs : _) → unsignedInteger eqs ('0' ∷ xs) ≡ consumed ([ '0' ]) xs
+  otherInteger : (eqs : Comparison) → (xs : _) → (take 1 xs ≢ ([ '0' ])) → unsignedInteger eqs xs ≡ requiredDigits integerDigit xs
+  positiveInteger : (eqs : Comparison) → (xs : _) → (take 1 xs ≢ ([ '-' ])) → signedInteger eqs xs ≡ unsignedInteger eqs xs
+  negativeInteger : (eqs : Comparison) → (xs : _) → (ds : _) → (rest : _) → (unsignedInteger eqs xs ≡ consumed ds rest) → signedInteger eqs ('-' ∷ xs) ≡ consumed ('-' ∷ ds) rest
+  negativeIntegerError : (eqs : Comparison) → (xs : _) → (e : _) → (unsignedInteger eqs xs ≡ failed e) → signedInteger eqs ('-' ∷ xs) ≡ failed e
+  noFraction : (eqs : Comparison) → (xs : _) → (take 1 xs ≢ ([ '.' ])) → fraction eqs xs ≡ consumed [] xs
+  fractionWithDigits : (eqs : Comparison) → (xs : _) → (ds : _) → (rest : _) → (requiredDigits fractionalDigit xs ≡ consumed ds rest) → fraction eqs ('.' ∷ xs) ≡ consumed ('.' ∷ ds) rest
+  fractionWithoutDigits : (eqs : Comparison) → (xs : _) → (e : _) → (requiredDigits fractionalDigit xs ≡ failed e) → fraction eqs ('.' ∷ xs) ≡ failed e
+  exponentWithoutSign : (eqs : Comparison) → (xs : _) → (take 1 xs ≢ ([ '+' ])) → (take 1 xs ≢ ([ '-' ])) → exponentBody eqs xs ≡ requiredDigits exponentDigit xs
+  exponentWithSign : (eqs : Comparison) → (c : _) → (xs : _) → (ds : _) → (rest : _) → ((primCharEquality c '+' ∨ primCharEquality c '-') ≡ true) → (requiredDigits exponentDigit xs ≡ consumed ds rest) → exponentBody eqs (c ∷ xs) ≡ consumed (c ∷ ds) rest
+  exponentSignError : (eqs : Comparison) → (c : _) → (xs : _) → (e : _) → ((primCharEquality c '+' ∨ primCharEquality c '-') ≡ true) → (requiredDigits exponentDigit xs ≡ failed e) → exponentBody eqs (c ∷ xs) ≡ failed e
+  noExponent : (eqs : Comparison) → (xs : _) → (take 1 xs ≢ ([ 'e' ])) → (take 1 xs ≢ ([ 'E' ])) → exponent eqs xs ≡ consumed [] xs
+  exponentWithDigits : (eqs : Comparison) → (c : _) → (xs : _) → (ds : _) → (rest : _) → ((primCharEquality c 'e' ∨ primCharEquality c 'E') ≡ true) → (exponentBody eqs xs ≡ consumed ds rest) → exponent eqs (c ∷ xs) ≡ consumed (c ∷ ds) rest
+  exponentWithoutDigits : (eqs : Comparison) → (c : _) → (xs : _) → (e : _) → ((primCharEquality c 'e' ∨ primCharEquality c 'E') ≡ true) → (exponentBody eqs xs ≡ failed e) → exponent eqs (c ∷ xs) ≡ failed e
+  numberWithParts : (eqs : Comparison) → (xs : _) → (i : _) → (r : _) → (f : _) → (q : _) → (d : _) → (rest : _) → (signedInteger eqs xs ≡ consumed i r) → (fraction eqs r ≡ consumed f q) → (exponent eqs q ≡ consumed d rest) → numberPrefix eqs xs ≡ consumed (fromList (i ++ (f ++ d))) rest
+  numberIntegerError : (eqs : Comparison) → (xs : _) → (e : _) → (signedInteger eqs xs ≡ failed e) → numberPrefix eqs xs ≡ failed e
+  numberFractionError : (eqs : Comparison) → (xs : _) → (i : _) → (r : _) → (e : _) → (signedInteger eqs xs ≡ consumed i r) → (fraction eqs r ≡ failed e) → numberPrefix eqs xs ≡ failed e
+  numberExponentError : (eqs : Comparison) → (xs : _) → (i : _) → (r : _) → (f : _) → (q : _) → (e : _) → (signedInteger eqs xs ≡ consumed i r) → (fraction eqs r ≡ consumed f q) → (exponent eqs q ≡ failed e) → numberPrefix eqs xs ≡ failed e
+  wordComplete : {A : Set} → (eqs : Comparison) → (a : _) → (word : _) → (xs : _) → literalSuffix {A} eqs a word [] xs ≡ consumed a xs
+  wordIncomplete : {A : Set} → (eqs : Comparison) → (a : _) → (word : _) → (c : _) → (cs : _) → literalSuffix {A} eqs a word (c ∷ cs) [] ≡ failed incompleteDocument
+  wordMatched : {A : Set} → (eqs : Comparison) → (a : _) → (word : _) → (c : _) → (cs : _) → (xs : _) → literalSuffix {A} eqs a word (c ∷ cs) (c ∷ xs) ≡ literalSuffix {A} eqs a word cs xs
+  wordMismatch : {A : Set} → (eqs : Comparison) → (a : _) → (word : _) → (c : _) → (d : _) → (cs : _) → (xs : _) → (primCharEquality c d ≡ false) → literalSuffix {A} eqs a word (c ∷ cs) (d ∷ xs) ≡ failed (unexpected d (inWord word c))
+  noMatchingValues : {A : Set} → (eqs : Comparison) → (k : _) → matchingValues {A} eqs k [] ≡ []
+  nextMatchingValue : {A : Set} → (eqs : Comparison) → (k : _) → (v : _) → (fields : _) → matchingValues {A} eqs k ((k , v) ∷ fields) ≡ (matchingValues {A} eqs k fields ++ ([ v ]))
+  otherMatchingValue : {A : Set} → (eqs : Comparison) → (k : _) → (l : _) → (v : _) → (fields : _) → (primStringEquality k l ≡ false) → matchingValues {A} eqs k ((l , v) ∷ fields) ≡ matchingValues {A} eqs k fields
+  resolveEmpty : {A : Set} → (eqs : Comparison) → resolveFields {A} eqs [] ≡ []
+  resolveAbsent : {A : Set} → (eqs : Comparison) → (k : _) → (fields : _) → (matchingValues {A} eqs k fields ≡ []) → matchingValues {A} eqs k (resolveFields {A} eqs fields) ≡ []
+  resolveNewest : {A : Set} → (eqs : Comparison) → (k : _) → (v : _) → (older : _) → (fields : _) → (matchingValues {A} eqs k fields ≡ (v ∷ older)) → matchingValues {A} eqs k (resolveFields {A} eqs fields) ≡ ([ v ])
+
+  valueAtDepth : {A : Set} → Comparison → Layout → Constructors A → ℕ → List Char → Prefix A
+  arrayItems : {A : Set} → Comparison → Layout → Constructors A → ℕ → Bool → List Char → Prefix (List A)
+  arrayTail : {A : Set} → Comparison → Layout → Constructors A → ℕ → List Char → Prefix (List A)
+  objectItems : {A : Set} → Comparison → Layout → Constructors A → ℕ → Bool → List Char → Prefix (List (String × A))
+  objectTail : {A : Set} → Comparison → Layout → Constructors A → ℕ → List Char → Prefix (List (String × A))
+  memberPrefix : {A : Set} → Comparison → Layout → Constructors A → ℕ → List Char → Prefix (String × A)
+  memberValue : {A : Set} → Comparison → Layout → Constructors A → ℕ → List Char → Prefix A
+  emptyPrefix : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → valueAtDepth {A} eqs layout build budget [] ≡ failed missingDocument
+  leadingSpace : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (c : _) → (xs : _) → (Layout.isSpace layout c ≡ true) → valueAtDepth {A} eqs layout build budget (c ∷ xs) ≡ valueAtDepth {A} eqs layout build budget xs
+  unexpectedStart : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (c : _) → (xs : _) → ((Layout.isSpace layout c ∨ (decimalDigit c ∨ any (primCharEquality c) (toList "-tfn\"[{"))) ≡ false) → valueAtDepth {A} eqs layout build budget (c ∷ xs) ≡ failed (unexpected c valueStart)
+  truePrefix : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → valueAtDepth {A} eqs layout build budget ('t' ∷ xs) ≡ literalSuffix {A} eqs (Constructors.booleanValue build true) "true" (toList "rue") xs
+  falsePrefix : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → valueAtDepth {A} eqs layout build budget ('f' ∷ xs) ≡ literalSuffix {A} eqs (Constructors.booleanValue build false) "false" (toList "alse") xs
+  nullPrefix : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → valueAtDepth {A} eqs layout build budget ('n' ∷ xs) ≡ literalSuffix {A} eqs (Constructors.nullValue build) "null" (toList "ull") xs
+  numberValue : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (c : _) → (xs : _) → (s : _) → (rest : _) → ((decimalDigit c ∨ primCharEquality c '-') ≡ true) → (numberPrefix eqs (c ∷ xs) ≡ consumed s rest) → valueAtDepth {A} eqs layout build budget (c ∷ xs) ≡ consumed (Constructors.numericValue build s) rest
+  numberValueError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (c : _) → (xs : _) → (e : _) → ((decimalDigit c ∨ primCharEquality c '-') ≡ true) → (numberPrefix eqs (c ∷ xs) ≡ failed e) → valueAtDepth {A} eqs layout build budget (c ∷ xs) ≡ failed e
+  stringValue : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (s : _) → (rest : _) → (stringBody eqs xs ≡ consumed s rest) → valueAtDepth {A} eqs layout build budget ('\"' ∷ xs) ≡ consumed (Constructors.textValue build s) rest
+  stringValueError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (e : _) → (stringBody eqs xs ≡ failed e) → valueAtDepth {A} eqs layout build budget ('\"' ∷ xs) ≡ failed e
+  arrayValue : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (vs : _) → (rest : _) → (arrayItems {A} eqs layout build budget true xs ≡ consumed vs rest) → valueAtDepth {A} eqs layout build (suc budget) ('[' ∷ xs) ≡ consumed (Constructors.arrayValue build vs) rest
+  arrayValueError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (e : _) → (arrayItems {A} eqs layout build budget true xs ≡ failed e) → valueAtDepth {A} eqs layout build (suc budget) ('[' ∷ xs) ≡ failed e
+  objectValue : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (fields : _) → (rest : _) → (objectItems {A} eqs layout build budget true xs ≡ consumed fields rest) → valueAtDepth {A} eqs layout build (suc budget) ('{' ∷ xs) ≡ consumed (Constructors.objectValue build (resolveFields {A} eqs fields)) rest
+  objectValueError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (e : _) → (objectItems {A} eqs layout build budget true xs ≡ failed e) → valueAtDepth {A} eqs layout build (suc budget) ('{' ∷ xs) ≡ failed e
+  arrayAtDepthLimit : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (xs : _) → valueAtDepth {A} eqs layout build zero ('[' ∷ xs) ≡ failed (unexpected '[' exceededDepth)
+  objectAtDepthLimit : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (xs : _) → valueAtDepth {A} eqs layout build zero ('{' ∷ xs) ≡ failed (unexpected '{' exceededDepth)
+  arrayItemsEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (Layout.trimSpace layout xs ≡ []) → arrayItems {A} eqs layout build budget empty xs ≡ failed incompleteDocument
+  arrayEmpty : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (']' ∷ rest)) → arrayItems {A} eqs layout build budget true xs ≡ consumed [] rest
+  arrayItem : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (v : _) → (mid : _) → (vs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c ']') ≡ false) → (valueAtDepth {A} eqs layout build budget (c ∷ cs) ≡ consumed v mid) → (arrayTail {A} eqs layout build budget mid ≡ consumed vs rest) → arrayItems {A} eqs layout build budget empty xs ≡ consumed (v ∷ vs) rest
+  arrayItemError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (e : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c ']') ≡ false) → (valueAtDepth {A} eqs layout build budget (c ∷ cs) ≡ failed e) → arrayItems {A} eqs layout build budget empty xs ≡ failed e
+  arrayAfterItemError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (v : _) → (mid : _) → (e : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c ']') ≡ false) → (valueAtDepth {A} eqs layout build budget (c ∷ cs) ≡ consumed v mid) → (arrayTail {A} eqs layout build budget mid ≡ failed e) → arrayItems {A} eqs layout build budget empty xs ≡ failed e
+  arrayTailEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (Layout.trimSpace layout xs ≡ []) → arrayTail {A} eqs layout build budget xs ≡ failed incompleteDocument
+  arrayTailClose : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (']' ∷ rest)) → arrayTail {A} eqs layout build budget xs ≡ consumed [] rest
+  arrayTailComma : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (',' ∷ rest)) → arrayTail {A} eqs layout build budget xs ≡ arrayItems {A} eqs layout build budget false rest
+  arrayTailUnexpected : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (c : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (c ∷ rest)) → ((primCharEquality c ']' ∨ primCharEquality c ',') ≡ false) → arrayTail {A} eqs layout build budget xs ≡ failed (unexpected c afterElement)
+  objectItemsEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (Layout.trimSpace layout xs ≡ []) → objectItems {A} eqs layout build budget empty xs ≡ failed incompleteDocument
+  objectEmpty : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ ('}' ∷ rest)) → objectItems {A} eqs layout build budget true xs ≡ consumed [] rest
+  objectItem : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (entry : _) → (mid : _) → (fields : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c '}') ≡ false) → (memberPrefix {A} eqs layout build budget (c ∷ cs) ≡ consumed entry mid) → (objectTail {A} eqs layout build budget mid ≡ consumed fields rest) → objectItems {A} eqs layout build budget empty xs ≡ consumed (entry ∷ fields) rest
+  objectItemError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (e : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c '}') ≡ false) → (memberPrefix {A} eqs layout build budget (c ∷ cs) ≡ failed e) → objectItems {A} eqs layout build budget empty xs ≡ failed e
+  objectAfterItemError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (entry : _) → (mid : _) → (e : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c '}') ≡ false) → (memberPrefix {A} eqs layout build budget (c ∷ cs) ≡ consumed entry mid) → (objectTail {A} eqs layout build budget mid ≡ failed e) → objectItems {A} eqs layout build budget empty xs ≡ failed e
+  objectTailEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (Layout.trimSpace layout xs ≡ []) → objectTail {A} eqs layout build budget xs ≡ failed incompleteDocument
+  objectTailClose : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ ('}' ∷ rest)) → objectTail {A} eqs layout build budget xs ≡ consumed [] rest
+  objectTailComma : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (',' ∷ rest)) → objectTail {A} eqs layout build budget xs ≡ objectItems {A} eqs layout build budget false rest
+  objectTailUnexpected : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (c : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (c ∷ rest)) → ((primCharEquality c '}' ∨ primCharEquality c ',') ≡ false) → objectTail {A} eqs layout build budget xs ≡ failed (unexpected c afterMember)
+  memberEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → memberPrefix {A} eqs layout build budget [] ≡ failed incompleteDocument
+  memberBadStart : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (c : _) → (xs : _) → (primCharEquality c '\"' ≡ false) → memberPrefix {A} eqs layout build budget (c ∷ xs) ≡ failed (unexpected c objectKey)
+  memberWithValue : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (k : _) → (mid : _) → (v : _) → (rest : _) → (stringBody eqs xs ≡ consumed k mid) → (memberValue {A} eqs layout build budget mid ≡ consumed v rest) → memberPrefix {A} eqs layout build budget ('\"' ∷ xs) ≡ consumed (k , v) rest
+  memberKeyError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (e : _) → (stringBody eqs xs ≡ failed e) → memberPrefix {A} eqs layout build budget ('\"' ∷ xs) ≡ failed e
+  memberValueError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (k : _) → (mid : _) → (e : _) → (stringBody eqs xs ≡ consumed k mid) → (memberValue {A} eqs layout build budget mid ≡ failed e) → memberPrefix {A} eqs layout build budget ('\"' ∷ xs) ≡ failed e
+  valueAfterColon : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (':' ∷ rest)) → (valueAtDepth {A} eqs layout build budget rest ≢ failed missingDocument) → memberValue {A} eqs layout build budget xs ≡ valueAtDepth {A} eqs layout build budget rest
+  valueEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (Layout.trimSpace layout xs ≡ []) → memberValue {A} eqs layout build budget xs ≡ failed incompleteDocument
+  valueAfterColonEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (':' ∷ rest)) → (valueAtDepth {A} eqs layout build budget rest ≡ failed missingDocument) → memberValue {A} eqs layout build budget xs ≡ failed incompleteDocument
+  memberMissingColon : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (c : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (c ∷ rest)) → (primCharEquality c ':' ≡ false) → memberValue {A} eqs layout build budget xs ≡ failed (unexpected c afterKey)
+
+  leadingNumberExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → valueAtDepth eqs layout build 10000 (toList " 	\r\n1x") ≡ consumed (Constructors.numericValue build "1") ([ 'x' ])
+  leadingZeroExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → valueAtDepth eqs layout build 10000 (toList "[01]") ≡ failed (unexpected '1' afterElement)
+  exponentErrorExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → valueAtDepth eqs layout build 10000 (toList "[1e+]") ≡ failed (unexpected ']' exponentDigit)
+  surrogateExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → valueAtDepth eqs layout build 10000 (toList "[\"\\uD83D\\uDE00\",\"\\uD800\",\"\\uDC00\",\"\\uD800\\u0041\",\"a\\/b\"]") ≡ consumed (Constructors.arrayValue build (Constructors.textValue build (fromList ([ primNatToChar 128512 ])) ∷ (Constructors.textValue build (fromList ([ primNatToChar 65533 ])) ∷ (Constructors.textValue build (fromList ([ primNatToChar 65533 ])) ∷ (Constructors.textValue build (fromList (primNatToChar 65533 ∷ ([ 'A' ]))) ∷ ([ Constructors.textValue build "a/b" ])))))) []
+  nestedExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → valueAtDepth eqs layout build 10000 (toList "[[\"a\"],1][[\"b\"],2]") ≡ consumed (Constructors.arrayValue build (Constructors.arrayValue build ([ Constructors.textValue build "a" ]) ∷ ([ Constructors.numericValue build "1" ]))) (toList "[[\"b\"],2]")
+
+record RepeatedKeys {A : Set} (eqs : Comparison) (layout : Layout) (build : Constructors A) : Set where
+  constructor repeatedKeys
+  field
+    selectedFields : List (String × A)
+    repeatedKeyPrefix : valueAtDepth eqs layout build 10000 (toList "{\"a\":{\"x\":1},\"a\":{\"y\":2},\"\\u0062\":0,\"b\":1}") ≡ consumed (Constructors.objectValue build selectedFields) []
+    latestA : matchingValues eqs "a" selectedFields ≡ (Constructors.objectValue build (("y" , Constructors.numericValue build "2") ∷ []) ∷ [])
+    latestB : matchingValues eqs "b" selectedFields ≡ (Constructors.numericValue build "1" ∷ [])
+
+postulate
+  repeatedKeyExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → RepeatedKeys eqs layout build
+

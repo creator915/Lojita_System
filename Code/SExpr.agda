@@ -72,57 +72,40 @@ private
   symBody acc []       = reverse acc , []
   symBody acc (c ∷ cs) = if delim c then reverse acc , c ∷ cs else symBody (c ∷ acc) cs
 
-  -- 燃料 = 剩余字符数，保证终止
-  mutual
-    lex : ℕ → List Char → List Token
-    lex zero    _  = []
-    lex (suc n) [] = []
-    lex (suc n) (c ∷ cs) =
-      if isSpace c then lex n cs
-      else if c ==ᶜ '(' then lp ∷ lex n cs
-      else if c ==ᶜ ')' then rp ∷ lex n cs
-      else if c ==ᶜ '"' then quoted n (strBody [] cs)
-      else (let r = symBody [] (c ∷ cs)
-                body = proj₁ r
-            in (if allDigits body then tnum (toNum body) else tsym (fromList body)) ∷ lex n (proj₂ r))
-
-    quoted : ℕ → Maybe (List Char × List Char) → List Token
-    quoted n nothing = invalid ∷ []
-    quoted n (just (body , rest)) = tstr (fromList body) ∷ lex n rest
+  -- Fuel decreases once per consumed token or whitespace character.
+  -- Keep pending tokens in reverse order so native evaluation is tail-recursive.
+  lex : ℕ → List Char → List Token → List Token
+  lex zero _ acc = reverse acc
+  lex (suc n) [] acc = reverse acc
+  lex (suc n) ('(' ∷ cs) acc = lex n cs (lp ∷ acc)
+  lex (suc n) (')' ∷ cs) acc = lex n cs (rp ∷ acc)
+  lex (suc n) ('"' ∷ cs) acc with strBody [] cs
+  ... | nothing = invalid ∷ []
+  ... | just (body , rest) = lex n rest (tstr (fromList body) ∷ acc)
+  lex (suc n) (c ∷ cs) acc with isSpace c
+  ... | true = lex n cs acc
+  ... | false with symBody [] (c ∷ cs)
+  ...   | body , rest = lex n rest ((if allDigits body then tnum (toNum body) else tsym (fromList body)) ∷ acc)
 
 tokenize : String → List Token
-tokenize s = let cs = toList s in lex (length cs) cs
+tokenize s = let cs = toList s in lex (length cs) cs []
 
-------------------------------------------------------------------------
--- 语法：递归下降，燃料 = token 数
-------------------------------------------------------------------------
-
+-- Each open parenthesis saves the preceding siblings. The root must contain
+-- precisely one expression, and all lists must be closed.
 private
-  mutual
-    -- 读一个 SExpr，返回它和剩下的 token
-    one : ℕ → List Token → Maybe (SExpr × List Token)
-    one zero    _               = nothing
-    one (suc n) []              = nothing
-    one (suc n) (tsym s ∷ ts)   = just (sym s , ts)
-    one (suc n) (tstr s ∷ ts)   = just (str s , ts)
-    one (suc n) (tnum k ∷ ts)   = just (num k , ts)
-    one (suc n) (invalid ∷ ts) = nothing
-    one (suc n) (rp ∷ ts)       = nothing
-    one (suc n) (lp ∷ ts)       = many n ts []
-
-    -- 读到右括号为止
-    many : ℕ → List Token → List SExpr → Maybe (SExpr × List Token)
-    many zero    _         acc = nothing
-    many (suc n) []        acc = nothing
-    many (suc n) (rp ∷ ts) acc = just (list (reverse acc) , ts)
-    many (suc n) ts        acc with one n ts
-    ... | nothing         = nothing
-    ... | just (x , rest) = many n rest (x ∷ acc)
+  parseTokens : List Token → List SExpr → List (List SExpr) → Maybe SExpr
+  parseTokens [] (x ∷ []) [] = just x
+  parseTokens [] _ _ = nothing
+  parseTokens (lp ∷ ts) xs parents = parseTokens ts [] (xs ∷ parents)
+  parseTokens (rp ∷ ts) xs (p ∷ parents) = parseTokens ts (list (reverse xs) ∷ p) parents
+  parseTokens (rp ∷ ts) xs [] = nothing
+  parseTokens (tsym s ∷ ts) xs parents = parseTokens ts (sym s ∷ xs) parents
+  parseTokens (tstr s ∷ ts) xs parents = parseTokens ts (str s ∷ xs) parents
+  parseTokens (tnum n ∷ ts) xs parents = parseTokens ts (num n ∷ xs) parents
+  parseTokens (invalid ∷ ts) _ _ = nothing
 
 parseSExpr : String → Maybe SExpr
-parseSExpr s with (let ts = tokenize s in one (suc (length ts)) ts)
-... | just (x , []) = just x
-... | _             = nothing
+parseSExpr s = parseTokens (tokenize s) [] []
 
 ------------------------------------------------------------------------
 -- 打印（调试用，也是 s-expr 的 render）

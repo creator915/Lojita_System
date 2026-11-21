@@ -1,0 +1,40 @@
+module NativeEqualityEvidence where
+
+open import Data.Bool using (Bool; true; false)
+open import Data.Char using (Char)
+open import Data.String using (String)
+import Data.Char.Properties as CharProps
+import Data.String.Properties as StringProps
+open import Data.Empty using (⊥; ⊥-elim)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans)
+open import Relation.Nullary using (Dec; does; yes; no)
+
+false≢true : false ≡ true → ⊥
+false≢true ()
+
+agreement : {P : Set} (b : Bool) (p? : Dec P) →
+            (b ≡ true → P) → (P → b ≡ true) → b ≡ does p?
+agreement true  (yes p)   sound complete = refl
+agreement true  (no  notp) sound complete = ⊥-elim (notp (sound refl))
+agreement false (yes p)   sound complete = ⊥-elim (false≢true (complete p))
+agreement false (no  notp) sound complete = refl
+
+soundness : {P : Set} (b : Bool) (p? : Dec P) → b ≡ does p? → b ≡ true → P
+soundness b (yes p)    eq yes-b = p
+soundness b (no  notp) eq yes-b = ⊥-elim (false≢true (trans (sym eq) yes-b))
+
+completeness : {P : Set} (b : Bool) (p? : Dec P) → b ≡ does p? → P → b ≡ true
+completeness b (yes p)    eq witness = eq
+completeness b (no  notp) eq witness = ⊥-elim (notp witness)
+
+char-sound : (c d : Char) → does (c CharProps.≟ d) ≡ true → c ≡ d
+char-sound c d = soundness (does (c CharProps.≟ d)) (c CharProps.≟ d) refl
+
+char-complete : (c d : Char) → c ≡ d → does (c CharProps.≟ d) ≡ true
+char-complete c d = completeness (does (c CharProps.≟ d)) (c CharProps.≟ d) refl
+
+string-sound : (s t : String) → does (s StringProps.≟ t) ≡ true → s ≡ t
+string-sound s t = soundness (does (s StringProps.≟ t)) (s StringProps.≟ t) refl
+
+string-complete : (s t : String) → s ≡ t → does (s StringProps.≟ t) ≡ true
+string-complete s t = completeness (does (s StringProps.≟ t)) (s StringProps.≟ t) refl

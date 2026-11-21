@@ -1,0 +1,10 @@
+module DecimalCharCheck where
+
+open import Data.Char using (Char; fromℕ)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+
+decimalEscape : Char
+decimalEscape = '\27'
+
+escapeCodePoint : decimalEscape ≡ fromℕ 27
+escapeCodePoint = refl

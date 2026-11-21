@@ -1,0 +1,352 @@
+(submission (kind plan)
+  (why "按值树递归展开赋值，再按输入顺序构造并合并路径，保留数字原文、数组空位、对象覆盖和容器冲突语义。")
+  (main @main)
+  (moves
+    (move bot (unit "Gen.T0.Gron.mapResult"))
+    (move bot (unit "Gen.T0.Gron.insertMember"))))
+```agda main
+module Gen.T0.Gron where
+
+open import Data.Bool using (Bool)
+open import Data.Empty using (⊥-elim)
+open import Data.List using (List; []; _∷_; _++_; replicate)
+open import Data.Nat using (ℕ; suc)
+open import Data.Product using (_×_; _,_)
+open import Data.String using (String; _≟_)
+open import Data.Sum using (_⊎_; inj₁; inj₂; map; [_,_]′)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; trans)
+open import Relation.Nullary using (yes; no)
+
+data Atom : Set where
+  null    : Atom
+  boolean : Bool → Atom
+  number  : String → Atom
+  text    : String → Atom
+
+data Value : Set where
+  scalar : Atom → Value
+  array  : List Value → Value
+  object : List (String × Value) → Value
+
+data Segment : Set where
+  property : String → Segment
+  index    : ℕ → Segment
+
+data Payload : Set where
+  atom                   : Atom → Payload
+  arrayMark objectMark   : Payload
+
+record Statement : Set where
+  constructor assignment
+  field
+    path : List Segment
+    rhs  : Payload
+
+data Failure : Set where
+  noStatements arrayConflict objectConflict : Failure
+
+contents : Payload → Value
+contents (atom a) = scalar a
+contents arrayMark = array []
+contents objectMark = object []
+
+mutual
+  flatten : List Segment → Value → List Statement
+  flatten p (scalar a) = assignment p (atom a) ∷ []
+  flatten p (array xs) = assignment p arrayMark ∷ flattenFrom p 0 xs
+  flatten p (object xs) = assignment p objectMark ∷ flattenKeys p xs
+
+  flattenFrom : List Segment → ℕ → List Value → List Statement
+  flattenFrom p i [] = []
+  flattenFrom p i (v ∷ vs) =
+    flatten (p ++ (index i ∷ [])) v ++ flattenFrom p (suc i) vs
+
+  flattenKeys : List Segment → List (String × Value) → List Statement
+  flattenKeys p [] = []
+  flattenKeys p ((k , v) ∷ vs) =
+    flatten (p ++ (property k ∷ [])) v ++ flattenKeys p vs
+
+flattenScalar : ∀ p a →
+  flatten p (scalar a) ≡ assignment p (atom a) ∷ []
+flattenScalar p a = refl
+
+flattenArray : ∀ p xs →
+  flatten p (array xs) ≡ assignment p arrayMark ∷ flattenFrom p 0 xs
+flattenArray p xs = refl
+
+flattenObject : ∀ p xs →
+  flatten p (object xs) ≡ assignment p objectMark ∷ flattenKeys p xs
+flattenObject p xs = refl
+
+flattenFromEmpty : ∀ p i → flattenFrom p i [] ≡ []
+flattenFromEmpty p i = refl
+
+flattenFromNext : ∀ p i v vs →
+  flattenFrom p i (v ∷ vs) ≡
+    flatten (p ++ (index i ∷ [])) v ++ flattenFrom p (suc i) vs
+flattenFromNext p i v vs = refl
+
+flattenKeysEmpty : ∀ p → flattenKeys p [] ≡ []
+flattenKeysEmpty p = refl
+
+flattenKeysNext : ∀ p k v vs →
+  flattenKeys p ((k , v) ∷ vs) ≡
+    flatten (p ++ (property k ∷ [])) v ++ flattenKeys p vs
+flattenKeysNext p k v vs = refl
+
+graft : List Segment → Value → Value
+graft [] v = v
+graft (property k ∷ p) v = object ((k , graft p v) ∷ [])
+graft (index i ∷ p) v = array (replicate i (scalar null) ++ (graft p v ∷ []))
+
+graftRoot : ∀ v → graft [] v ≡ v
+graftRoot v = refl
+
+graftProperty : ∀ k p v →
+  graft (property k ∷ p) v ≡ object ((k , graft p v) ∷ [])
+graftProperty k p v = refl
+
+graftIndex : ∀ i p v →
+  graft (index i ∷ p) v ≡ array (replicate i (scalar null) ++ (graft p v ∷ []))
+graftIndex i p v = refl
+
+private
+  mapResult : {A B : Set} → (A → B) → Failure ⊎ A → Failure ⊎ B
+  mapResult f = map (λ e → e) f
+
+  insertMember : String → Value → (Value → Failure ⊎ Value) →
+    List (String × Value) → Failure ⊎ List (String × Value)
+  insertMember k y merge [] = inj₂ ((k , y) ∷ [])
+  insertMember k y merge ((j , x) ∷ xs) with j ≟ k
+  ... | yes _ = mapResult (λ v → (k , v) ∷ xs) (merge x)
+  ... | no _ = mapResult (λ zs → (j , x) ∷ zs) (insertMember k y merge xs)
+
+mutual
+  overlay : Value → Value → Failure ⊎ Value
+  overlay (scalar a) v = inj₂ v
+  overlay (array xs) (scalar a) = inj₁ arrayConflict
+  overlay (array xs) (array ys) = mapResult array (overlayCells xs ys)
+  overlay (array xs) (object ys) = inj₁ arrayConflict
+  overlay (object xs) (scalar a) = inj₁ objectConflict
+  overlay (object xs) (array ys) = inj₁ objectConflict
+  overlay (object xs) (object ys) = mapResult object (overlayMembers xs ys)
+
+  overlayCell : Value → Value → Failure ⊎ Value
+  overlayCell x (scalar null) = inj₂ x
+  overlayCell x y = overlay x y
+
+  overlayCells : List Value → List Value → Failure ⊎ List Value
+  overlayCells [] ys = inj₂ ys
+  overlayCells (x ∷ xs) [] = inj₂ (x ∷ xs)
+  overlayCells (x ∷ xs) (y ∷ ys) =
+    [ inj₁ , (λ v → mapResult (λ vs → v ∷ vs) (overlayCells xs ys)) ]′ (overlayCell x y)
+
+  overlayMembers : List (String × Value) → List (String × Value) → Failure ⊎ List (String × Value)
+  overlayMembers xs [] = inj₂ xs
+  overlayMembers xs ((k , y) ∷ []) = insertMember k y (λ x → overlay x y) xs
+  overlayMembers xs ((k , y) ∷ (z ∷ zs)) =
+    [ inj₁ , (λ ws → overlayMembers ws (z ∷ zs)) ]′ (insertMember k y (λ x → overlay x y) xs)
+
+replaceScalar : ∀ a v → overlay (scalar a) v ≡ inj₂ v
+replaceScalar a v = refl
+
+arrayWithScalar : ∀ xs a → overlay (array xs) (scalar a) ≡ inj₁ arrayConflict
+arrayWithScalar xs a = refl
+
+arrayWithObject : ∀ xs ys → overlay (array xs) (object ys) ≡ inj₁ arrayConflict
+arrayWithObject xs ys = refl
+
+objectWithScalar : ∀ xs a → overlay (object xs) (scalar a) ≡ inj₁ objectConflict
+objectWithScalar xs a = refl
+
+objectWithArray : ∀ xs ys → overlay (object xs) (array ys) ≡ inj₁ objectConflict
+objectWithArray xs ys = refl
+
+overlayArrays : ∀ xs ys zs →
+  overlayCells xs ys ≡ inj₂ zs →
+  overlay (array xs) (array ys) ≡ inj₂ (array zs)
+overlayArrays xs ys zs merged = cong (mapResult array) merged
+
+overlayArraysConflict : ∀ xs ys e →
+  overlayCells xs ys ≡ inj₁ e →
+  overlay (array xs) (array ys) ≡ inj₁ e
+overlayArraysConflict xs ys e merged = cong (mapResult array) merged
+
+overlayObjects : ∀ xs ys zs →
+  overlayMembers xs ys ≡ inj₂ zs →
+  overlay (object xs) (object ys) ≡ inj₂ (object zs)
+overlayObjects xs ys zs merged = cong (mapResult object) merged
+
+overlayObjectsConflict : ∀ xs ys e →
+  overlayMembers xs ys ≡ inj₁ e →
+  overlay (object xs) (object ys) ≡ inj₁ e
+overlayObjectsConflict xs ys e merged = cong (mapResult object) merged
+
+nullCell : ∀ v → overlayCell v (scalar null) ≡ inj₂ v
+nullCell v = refl
+
+assignedCell : ∀ x y → y ≢ scalar null → overlayCell x y ≡ overlay x y
+assignedCell x (scalar null) different = ⊥-elim (different refl)
+assignedCell x (scalar (boolean b)) different = refl
+assignedCell x (scalar (number n)) different = refl
+assignedCell x (scalar (text s)) different = refl
+assignedCell x (array ys) different = refl
+assignedCell x (object ys) different = refl
+
+cellsLeftEmpty : ∀ ys → overlayCells [] ys ≡ inj₂ ys
+cellsLeftEmpty ys = refl
+
+cellsRightEmpty : ∀ xs → overlayCells xs [] ≡ inj₂ xs
+cellsRightEmpty [] = refl
+cellsRightEmpty (x ∷ xs) = refl
+
+cellsNext : ∀ x xs y ys v vs →
+  overlayCell x y ≡ inj₂ v →
+  overlayCells xs ys ≡ inj₂ vs →
+  overlayCells (x ∷ xs) (y ∷ ys) ≡ inj₂ (v ∷ vs)
+cellsNext x xs y ys v vs headResult tailResult =
+  trans (cong ([ inj₁ , (λ w → mapResult (λ ws → w ∷ ws) (overlayCells xs ys)) ]′) headResult)
+    (cong (mapResult (λ ws → v ∷ ws)) tailResult)
+
+cellsHeadConflict : ∀ x xs y ys e →
+  overlayCell x y ≡ inj₁ e →
+  overlayCells (x ∷ xs) (y ∷ ys) ≡ inj₁ e
+cellsHeadConflict x xs y ys e headResult =
+  cong ([ inj₁ , (λ w → mapResult (λ ws → w ∷ ws) (overlayCells xs ys)) ]′) headResult
+
+cellsTailConflict : ∀ x xs y ys v e →
+  overlayCell x y ≡ inj₂ v →
+  overlayCells xs ys ≡ inj₁ e →
+  overlayCells (x ∷ xs) (y ∷ ys) ≡ inj₁ e
+cellsTailConflict x xs y ys v e headResult tailResult =
+  trans (cong ([ inj₁ , (λ w → mapResult (λ ws → w ∷ ws) (overlayCells xs ys)) ]′) headResult)
+    (cong (mapResult (λ ws → v ∷ ws)) tailResult)
+
+membersRightEmpty : ∀ xs → overlayMembers xs [] ≡ inj₂ xs
+membersRightEmpty xs = refl
+
+memberNew : ∀ k v →
+  overlayMembers [] ((k , v) ∷ []) ≡ inj₂ ((k , v) ∷ [])
+memberNew k v = refl
+
+memberSame : ∀ k x y xs v →
+  overlay x y ≡ inj₂ v →
+  overlayMembers ((k , x) ∷ xs) ((k , y) ∷ []) ≡ inj₂ ((k , v) ∷ xs)
+memberSame k x y xs v merged with k ≟ k
+... | yes _ = cong (mapResult (λ w → (k , w) ∷ xs)) merged
+... | no different = ⊥-elim (different refl)
+
+memberSameConflict : ∀ k x y xs e →
+  overlay x y ≡ inj₁ e →
+  overlayMembers ((k , x) ∷ xs) ((k , y) ∷ []) ≡ inj₁ e
+memberSameConflict k x y xs e merged with k ≟ k
+... | yes _ = cong (mapResult (λ w → (k , w) ∷ xs)) merged
+... | no different = ⊥-elim (different refl)
+
+memberOther : ∀ j k x y xs zs →
+  j ≢ k →
+  overlayMembers xs ((k , y) ∷ []) ≡ inj₂ zs →
+  overlayMembers ((j , x) ∷ xs) ((k , y) ∷ []) ≡ inj₂ ((j , x) ∷ zs)
+memberOther j k x y xs zs different merged with j ≟ k
+... | yes same = ⊥-elim (different same)
+... | no _ = cong (mapResult (λ ws → (j , x) ∷ ws)) merged
+
+memberOtherConflict : ∀ j k x y xs e →
+  j ≢ k →
+  overlayMembers xs ((k , y) ∷ []) ≡ inj₁ e →
+  overlayMembers ((j , x) ∷ xs) ((k , y) ∷ []) ≡ inj₁ e
+memberOtherConflict j k x y xs e different merged with j ≟ k
+... | yes same = ⊥-elim (different same)
+... | no _ = cong (mapResult (λ ws → (j , x) ∷ ws)) merged
+
+membersNext : ∀ xs k v ys zs →
+  overlayMembers xs ((k , v) ∷ []) ≡ inj₂ zs →
+  overlayMembers xs ((k , v) ∷ ys) ≡ overlayMembers zs ys
+membersNext xs k v [] zs merged = merged
+membersNext xs k v (y ∷ ys) zs merged =
+  cong ([ inj₁ , (λ ws → overlayMembers ws (y ∷ ys)) ]′) merged
+
+membersConflict : ∀ xs k v ys e →
+  overlayMembers xs ((k , v) ∷ []) ≡ inj₁ e →
+  overlayMembers xs ((k , v) ∷ ys) ≡ inj₁ e
+membersConflict xs k v [] e merged = merged
+membersConflict xs k v (y ∷ ys) e merged =
+  cong ([ inj₁ , (λ ws → overlayMembers ws (y ∷ ys)) ]′) merged
+
+resume : Value → List Statement → Failure ⊎ Value
+resume v [] = inj₂ v
+resume v (assignment p r ∷ ss) =
+  [ inj₁ , (λ w → resume w ss) ]′ (overlay v (graft p (contents r)))
+
+reconstruct : List Statement → Failure ⊎ Value
+reconstruct [] = inj₁ noStatements
+reconstruct (assignment p r ∷ ss) = resume (graft p (contents r)) ss
+
+resumeEmpty : ∀ v → resume v [] ≡ inj₂ v
+resumeEmpty v = refl
+
+resumeNext : ∀ v p r ss w →
+  overlay v (graft p (contents r)) ≡ inj₂ w →
+  resume v (assignment p r ∷ ss) ≡ resume w ss
+resumeNext v p r ss w merged = cong ([ inj₁ , (λ value → resume value ss) ]′) merged
+
+resumeConflict : ∀ v p r ss e →
+  overlay v (graft p (contents r)) ≡ inj₁ e →
+  resume v (assignment p r ∷ ss) ≡ inj₁ e
+resumeConflict v p r ss e merged = cong ([ inj₁ , (λ value → resume value ss) ]′) merged
+
+reconstructEmpty : reconstruct [] ≡ inj₁ noStatements
+reconstructEmpty = refl
+
+reconstructFirst : ∀ p r ss →
+  reconstruct (assignment p r ∷ ss) ≡ resume (graft p (contents r)) ss
+reconstructFirst p r ss = refl
+
+observedNumber : flatten [] (scalar (number "-94.00e+2")) ≡
+  assignment [] (atom (number "-94.00e+2")) ∷ []
+observedNumber = refl
+
+observedArray : flatten [] (array
+  (scalar (number "1") ∷ object (("a" , scalar (number "2")) ∷ []) ∷ scalar (number "3") ∷ [])) ≡
+  assignment [] arrayMark ∷
+  assignment (index 0 ∷ []) (atom (number "1")) ∷
+  assignment (index 1 ∷ []) objectMark ∷
+  assignment (index 1 ∷ property "a" ∷ []) (atom (number "2")) ∷
+  assignment (index 2 ∷ []) (atom (number "3")) ∷ []
+observedArray = refl
+
+observedRootNull : reconstruct (assignment [] (atom null) ∷ []) ≡ inj₂ (scalar null)
+observedRootNull = refl
+
+observedSparseReplacement : reconstruct
+  (assignment (index 1 ∷ []) (atom (number "7")) ∷
+   assignment (index 1 ∷ []) (atom (number "9")) ∷
+   assignment (index 3 ∷ []) (atom (number "11")) ∷ []) ≡
+  inj₂ (array (scalar null ∷ scalar (number "9") ∷ scalar null ∷ scalar (number "11") ∷ []))
+observedSparseReplacement = refl
+
+observedArrayNull : reconstruct
+  (assignment (index 1 ∷ []) (atom (number "3")) ∷
+   assignment (index 1 ∷ []) (atom null) ∷ []) ≡
+  inj₂ (array (scalar null ∷ scalar (number "3") ∷ []))
+observedArrayNull = refl
+
+observedObjectNull : reconstruct
+  (assignment (property "a" ∷ []) (atom (number "7")) ∷
+   assignment (property "a" ∷ []) (atom null) ∷ []) ≡
+  inj₂ (object (("a" , scalar null) ∷ []))
+observedObjectNull = refl
+
+observedArrayConflict : reconstruct
+  (assignment (property "a" ∷ []) arrayMark ∷
+   assignment (property "a" ∷ property "k" ∷ []) (atom (number "9")) ∷ []) ≡
+  inj₁ arrayConflict
+observedArrayConflict = refl
+
+observedObjectConflict : reconstruct
+  (assignment (property "a" ∷ property "k" ∷ []) (atom (number "9")) ∷
+   assignment (property "a" ∷ []) arrayMark ∷ []) ≡
+  inj₁ objectConflict
+observedObjectConflict = refl
+
+```

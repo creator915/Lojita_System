@@ -7,30 +7,65 @@
 --
 -- 每个名字输出两份：full（规范路径，身份）和 shown（在这个文件的作用域里怎么写它，只给 render 用）。
 --
--- 编译：ghc -O0 -package Agda Dump.hs -o dump      （Agda 2.6.3 的库）
+-- 编译：ghc -O2 -threaded -package Agda Dump.hs -o dump      （Agda 2.6.3 的库）
 -- 用法：./dump -i . -i /usr/share/agda-stdlib Foo.agda   > Foo.sexp
 --
 -- s-expr 的文法见 README_code.md §2。
 ------------------------------------------------------------------------
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE CApiFFI #-}
+{-# LANGUAGE InterruptibleFFI #-}
+{-# OPTIONS_GHC -Idump #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE PatternSynonyms #-}
 module Main where
 
+import qualified Control.Exception as E
 import Control.Monad
+import Control.Concurrent (myThreadId, throwTo, threadWaitRead)
+import Control.Monad.Except (catchError)
+import Data.Aeson (FromJSON(..), ToJSON(..), eitherDecodeStrict', encode, object, withObject, (.:), (.:?), (.!=), (.=))
+import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString.Lazy.Char8 as BL
+import Data.IORef
+import qualified Data.Map.Strict as Map
+import qualified Data.Strict.Maybe as Strict
+import qualified Data.Set as Set
+import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy.Builder as B
+import Foreign.C.Error (throwErrnoIfMinus1Retry)
+import Foreign.C.String (CString, withCString)
+import Foreign.C.Types (CInt(..))
+import Data.Time.Clock.POSIX (POSIXTime)
+import Data.Void (absurd)
 import Control.Monad.IO.Class
-import Data.List (intercalate, isPrefixOf, isSuffixOf)
+import Data.List (sortOn, intersperse, intercalate, isPrefixOf, isSuffixOf, nub)
 import Data.Maybe
 import qualified Data.Text as T
+import System.Directory (canonicalizePath, makeAbsolute, removeFile)
+import System.FilePath ((</>), addTrailingPathSeparator, takeDirectory)
+import qualified System.Posix.Files as Posix
+import System.Posix.IO (closeFd, fdToHandle, setFdOption, FdOption(NonBlockingRead))
+import System.Posix.Signals (installHandler, Handler(Catch), sigTERM)
+import System.Posix.Types (Fd(..), DeviceID, FileID, FileOffset)
 import System.Environment
 import System.Exit
 import System.IO
 import GHC.IO.Handle (hDuplicate, hDuplicateTo)
 
-import Agda.Main (runTCMPrettyErrors)
+import Agda.Interaction.Library (getPrimitiveLibDir)
+import qualified Agda.Interaction.Options.Lenses as Opt
+import qualified Agda.Syntax.Parser as Parser
+import qualified Agda.Syntax.Parser.Tokens as Tok
+import qualified Agda.Syntax.TopLevelModuleName as TLN
+import qualified Agda.TypeChecking.Monad as TC
+import Agda.TypeChecking.Errors (prettyError, getAllWarnings, tcWarningsToError)
+import Agda.TypeChecking.Warnings (WhichWarnings(ErrorWarnings))
 import Agda.Interaction.Options
-import Agda.Interaction.Imports (parseSource, Source(..), typeCheckMain, pattern ScopeCheck)
-import Agda.Interaction.FindFile (SourceFile(..))
-import Agda.Utils.FileName (absolute)
+import Agda.Interaction.Imports (parseSource, Source(..), typeCheckMain, crModuleInfo, readInterface, pattern ScopeCheck)
+import Agda.Interaction.FindFile (SourceFile(..), InterfaceFile, intFilePath, findFile, findInterfaceFile', checkModuleName)
+import Agda.Utils.FileName (absolute, filePath)
 import Agda.TypeChecking.Monad (TCM, TCEnv(..), localTC, withScope_, useTC, setTCLens, stCurrentModule, stScope)
 import Agda.TypeChecking.Monad.Options (setCommandLineOptions, setOptionsFromPragma)
 import Agda.Syntax.Translation.ConcreteToAbstract (concreteToAbstract_, TopLevel(..), TopLevelInfo(..), topLevelModuleName)
@@ -42,8 +77,9 @@ import qualified Agda.Syntax.Concrete.Name as C
 import Agda.Syntax.Common
 import qualified Agda.Syntax.Info as I
 import Agda.Syntax.Literal
+import qualified Agda.Syntax.Scope.Base as Scope
 import Agda.Syntax.Fixity
-import Agda.Syntax.Position (noRange)
+import Agda.Syntax.Position (noRange, mkRangeFile, rangeFile, rangeFileName)
 import Agda.Utils.Pretty (prettyShow, Pretty)
 import qualified Agda.Utils.List1 as List1
 
@@ -53,22 +89,24 @@ import qualified Agda.Utils.List1 as List1
 
 data S = L [S] | Sym String | Str String | Num Integer
 
-renderS :: S -> String
-renderS (Sym s) = s
-renderS (Num n) = show n
-renderS (Str s) = '"' : concatMap esc s ++ "\""
+renderS :: S -> B.Builder
+renderS (Sym s) = B.fromString s
+renderS (Num n) = B.fromString (show n)
+renderS (Str s) = "\"" <> B.fromString (concatMap esc s) <> "\""
   where esc '"'  = "\\\""
         esc '\\' = "\\\\"
         esc '\n' = "\\n"
         esc '\r' = "\\r"
         esc c    = [c]
-renderS (L xs) = "(" ++ unwords (map renderS xs) ++ ")"
+renderS (L xs) = "(" <> mconcat (intersperse " " (map renderS xs)) <> ")"
 
--- 顶层每条声明一行，方便人看
-renderTop :: S -> String
-renderTop (L (Sym "module" : nm : ps : ds)) =
-  "(module " ++ renderS nm ++ " " ++ renderS ps ++ "\n" ++ concatMap (\d -> "  " ++ renderS d ++ "\n") ds ++ ")"
-renderTop s = renderS s
+renderTop :: S -> T.Text
+renderTop = TL.toStrict . B.toLazyText . top
+  where
+    top (L (Sym "module" : nm : ps : ds)) =
+      "(module " <> renderS nm <> " " <> renderS ps <> "\n" <>
+      foldMap (\d -> "  " <> renderS d <> "\n") ds <> ")"
+    top s = renderS s
 
 sym :: String -> S
 sym = Sym
@@ -92,12 +130,35 @@ lastSeg s = case break (== '.') s of
   (a, [])    -> a
   (_, _ : r) -> lastSeg r
 
+-- Prefer the spelling already present on the abstract name. A qualified
+-- occurrence can use the local alias of its defining module, such as B.tint
+-- after "import Base as B". Validate the entire candidate set in this
+-- occurrence's scope before choosing either spelling.
+directSpelling :: Scope.ScopeInfo -> QName -> Set.Set QName -> Maybe C.QName
+directSpelling sc q expected =
+  let name = nameConcrete (qnameName q)
+      bare = C.QName name
+      resolves n = Set.fromList (map Scope.anameName (Scope.scopeLookup n sc)) == expected
+      scopes = Scope._scopeModules sc
+      enclosing = case Map.lookup (Scope._scopeCurrent sc) scopes of
+        Nothing -> []
+        Just s  -> s : mapMaybe (flip Map.lookup scopes) (Scope.scopeParents s)
+      ancestor m = mnameToList m `isPrefixOf` mnameToList (qnameModule q)
+      aliases s =
+        [C.QName n | (_, ns) <- Scope.scopeNameSpaces s, (n, ms) <- Map.toList (Scope.nsModules ns),
+                     any (ancestor . Scope.amodName) ms] ++
+        [n | (n, m) <- Map.toList (Scope.scopeImports s), ancestor m]
+  in if isNothing (lookup name (Scope._scopeLocals sc)) && resolves bare
+     then Just bare
+     else listToMaybe [n | s <- enclosing, alias <- aliases s, let n = C.qualify alias name, resolves n]
+
 -- 在当前作用域里这个名字怎么写。算出来的东西经过匿名模块（_）就不可信，退回最后一段。
 shownOfQ :: QName -> TCM String
 shownOfQ q
   | anonymousPath = return (lastSeg f)            -- where 块 / 匿名模块里的名字：就用最后一段
   | otherwise = do
-      c <- abstractToConcrete_ q
+      sc <- TC.getScope
+      c <- maybe (abstractToConcrete_ q) pure (directSpelling sc q (Set.singleton q))
       let s = prettyShow c
       return $ if null s || "._." `isInfixOf'` ("." ++ s ++ ".") then lastSeg f else s
   where
@@ -117,12 +178,26 @@ qnameS q = do
 ambS :: AmbiguousQName -> TCM S
 ambS a = do
   cur <- useTC stCurrentModule
-  let cands = List1.toList (unAmbQ a)
+  let cands = sortOn fullOfQ (List1.toList (unAmbQ a))
       here  = case cur of
         Just (m, _) -> filter (\q -> (fullOfM m ++ ".") `isPrefixOf` fullOfQ q) cands
         Nothing     -> []
       builtin = filter (\q -> "Agda.Builtin." `isPrefixOf` fullOfQ q) cands   -- 其次挑 builtin 的（[] 、_∷_ 这种）
-  qnameS (head (here ++ builtin ++ cands))
+  let primary = head (here ++ builtin ++ cands)
+      full = fullOfQ primary
+      alts = Set.toAscList (Set.delete full (Set.fromList (map fullOfQ cands)))
+  sc <- TC.getScope
+  -- Re-resolving the printed spelling must recover exactly the candidate
+  -- set at this occurrence. Agda's normal pretty printer may shorten All.[]
+  -- to [] even when that would introduce a new overload.
+  let expected = Set.fromList cands
+      resolves name = Set.fromList (map Scope.anameName (Scope.scopeLookup name sc)) == expected
+      spellings = Scope.inverseScopeLookupName' Scope.AmbiguousAnything primary sc
+  shown <- case maybe (filter resolves spellings) (:[]) (directSpelling sc primary expected) of
+    c : _ -> pure (prettyShow c)
+    [] -> shownOfQ primary
+  return $ if null alts && shown == lastSeg full then Str full
+           else L (sym "q" : Str full : Str shown : map Str alts)
 
 -- 定义处的局部名字（模块路径是上下文给的）
 localName :: QName -> String
@@ -492,7 +567,9 @@ declS fl = \case
           coind = case fmap rangedThing ind of Just CoInductive -> sym "coinductive"; _ -> sym "inductive"
           conS' = maybe (sym "_") (Str . localName) con
       return [L (sym "recdef" : modsS di : Str (localName q) : L (paramNames ps) : L [sym "recdir", coind, conS'] : fs)]
-  A.PatternSynDef q _ _     -> return [L [sym "unsupported", Str ("pattern synonym " ++ localName q)]]
+  A.PatternSynDef q args p -> do
+      pat <- patS (absurd <$> p)
+      return [L [sym "patsyn", Str (localName q), L (map (Str . bindNameS . unArg) args), pat]]
   A.UnquoteDecl{}           -> return [L [sym "unsupported", Str "unquoteDecl"]]
   A.UnquoteDef{}            -> return [L [sym "unsupported", Str "unquoteDef"]]
   A.UnquoteData{}           -> return [L [sym "unsupported", Str "unquoteData"]]
@@ -540,42 +617,397 @@ topS pragmas foreigns ds = do
 -- main
 ------------------------------------------------------------------------
 
+-- Only immutable interfaces survive a request. The key includes the resolved
+-- source path: a request-local module with the same name is never reused.
+type FileStamp = (DeviceID, FileID, FileOffset, POSIXTime)
+type LibraryVersion = (FileStamp, FileStamp)
+data Worker = Worker [FilePath] (IORef (Map.Map FilePath (LibraryVersion, TC.ModuleInfo, [TLN.TopLevelModuleName]))) (IORef [CachedDump])
+
+-- A reply cache contains wire text only. It cannot satisfy an Agda import.
+-- Record every name-resolution edge plus the exact input text of every
+-- source-scoped module, including implicit dependencies not present in deps.
+data Input = Input TLN.TopLevelModuleName FilePath FilePath (Either LibraryVersion TL.Text)
+data CachedDump = CachedDump [FilePath] [FilePath] [Input] Reply !Int
+data Request = Request [FilePath] [FilePath] FilePath
+data Reply = Success T.Text [T.Text] [String] | Failure String
+
+data RPC = Dump Request | Headers [String]
+
+instance FromJSON RPC where
+  parseJSON = withObject "frontend request" $ \o -> do
+    cmd <- o .: "cmd"
+    case cmd :: String of
+      "dump" -> Dump <$> (Request <$> o .:? "includes" .!= [] <*> o .:? "deps" .!= [] <*> o .: "main")
+      "headers" -> Headers <$> o .: "sources"
+      _ -> fail ("unknown frontend command " ++ cmd)
+
+instance ToJSON Request where
+  toJSON (Request incs deps mainFile) = object
+    ["cmd" .= ("dump" :: String), "includes" .= incs, "deps" .= deps, "main" .= mainFile]
+
+instance FromJSON Reply where
+  parseJSON = withObject "dump reply" $ \o -> o .: "ok" >>= \case
+    True  -> Success <$> o .: "sexpr" <*> o .: "dep_sexprs" <*> o .:? "check_errors" .!= []
+    False -> Failure <$> o .: "error"
+
+instance ToJSON Reply where
+  toJSON (Success mainCode deps errors) = object
+    ["ok" .= True, "sexpr" .= mainCode, "dep_sexprs" .= deps, "check_errors" .= errors]
+  toJSON (Failure err) = object ["ok" .= False, "error" .= err]
+
+newWorker :: IO Worker
+newWorker = do
+  exe <- getExecutablePath >>= canonicalizePath
+  prim <- getPrimitiveLibDir
+  roots <- mapM canonicalizePath [takeDirectory (takeDirectory exe) </> "Context", "/usr/share/agda-stdlib", prim]
+  Worker (map addTrailingPathSeparator roots) <$> newIORef Map.empty <*> newIORef []
+
+-- Agda's lexer recognizes imports everywhere, including private where/let
+-- blocks, literate input, and comments between the keyword and module name.
+importsOf :: Source -> TCM [TLN.TopLevelModuleName]
+importsOf src = do
+  let rf = mkRangeFile (srcFilePath (srcOrigin src)) (Just (srcModuleName src))
+  (res, _) <- Parser.runPMIO $ Parser.parseFile Parser.tokensParser rf (TL.unpack (srcText src))
+  ((tokens, _), _) <- either (TC.genericError . show) pure res
+  mapM (TC.topLevelModuleName . TLN.RawTopLevelModuleName noRange . fmap T.pack)
+    (importNames tokens)
+
+importNames :: [Tok.Token] -> [List1.List1 String]
+importNames = nub . names . filter relevant
+  where
+    relevant Tok.TokComment{} = False
+    relevant Tok.TokMarkup{} = False
+    relevant Tok.TokTeX{} = False
+    relevant _ = True
+    names (Tok.TokKeyword Tok.KwImport _ : Tok.TokId (_, n) : rest) = (n List1.:| []) : names rest
+    names (Tok.TokKeyword Tok.KwImport _ : Tok.TokQId ((_, n):ns) : rest) =
+      (n List1.:| map snd ns) : names rest
+    names (_:rest) = names rest
+    names [] = []
+
+-- getInterface verifies in-memory decoded interfaces against .agdai hashes
+-- unless the module is also *visited*. In particular, a disk-less scope-only
+-- interface must be entered in both maps. Agda still performs its normal
+-- infective/co-infective option checks on every visited import.
+register :: TC.ModuleInfo -> TCM ()
+register info = do
+  TC.storeDecodedModule info
+  TC.visitModule info
+  let i = TC.miInterface info
+  TC.modifyTCLens TC.stPatternSynImports (Map.union (TC.iPatternSyns i))
+  let builtin (TC.Builtin t) = Just (TC.Builtin t)
+      builtin (TC.BuiltinRewriteRelations qs) = Just (TC.BuiltinRewriteRelations qs)
+      builtin TC.Prim{} = Nothing
+  TC.modifyTCLens TC.stImportedBuiltins (Map.union (Map.mapMaybe builtin (TC.iBuiltin i)))
+
+fileStamp :: FilePath -> IO FileStamp
+fileStamp path = do
+  st <- Posix.getFileStatus path
+  return (Posix.deviceID st, Posix.fileID st, Posix.fileSize st, Posix.statusChangeTimeHiRes st)
+
+libraryFile :: SourceFile -> TLN.TopLevelModuleName -> TCM (Maybe (InterfaceFile, LibraryVersion))
+libraryFile file name = do
+  let path = srcFilePath file
+  -- The staged view's library controls the import's flags. Its empty
+  -- options permit the installed interface, which lives next to the real
+  -- immutable source rather than in the staging project's _build directory.
+  options <- TC.getLibraryOptions path name
+  real <- liftIO (canonicalizePath (filePath path) >>= absolute)
+  if any (not . null) options then pure Nothing else findInterfaceFile' (SourceFile real) >>= \case
+    Nothing -> pure Nothing
+    Just iface -> do
+      version <- liftIO $ (,) <$> fileStamp (filePath path) <*> fileStamp (filePath (intFilePath iface))
+      return (Just (iface, version))
+
+-- A public import can re-export another module's pattern synonym. Its name
+-- lives in iScope here, but expansion uses iPatternSyns from its definition
+-- site. Load just those defining interfaces before entering scope checking.
+patternOwners :: TC.Interface -> [TLN.TopLevelModuleName]
+patternOwners i = Set.toList $ Set.fromList
+  [ owner
+  | sc <- Map.elems (TC.iScope i), (_, ns) <- Scope.scopeNameSpaces sc
+  , group <- Map.elems (Scope.nsNames ns), a <- group
+  , Scope.anameKind a == Scope.PatternSynName
+  , let q = Scope.anameName a
+  , Map.notMember q (TC.iPatternSyns i)
+  , Strict.Just rf <- [rangeFile (nameBindingSite (qnameName q))]
+  , Just owner <- [rangeFileName rf]
+  ]
+
+loadLibrary :: Worker -> FilePath -> SourceFile -> TLN.TopLevelModuleName -> TCM (Maybe (LibraryVersion, [TLN.TopLevelModuleName]))
+loadLibrary (Worker roots cache _) path file name
+  | any (`isPrefixOf` path) roots = libraryFile file name >>= \case
+    Nothing -> pure Nothing
+    Just (ifile, version) -> do
+      cached <- liftIO (Map.lookup path <$> readIORef cache)
+      case cached of
+        Just (was, info, owners) | was == version -> register info >> return (Just (version, owners))
+        _ -> readInterface ifile >>= \case
+          Just i | TC.iTopLevelModuleName i == name -> do
+            let rf = mkRangeFile (srcFilePath file) (Just name)
+            (source, _) <- Parser.runPMIO (Parser.readFilePM rf)
+            if sourceMatches source i then do
+              prim <- Opt.isPrimitiveModule path
+              let info = TC.ModuleInfo i [] prim TC.ModuleTypeChecked
+                  owners = patternOwners i
+              liftIO $ modifyIORef' cache (Map.insert path (version, info, owners))
+              register info
+              return (Just (version, owners))
+            else pure Nothing  -- edited Context source, interface predates the edit
+          _ -> TC.genericError ("Invalid library interface for " ++ path)
+  | otherwise = pure Nothing
+  where
+    sourceMatches (Right txt) i = txt == TC.iSource i && all null (TC.iDefaultPragmaOptions i)
+    sourceMatches _ _ = False
+
+sourcePragmas :: Source -> [S]
+sourcePragmas src = map pragma (C.modPragmas (srcModule src))
+  where
+    pragma (C.OptionsPragma _ opts) = L [sym "pragma", Str (unwords ("OPTIONS" : opts))]
+    pragma p = L [sym "pragma", Str (prettyShow p)]
+
+codeFor :: Source -> TCM (T.Text, [String])
+codeFor src = do
+  let path = srcFilePath (srcOrigin src)
+      name = srcModuleName src
+      ds = C.modDecls (srcModule src)
+  lib <- TC.getLibraryOptions path name
+  mapM_ setOptionsFromPragma (lib ++ [opts | C.OptionsPragma _ opts <- C.modPragmas (srcModule src)])
+  checkModuleName name (srcOrigin src) Nothing
+  localTC (\e -> e { envCurrentPath = Just path }) $ do
+    top <- concreteToAbstract_ (TopLevel path name ds)
+    setTCLens stCurrentModule (Just (topLevelModuleName top, name))
+    code <- withScope_ (topLevelScope top) $ topS (sourcePragmas src) (foreignS ds) (topLevelDecls top)
+    errors <- getAllWarnings ErrorWarnings
+    let wire = renderTop code
+    wire `seq` return (wire, map (show . TC.tcWarningPrintedWarning) errors)
+
+dumpBundle :: Worker -> [FilePath] -> Request -> TCM Reply
+dumpBundle worker@(Worker _ _ replies) base (Request incs deps mainFile) = do
+  let dirs = nub (incs ++ base)
+  setCommandLineOptions defaultOptions { optIncludePaths = if null dirs then ["."] else dirs
+                                       , optIgnoreInterfaces = True, optDefaultLibs = False }
+  dirs' <- map filePath <$> TC.getIncludeDirs
+  let args = deps ++ [mainFile]
+  files <- liftIO $ mapM canonicalizePath args
+  let key = args ++ files
+  prior <- liftIO (readIORef replies)
+  pristine <- TC.getTC
+  let matching = [entry | entry@(CachedDump d a _ _ _) <- prior, d == dirs', a == key]
+  fresh <- case matching of
+    CachedDump _ _ inputs reply _ : _ -> do
+      live <- validateInputs inputs `catchError` const (pure False)
+      pure (if live then Just reply else Nothing)
+    _ -> pure Nothing
+  case fresh of
+    Just reply -> pure reply
+    Nothing -> do
+      TC.putTC pristine
+      inputs <- liftIO $ newIORef (Just Map.empty)
+      let track name path actual content = liftIO $ modifyIORef' inputs (fmap (Map.insert name (Input name path actual content)))
+          scoped path src = if null (srcProjectLibs src)
+            then track (srcModuleName src) path (filePath (srcFilePath (srcOrigin src))) (Right (srcText src))
+            else liftIO $ writeIORef inputs Nothing
+      reply <- scopeBundle worker files args scoped track
+      sources <- liftIO $ readIORef inputs
+      case (sources, reply) of
+        (Just m, Success mainCode depCodes errors) -> do
+          let graph = Map.elems m
+              -- Count bytes conservatively (four bytes per Unicode code point).
+              weight = 4 * (sum (map length errors) + sum (map T.length (mainCode:depCodes)) +
+                 sum [fromIntegral (TL.length txt) | Input _ _ _ (Right txt) <- graph])
+              entry = CachedDump dirs' key graph reply weight
+              keep n budget (e@(CachedDump _ _ _ _ w):es)
+                | n > 0 && w <= budget = e : keep (n-1) (budget-w) es
+              keep _ _ _ = []
+          when (weight <= 32 * 1024 * 1024) $ liftIO $ modifyIORef' replies $ \entries -> keep (8 :: Int) (32 * 1024 * 1024)
+            (entry : [e | e@(CachedDump d a _ _ _) <- entries, (d,a) /= (dirs',key)])
+        _ -> pure ()
+      pure reply
+
+validateInputs :: [Input] -> TCM Bool
+validateInputs [] = pure True
+validateInputs (Input name previous actual source : rest) = do
+  -- Agda searches the current include roots afresh. A new competing file,
+  -- changed symlink or removed import invalidates the entire response.
+  file <- findFile name
+  let path = srcFilePath file
+  real <- liftIO $ canonicalizePath (filePath path)
+  if real /= previous then pure False else do
+    same <- case source of
+      Left version -> (== Just version) . fmap snd <$> libraryFile file name
+      Right old -> do
+        original <- liftIO (absolute actual)
+        project <- TC.getAgdaLibFiles original name
+        if not (null project) then pure False else do
+          (txt, _) <- Parser.runPMIO $ Parser.readFilePM (mkRangeFile path (Just name))
+          return $ either (const False) (== old) txt
+    if same then validateInputs rest else pure False
+
+scopeBundle :: Worker -> [FilePath] -> [FilePath] -> (FilePath -> Source -> TCM ()) ->
+               (TLN.TopLevelModuleName -> FilePath -> FilePath -> Either LibraryVersion TL.Text -> TCM ()) -> TCM Reply
+scopeBundle worker files args trackSource track = do
+  let wanted = Set.fromList files
+  outputs <- liftIO $ newIORef Map.empty
+  let scope needsInterface active path file = do
+        src <- parseSource file
+        trackSource path src
+        when (Set.member path active) $ TC.genericError ("Cyclic module dependency at " ++ path)
+        imports <- importsOf src
+        mapM_ (prepare (Set.insert path active)) imports
+        -- Each module starts in the initial local scope, with precisely the
+        -- already-prepared import interfaces and no predecessor's pragmas.
+        initial <- TC.getTC
+        -- A module visited through an import always needs a prepared interface,
+        -- even when that module is also the nominated main of the bundle.
+        when needsInterface $ do
+          cr <- typeCheckMain ScopeCheck src
+          let info = crModuleInfo cr
+          tcWarningsToError (TC.miWarnings info)
+          TC.putTC initial
+          register info { TC.miMode = TC.ModuleTypeChecked }
+        when (Set.member path wanted) $ do
+          before <- TC.getTC
+          c <- codeFor src
+          liftIO $ modifyIORef' outputs (Map.insert path c)
+          TC.putTC before
+      prepare active name = do
+        visited <- TC.getVisitedModule name
+        when (isNothing visited) $ do
+          child <- findFile name
+          resolved <- liftIO $ canonicalizePath (filePath (srcFilePath child))
+          cached <- if Set.member resolved wanted then pure Nothing else loadLibrary worker resolved child name
+          case cached of
+            Just (version, owners) -> do
+              track name resolved (filePath (srcFilePath child)) (Left version)
+              mapM_ (prepare active) owners
+            Nothing -> scope True active resolved child
+  -- Primitive sorts are implicit imports even in files without an import
+  -- declaration. Make them available from the installed, read-only interfaces.
+  primRoot <- liftIO getPrimitiveLibDir
+  forM_ (Set.toList Opt.primitiveModules) $ \rel -> do
+    path <- liftIO (absolute (primRoot </> rel))
+    let file = SourceFile path
+    src <- parseSource file
+    loaded <- loadLibrary worker (filePath path) file (srcModuleName src)
+    case loaded of
+      Just (version, owners) -> do
+        track (srcModuleName src) (filePath path) (filePath path) (Left version)
+        mapM_ (prepare Set.empty) owners
+      Nothing -> TC.genericError ("Missing primitive interface for " ++ rel)
+  forM_ (zip files args) $ \(path, original) -> do
+    done <- liftIO $ Map.member path <$> readIORef outputs
+    unless done $ scope (path /= last files || path `elem` init files) Set.empty path . SourceFile =<< liftIO (absolute original)
+  result <- liftIO (readIORef outputs)
+  case reverse (map (result Map.!) files) of
+    (mainCode, mainErrors) : reversedDeps -> do
+      let deps = reverse reversedDeps
+      pure $ Success mainCode (map fst deps) (concatMap snd deps ++ mainErrors)
+    [] -> TC.genericError "missing main module"
+
+runRequest :: Worker -> [FilePath] -> Request -> IO Reply
+runRequest worker incs req = E.handle syncError $ do
+  -- runTCMTop supplies a fresh TCState per request, even after a failing
+  -- import. Mutable inputs survive solely as validated, bounded wire replies.
+  result <- TC.runTCMTop $ dumpBundle worker incs req `catchError` (fmap Failure . prettyError)
+  return $ either (Failure . show) id result
+  where
+    syncError (e :: E.SomeException) = case E.fromException e :: Maybe E.AsyncException of
+      Just a -> E.throwIO a
+      Nothing -> pure (Failure (E.displayException e))
+
+-- A synthetic filename enables Agda's file/layout lexer without writing
+-- user text to disk. Staging only needs the declared name and import closure.
+headersReply :: [String] -> IO BL.ByteString
+headersReply sources = do
+  path <- absolute "Surface.agda"
+  let rf = mkRangeFile path Nothing
+      header source = do
+        (parsed, _) <- Parser.runPMIO $ Parser.parseFile Parser.moduleParser rf source
+        case parsed of
+          Left err -> pure (Left (prettyShow err))
+          Right ((m, _), _) -> do
+            (lexed, _) <- Parser.runPMIO $ Parser.parseFile Parser.tokensParser rf source
+            return $ do
+              ((tokens, _), _) <- either (Left . prettyShow) Right lexed
+              let name = TLN.rawTopLevelModuleNameToString (TLN.rawTopLevelModuleNameForModule m)
+                  imports = map (intercalate "." . List1.toList) (importNames tokens)
+              pure $ object ["name" .= name, "imports" .= imports]
+  result <- sequence <$> mapM header sources
+  return $ either (encode . Failure) (\hs -> encode (object ["ok" .= True, "headers" .= hs])) result
+
+handleLine :: Worker -> [FilePath] -> Handle -> Handle -> IO ()
+handleLine worker incs input wire = do
+  line <- BS.hGetLine input
+  reply <- case eitherDecodeStrict' line of
+    Left err -> pure (encode (Failure err))
+    Right (Dump req) -> encode <$> runRequest worker incs req
+    Right (Headers sources) -> headersReply sources
+  BL.hPutStrLn wire reply
+  hFlush wire
+
+serve :: Handle -> Worker -> [FilePath] -> IO ()
+serve wire worker incs = loop
+  where loop = hIsEOF stdin >>= \eof -> unless eof (handleLine worker incs stdin wire >> loop)
+
+foreign import capi safe "dump_socket.h dump_unix_socket" unixSocket :: CString -> CInt -> IO CInt
+foreign import capi interruptible "dump_socket.h dump_unix_accept" unixAccept :: CInt -> IO CInt
+
+openSocket :: FilePath -> Bool -> IO Fd
+openSocket path server = withCString path $ \cPath -> Fd <$> throwErrnoIfMinus1Retry path
+  (unixSocket cPath (if server then 1 else 0))
+
+serveSocket :: FilePath -> Worker -> [FilePath] -> IO ()
+serveSocket path worker incs = E.bracket (openSocket path True)
+  (\fd -> closeFd fd `E.finally` removeFile path) $ \(Fd socket) -> do
+    tid <- myThreadId
+    _ <- installHandler sigTERM (Catch (throwTo tid E.UserInterrupt)) Nothing
+    setFdOption (Fd socket) NonBlockingRead True
+    forever $ do
+      threadWaitRead (Fd socket)
+      E.bracket (fdToHandle . Fd =<< throwErrnoIfMinus1Retry "accept" (unixAccept socket)) hClose $ \conn ->
+        handleLine worker incs conn conn `E.catch` \(_ :: IOError) -> pure ()
+
+socketRequest :: FilePath -> Request -> IO Reply
+socketRequest path req = E.bracket (openSocket path False >>= fdToHandle) hClose $ \conn -> do
+  BL.hPutStrLn conn (encode req)
+  hFlush conn
+  either Failure id . eitherDecodeStrict' <$> BS.hGetLine conn
+
+data CLI = CLI [FilePath] [FilePath] [FilePath] Bool (Maybe FilePath) (Maybe FilePath)
+
+options :: [String] -> CLI
+options = go (CLI [] [] [] False Nothing Nothing)
+  where
+    go opts [] = opts
+    go (CLI i d f daemon socket client) args = case args of
+      "-i":x:xs -> go (CLI (i ++ [x]) d f daemon socket client) xs
+      "--dep":x:xs -> go (CLI i (d ++ [x]) f daemon socket client) xs
+      "--daemon":xs -> go (CLI i d f True socket client) xs
+      "--serve-socket":x:xs -> go (CLI i d f daemon (Just x) client) xs
+      "--socket":x:xs -> go (CLI i d f daemon socket (Just x)) xs
+      x:xs -> go (CLI i d (f ++ [x]) daemon socket client) xs
+
 main :: IO ()
 main = do
-  -- Agda reports dependency checks on stdout. Keep the wire stream exclusively
-  -- S-expressions and send every compiler diagnostic to stderr instead.
+  args <- getArgs
+  let complete = "--require-complete" `elem` args
+      CLI incs deps files daemon server client = options (filter (/= "--require-complete") args)
   wire <- hDuplicate stdout
   hDuplicateTo stderr stdout
-  args <- getArgs
-  let (incs, files) = go args
-      go ("-i" : d : rest) = let (is, fs) = go rest in (d : is, fs)
-      go (f : rest)        = let (is, fs) = go rest in (is, f : fs)
-      go []                = ([], [])
-  case files of
-    [f] -> runTCMPrettyErrors $ do
-      setCommandLineOptions defaultOptions { optIncludePaths = if null incs then ["."] else incs
-                                           , optDefaultLibs  = False }
-      path <- liftIO (absolute f)
-      src  <- parseSource (SourceFile path)
-      -- Use Agda's public entry point to initialize primitive builtins before
-      -- chasing imports. Direct scope translation alone leaves IONE unbound
-      -- when an imported module must be rechecked instead of using its cache.
-      -- ScopeCheck deliberately permits specification-only top-level code.
-      initialScope <- useTC stScope
-      void $ typeCheckMain ScopeCheck src
-      setTCLens stScope initialScope
-      setTCLens stCurrentModule Nothing
-      -- 文件自己的 OPTIONS：infective flag 不设好，import 带 --guardedness 的模块会被拒
-      -- 模块前面的 pragma（{-# OPTIONS … #-}）不在声明列表里，单独拿
-      pragmas <- forM (C.modPragmas (srcModule src)) $ \case
-        C.OptionsPragma _ opts -> do setOptionsFromPragma opts
-                                     return $ L [sym "pragma", Str (unwords ("OPTIONS" : opts))]
-        p -> return $ L [sym "pragma", Str (prettyShow p)]
-      localTC (\e -> e { envCurrentPath = Just path }) $ do
-        top <- concreteToAbstract_ (TopLevel path (srcModuleName src) (C.modDecls (srcModule src)))
-        setTCLens stCurrentModule (Just (topLevelModuleName top, srcModuleName src))
-        s   <- withScope_ (topLevelScope top) $ topS pragmas (foreignS (C.modDecls (srcModule src))) (topLevelDecls top)
-        liftIO $ hPutStrLn wire (renderTop s) >> hFlush wire
-    _ -> do
-      hPutStrLn stderr "usage: dump [-i dir]... File.agda"
-      exitFailure
+  case (server, daemon, files) of
+    (Just path, _, []) -> newWorker >>= \worker -> serveSocket path worker incs
+    (Nothing, True, []) -> newWorker >>= \worker -> serve wire worker incs
+    (Nothing, False, [f]) -> do
+      env <- lookupEnv "AGDA_DUMPD_SOCK"
+      req <- Request <$> mapM makeAbsolute (if null incs then ["."] else incs) <*> mapM makeAbsolute deps <*> makeAbsolute f
+      let standalone = newWorker >>= \w -> runRequest w [] req
+      reply <- case (client, env) of
+        (Just path, _) -> socketRequest path req
+        (_, Just path) -> socketRequest path req `E.catch` \(_ :: IOError) -> standalone
+        _ -> standalone
+      case reply of
+        Failure err -> hPutStrLn stderr err >> exitFailure
+        Success _ _ errs | complete && not (null errs) -> die (unlines errs)
+        Success code _ _ -> hPutStrLn wire (T.unpack code) >> hFlush wire
+    _ -> die "usage: dump [--require-complete] [-i dir]... [--dep Dep.agda]... File.agda | --daemon | --serve-socket PATH"

@@ -73,7 +73,7 @@ private
     return (record { onCall = request srv steps ; onStop = onStop srv })
     where
       request : AI → IORef (List (String × String)) → AIReq → IO AIReply
-      request srv steps q@(propose prompt retry) = readIORef steps >>= λ where
+      request srv steps q@(propose prompt retry _) = readIORef steps >>= λ where
         [] → failIO ("unexpected CLI retry:\n" ++ˢ prompt)
         ((diagnostic , reply) ∷ rest) → do
           assert ("expected diagnostic " ++ˢ diagnostic)
@@ -150,7 +150,7 @@ private
     childLog ← F.readFile (rollout tmp childId)
 
     -- A faulty fork reply must never grant deletion rights to these IDs.
-    let reportAs = λ tid → F.writeFile (tmp / "reported-id") tid >> onCall srv (propose "draft" false)
+    let reportAs = λ tid → F.writeFile (tmp / "reported-id") tid >> onCall srv (propose "draft" false "")
         unrelated = rollout tmp "00000000-0000-4000-b000-000000000001"
     F.writeFile unrelated "another instance"
     _ ← reportAs mainId
@@ -158,15 +158,15 @@ private
     _ ← reportAs "*"
     _ ← reportAs ""
 
-    _ ← onCall srv (propose "first draft" false)
+    _ ← onCall srv (propose "first draft" false "")
     first ← F.readFile (tmp / "fork.id")
     checkFiles tmp first true
-    _ ← onCall srv (propose "new turn" false)
+    _ ← onCall srv (propose "new turn" false "")
     second ← F.readFile (tmp / "fork.id")
     checkFiles tmp first false
     checkFiles tmp second true
     F.writeFile (tmp / "fail-resume") ""
-    _ ← onCall srv (propose "full prompt\nTRANSIENT DIAGNOSTIC\nparse error" true)
+    _ ← onCall srv (propose "full prompt\nTRANSIENT DIAGNOSTIC\nparse error" true "")
     last ← F.readFile (tmp / "fork.id")
     checkFiles tmp second false
     checkFiles tmp last true

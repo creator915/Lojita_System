@@ -1,0 +1,14 @@
+module Gen.T2.JsonInput.Comparison.Primitive.Reflection.RepairCheck where
+
+open import Data.Bool using (Bool; true; false)
+open import Data.Char using (Char)
+open import Data.String using (String)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_)
+
+postulate
+  charCompare : Char → Char → Bool
+  stringCompare : String → String → Bool
+  charEqual : (c d : Char) → (c ≡ d) → charCompare c d ≡ true
+  charDifferent : (c d : Char) → (c ≢ d) → charCompare c d ≡ false
+  stringEqual : (s t : String) → (s ≡ t) → stringCompare s t ≡ true
+  stringDifferent : (s t : String) → (s ≢ t) → stringCompare s t ≡ false

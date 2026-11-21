@@ -11,3 +11,4 @@
 /SessionIO
 /dump/dump
 /runtime/lean-prism/.lake/
+__pycache__/

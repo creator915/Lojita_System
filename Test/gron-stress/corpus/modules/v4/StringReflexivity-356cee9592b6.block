@@ -1,0 +1,10 @@
+module StringReflexivity where
+
+open import Agda.Builtin.String using (primStringEquality)
+open import Agda.Builtin.String.Properties using (primStringToListInjective)
+open import Data.Bool using (true)
+open import Data.String using (String)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+
+string-reflexive : (s : String) → primStringEquality s s ≡ true
+string-reflexive s = refl

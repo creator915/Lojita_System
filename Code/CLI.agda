@@ -33,24 +33,27 @@ failWith : String → IO.IO ⊤
 failWith s = F.putStrLn s IO.>>= λ _ → exitFailure
 
 runTaskIn : (repo : String) → Backend → String → String → List Code → Maybe (Code × LiftSpec) → IO.IO ⊤
-runTaskIn repo backend specFile state bases lifting = enableLineBuffering IO.>>= λ _ → F.readFile specFile IO.>>= λ src →
-  onCall (switchDumpTool leanPrism dumpBin repo (scratch ++ˢ "/dump") []) (dumpReq src [] bases) IO.>>= λ where
+runTaskIn repo backend specFile state bases lifting with Data.List.concatMap (λ c → closedImplOK (flagsOf c) c) bases
+... | ps@(_ ∷ _) = failWith ("CLI: unsafe ancestor implementation:\n" ++ˢ unlines (map showImplProblem ps))
+... | [] = enableLineBuffering IO.>>= λ _ → F.readFile specFile IO.>>= λ rawSrc →
+  let dump = onCall (switchDumpTool leanPrism dumpBin repo (scratch ++ˢ "/dump") []) in
+  dump (dumpReq rawSrc [] bases) IO.>>= λ where
     (dumpFailed e) → failWith e
-    (dumped spec) → checkSpec spec (specProblem (decls spec)) (specImplOK [] spec)
+    (dumped spec) → checkSpec rawSrc spec (specProblem (decls spec)) (specImplOK [] spec)
   where
     scratch = repo ++ˢ "/tmp/cli"
     dumpBin = repo ++ˢ "/dump/dump"
     cas = state ++ˢ "/cas"
 
-    checkSpec : Code → Maybe String → List ImplProblem → IO.IO ⊤
-    execute : Code → Maybe HomeValue → IO.IO ⊤
-    checkSpec _ (just e) _ = failWith e
-    checkSpec _ nothing ps@(_ ∷ _) = failWith ("CLI: specification closedImplOK:\n" ++ˢ unlines (map showImplProblem ps))
-    checkSpec spec nothing [] =
+    checkSpec : String → Code → Maybe String → List ImplProblem → IO.IO ⊤
+    execute : String → Code → Maybe HomeValue → IO.IO ⊤
+    checkSpec _ _ (just e) _ = failWith e
+    checkSpec _ _ nothing ps@(_ ∷ _) = failWith ("CLI: specification closedImplOK:\n" ++ˢ unlines (map showImplProblem ps))
+    checkSpec rawSrc spec nothing [] =
       onCall (switchAgdaTool leanPrism repo (scratch ++ˢ "/spec-check") [])
         (agdaCheck (specCheckOf (specΔ (modName spec) (decls spec) [])) bases) IO.>>= λ where
           (fail e) → failWith ("CLI: specification failed Agda typecheck:\n" ++ˢ e)
-          pass → withTreeLock state (loadHome state IO.>>= execute spec)
+          pass → withTreeLock state (loadHome state IO.>>= execute rawSrc spec)
 
     persist : Verdict → HomeValue → IO.IO ⊤
     persist ok result = CAS.storeHomeCAS cas result IO.>>= λ key → CAS.loadHomeCAS cas key IO.>>= λ where
@@ -61,7 +64,10 @@ runTaskIn repo backend specFile state bases lifting = enableLineBuffering IO.>>=
         IO.>>= λ _ → F.putStrLn "just ok"
     persist (contradiction c) result = storeHome state result IO.>>= λ _ → F.putStrLn ("contradiction:\n" ++ˢ render c)
 
-    execute spec saved = start (chosen saved)
+    persist (independent why c) result = storeHome state result IO.>>= λ _ →
+      F.putStrLn ("independent" ++ˢ (if why ==ˢ "" then "" else " — " ++ˢ why) ++ˢ ":\n" ++ˢ render c)
+
+    execute rawSrc spec saved = start (chosen saved)
       where
         d = specΔ (modName spec) (decls spec) []
         chosen : Maybe HomeValue → HomeValue
@@ -72,7 +78,8 @@ runTaskIn repo backend specFile state bases lifting = enableLineBuffering IO.>>=
           let old = codeOf sh (dropModel (homeNoChan sh) home)
               seed = map (λ u → if elemᵇ _==ᴼ_ (unit (uname u)) (objects old)
                                    then keep (ext (uname u)) else Code.⊥ ⇝ ext (uname u)) (units (stubOf d))
-              task = record (nodeTask (record d { δarrows = seed }) (flagsOf spec) lifting) { baseModules = bases }
+              task = record (nodeTask (record d { δarrows = seed }) (flagsOf spec) lifting)
+                { baseModules = bases ; rawSpecSource = rawSrc }
           in
           switchNodeEnvironment leanPrism backend repo dumpBin (scratch ++ˢ "/tools") [] IO.>>= λ env →
           runNode env task h IO.>>= λ { (verdict , result) → persist verdict result }

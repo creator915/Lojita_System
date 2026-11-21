@@ -705,6 +705,7 @@ inherit p m = untouched ++ map forTarget (filterᵇ notBot (nubᵇ _==ᴼ_ (tgts
 data Verdict : Set where
   ok : Verdict
   contradiction : Code → Verdict
+  independent : String → Code → Verdict
 
 data CheckResult : Set where
   pass : CheckResult

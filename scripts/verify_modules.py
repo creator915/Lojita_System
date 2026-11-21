@@ -35,7 +35,7 @@ def module_path(path):
     return Path(m[1].replace('.', '/') + '.agda')
 
 
-files = [Path(s) for s in run(['rg', '--files', '-g', '*.agda', '-g', '!Test/prism-corpus/negative/**', '-g', '!runtime/**', '-g', '!tmp/**']).splitlines()]
+files = [Path(s) for s in run(['rg', '--files', '-g', '*.agda', '-g', '!Test/prism-corpus/negative/**', '-g', '!Test/gron-stress/corpus/**', '-g', '!runtime/**', '-g', '!tmp/**']).splitlines()]
 files.sort()
 primary = [p for p in files if p == module_path(p)]
 fixtures = [p for p in files if p not in primary]
@@ -58,7 +58,7 @@ for directory in [source, rendered]:
             shutil.copyfile(p, target)
 
 if MODE == 'roundtrip':
-    run(['ghc', '-O0', '-package', 'Agda', 'dump/Dump.hs', '-o', 'dump/dump'])
+    run(['ghc', '-O2', '-threaded', '-package', 'Agda', 'dump/Dump.hs', '-o', 'dump/dump'])
     log = ROOT / 'tmp/build-main.log'
     p = subprocess.run(['agda', '--compile', '--ghc-flag=-O0', '--ghc-flag=-iruntime', '--ghc-flag=-iruntime/tools', '--compile-dir=tmp/tool-build',
                         '-i', '.', '-i', STD, 'Main.agda'], env=ENV,

@@ -1,3 +1,6 @@
+import AgdaMirror.Utf8
+import AgdaMirror.CharClass
+
 set_option autoImplicit false
 set_option relaxedAutoImplicit false
 
@@ -10,11 +13,11 @@ Design invariants:
    `Prop` (`Sort 0`). Two open variables `p q : AgdaId x y` are *not* judgmentally
    equal in Lean's kernel, matching Agda's `_≡_` 1-to-1; yet as a 0-field single
    constructor, `AgdaId.refl` compiles to an unboxed scalar constant in LCNF.
-2. **Exact Agda Definitional Reduction Order + `@[csimp]` Hardware Lowering**:
+2. **Exact Agda Definitional Reduction Order + Native Lowering**:
    `agdaAdd`, `agdaMul`, `agdaSub`, `agdaAppend`, etc. recurse on the exact same
    argument as `Agda.Builtin.*` / `agda-stdlib` during kernel `isDefEq` checking
    (so `0 + m ≡ m` is `refl` while `n + 0 ≡ n` is stuck on open `n`), and lower
-   via verified `@[csimp]` theorems to GMP/native operations in C codegen.
+   with audited pointwise correctness proofs to GMP/native operations in C codegen.
 3. **Zero Dirty Axioms**:
    Verified free of `Classical.choice`, `propext`, `Quot.sound`, and `sorryAx`.
 -/
@@ -92,13 +95,53 @@ def AgdaT : Bool → Type
 
 def AgdaNeg (P : Type u) : Type u := P → AgdaBot
 
-inductive AgdaDec (P : Type u) : Type u where
-  | yes : P → AgdaDec P
-  | no  : (P → AgdaBot) → AgdaDec P
+inductive AgdaReflects (P : Type u) : Bool → Type u where
+  | positive : P → AgdaReflects P true
+  | negative : (P → AgdaBot) → AgdaReflects P false
 
-def agdaDoes {P : Type u} : AgdaDec P → Bool
-  | .yes _ => true
-  | .no  _ => false
+structure AgdaDec (P : Type u) : Type u where
+  does : Bool
+  proof : AgdaReflects P does
+
+@[match_pattern] def AgdaDec.yes {P : Type u} (p : P) : AgdaDec P := ⟨true, .positive p⟩
+@[match_pattern] def AgdaDec.no {P : Type u} (np : AgdaNeg P) : AgdaDec P := ⟨false, .negative np⟩
+
+def agdaDoes {P : Type u} (d : AgdaDec P) : Bool := d.does
+
+def agdaIsYes {P : Type u} : AgdaDec P → Bool
+  | ⟨true, _⟩ => true
+  | ⟨false, _⟩ => false
+
+def agdaIsYesDoes {P : Type u} : (d : AgdaDec P) → AgdaId (agdaIsYes d) (agdaDoes d)
+  | ⟨true, _⟩ => .refl
+  | ⟨false, _⟩ => .refl
+
+def agdaDecIsTrue {P : Type u} (q : AgdaDec P) := AgdaT (agdaIsYes q)
+
+def agdaDecIsFalse {P : Type u} (q : AgdaDec P) := AgdaT (agdaNot (agdaIsYes q))
+
+def agdaToWitness {P : Type u} : {Q : AgdaDec P} → agdaDecIsTrue Q → P
+  | .yes p, _ => p
+  | .no _, h => nomatch h
+
+def agdaToWitnessFalse {P : Type u} : {Q : AgdaDec P} → agdaDecIsFalse Q → AgdaNeg P
+  | .yes _, h => nomatch h
+  | .no np, _ => np
+
+def agdaMapDec {P : Type u} {Q : Type v} (toQ : P → Q) (fromQ : Q → P) (d : AgdaDec P) : AgdaDec Q :=
+  ⟨d.does, mapProof d.proof⟩
+where
+  mapProof {b : Bool} : AgdaReflects P b → AgdaReflects Q b
+    | .positive p => .positive (toQ p)
+    | .negative np => .negative (fun q => np (fromQ q))
+
+def agdaDecTrue {P : Type u} : (d : AgdaDec P) → P → AgdaId (agdaDoes d) true
+  | .yes _, _ => .refl
+  | .no np, p => botElim (np p)
+
+def agdaDecFalse {P : Type u} : (d : AgdaDec P) → AgdaNeg P → AgdaId (agdaDoes d) false
+  | .yes p, np => botElim (np p)
+  | .no _, _ => .refl
 
 def agdaBoolTDec : (b : Bool) → AgdaDec (AgdaT b)
   | true  => .yes .tt
@@ -144,6 +187,8 @@ structure AgdaSigma (A : Type u) (B : A → Type v) : Type (max u v) where
 instance {A : Type u} {B : A → Type v} [Inhabited A] [Inhabited (B default)] :
     Inhabited (AgdaSigma A B) := ⟨⟨default, default⟩⟩
 
+abbrev AgdaExists {A : Type u} (B : A → Type v) : Type (max u v) := AgdaSigma A B
+
 abbrev AgdaProd (A : Type u) (B : Type v) : Type (max u v) :=
   AgdaSigma A (fun _ => B)
 
@@ -178,6 +223,23 @@ def pairMap2 {A : Type u} {B : Type v} {C : Type w} (g : B → C) (p : AgdaPair 
 inductive AgdaSum (A : Type u) (B : Type v) : Type (max u v) where
   | inj₁ : A → AgdaSum A B
   | inj₂ : B → AgdaSum A B
+
+def agdaSumMap {A : Type u} {B : Type v} {C : Type w} {D : Type z}
+    (f : A → C) (g : B → D) : AgdaSum A B → AgdaSum C D
+  | .inj₁ a => .inj₁ (f a)
+  | .inj₂ b => .inj₂ (g b)
+
+def agdaSumMap₁ {A : Type u} {B : Type v} {C : Type w} (f : A → C) : AgdaSum A B → AgdaSum C B :=
+  agdaSumMap f id
+
+def agdaSumMap₂ {A : Type u} {B : Type v} {D : Type w} (g : B → D) : AgdaSum A B → AgdaSum A D :=
+  agdaSumMap id g
+
+inductive AgdaPermutation {A : Type u} : List A → List A → Type u where
+  | refl {xs} : AgdaPermutation xs xs
+  | prep {xs ys} (x : A) : AgdaPermutation xs ys → AgdaPermutation (x :: xs) (x :: ys)
+  | swap {xs ys} (x y : A) : AgdaPermutation xs ys → AgdaPermutation (x :: y :: xs) (y :: x :: ys)
+  | trans {xs ys zs} : AgdaPermutation xs ys → AgdaPermutation ys zs → AgdaPermutation xs zs
 
 -- Pure constructive Excluded Middle inside NotNot (0 axioms!)
 def nnLEM (A : Type u) : NotNot (AgdaSum A (AgdaNeg A)) :=
@@ -220,69 +282,41 @@ def maybeIsNothing {A : Type u} : AgdaMaybe A → Bool
 def maybeZipWith {A : Type u} {B : Type v} {C : Type w} (f : A → B → C) :
     AgdaMaybe A → AgdaMaybe B → AgdaMaybe C
   | .just a, .just b => .just (f a b)
-  | _,       _       => .nothing
+  | .nothing, _ => .nothing
+  | .just _, .nothing => .nothing
 
--- §5 Natural Numbers (Agda 1st-argument structural recursion + `@[csimp]` fast lowering)
+-- §5 Natural Numbers (Agda 1st-argument structural recursion + pointwise-verified native lowering)
 
-def agdaAdd : Nat → Nat → Nat
-  | 0, m => m
-  | Nat.succ n, m => Nat.succ (agdaAdd n m)
-termination_by structural n _ => n
+-- Reversing the operands gives exactly Agda's defining equations on open
+-- terms and lets the kernel's Nat reductions handle closed scalar arithmetic.
+def agdaAdd (n m : Nat) : Nat := Nat.add m n
 
-private theorem agdaAdd_zero_right : ∀ n : Nat, agdaAdd n 0 = n
-  | 0 => rfl
-  | Nat.succ n => congrArg Nat.succ (agdaAdd_zero_right n)
+theorem agdaAdd_eq_add (n m : Nat) : agdaAdd n m = Nat.add n m := Nat.add_comm m n
 
-private theorem agdaAdd_succ_right : ∀ n m : Nat, agdaAdd n (Nat.succ m) = Nat.succ (agdaAdd n m)
-  | 0, _ => rfl
-  | Nat.succ n, m => congrArg Nat.succ (agdaAdd_succ_right n m)
+def agdaMul (n m : Nat) : Nat := Nat.mul m n
 
-private theorem agdaAdd_eq_add : ∀ n m : Nat, agdaAdd n m = Nat.add n m := by
-  intro n m
-  induction m with
-  | zero => exact agdaAdd_zero_right n
-  | succ m ih => exact Eq.trans (agdaAdd_succ_right n m) (congrArg Nat.succ ih)
+theorem agdaMul_eq_mul (n m : Nat) : agdaMul n m = n * m := Nat.mul_comm m n
 
-@[csimp] theorem agdaAdd_csimp : @agdaAdd = @Nat.add := by
-  funext n m
-  exact agdaAdd_eq_add n m
+private def nativeSub : Nat → Nat → Nat := Nat.sub
 
-def agdaMul : Nat → Nat → Nat
-  | 0, _ => 0
-  | Nat.succ n, m => agdaAdd m (agdaMul n m)
-termination_by structural n _ => n
-
+@[implemented_by nativeSub]
 def agdaSub : Nat → Nat → Nat
   | n, 0 => n
   | 0, Nat.succ _ => 0
   | Nat.succ n, Nat.succ m => agdaSub n m
-termination_by structural n _ => n
+termination_by structural _ m => m
 
-private theorem agdaSub_eq_sub : ∀ n m : Nat, agdaSub n m = Nat.sub n m
+theorem agdaSub_eq_sub : ∀ n m : Nat, agdaSub n m = Nat.sub n m
   | 0, 0 => rfl
   | Nat.succ _, 0 => rfl
-  | 0, Nat.succ m => by rw [Nat.sub_eq]; simp [agdaSub]
-  | Nat.succ n, Nat.succ m => by
-      have ih := agdaSub_eq_sub n m
-      simp only [agdaSub]
-      rw [Nat.sub_eq] at ih ⊢
-      omega
-
-@[csimp] theorem agdaSub_csimp : @agdaSub = @Nat.sub := by
-  funext n m
-  exact agdaSub_eq_sub n m
-
-def agdaNatEq : Nat → Nat → Bool
-  | 0, 0 => true
-  | Nat.succ n, Nat.succ m => agdaNatEq n m
-  | _, _ => false
+  | 0, Nat.succ m => (Nat.zero_sub (Nat.succ m)).symm
+  | Nat.succ n, Nat.succ m => (agdaSub_eq_sub n m).trans (Nat.succ_sub_succ n m).symm
 termination_by structural n _ => n
 
-def agdaNatLt : Nat → Nat → Bool
-  | _, 0 => false
-  | 0, Nat.succ _ => true
-  | Nat.succ n, Nat.succ m => agdaNatLt n m
-termination_by structural n _ => n
+def agdaNatEq (m n : Nat) : Bool := Nat.beq m n
+
+-- Agda inspects the bound first. Reversing ≤ preserves that order at zero.
+def agdaNatLt (m n : Nat) : Bool := !Nat.ble n m
 
 def agdaNatLe : Nat → Nat → Bool
   | 0, _ => true
@@ -309,15 +343,73 @@ def agdaPred : Nat → Nat
 
 def agdaNatDecEq : (m n : Nat) → AgdaDec (AgdaId m n)
   | 0, 0 => .yes .refl
-  | 0, Nat.succ _ => .no (fun h => nomatch h)
-  | Nat.succ _, 0 => .no (fun h => nomatch h)
+  | 0, Nat.succ n => .no (fun h => False.elim ((Nat.add_one_ne_zero n) (agdaIdToEq h).symm))
+  | Nat.succ m, 0 => .no (fun h => False.elim ((Nat.add_one_ne_zero m) (agdaIdToEq h)))
   | Nat.succ m, Nat.succ n =>
     match agdaNatDecEq m n with
     | .yes p => .yes (idCong Nat.succ p)
-    | .no np => .no (fun h => match h with | .refl => np .refl)
+    | .no np => .no (fun h => np (idCong Nat.pred h))
 termination_by structural m _ => m
 
 def agdaNatShow (n : Nat) : String := toString n
+
+inductive AgdaNatLeRel : Nat → Nat → Type where
+  | zLeN : {n : Nat} → AgdaNatLeRel 0 n
+  | sLeS : {m n : Nat} → AgdaNatLeRel m n → AgdaNatLeRel (Nat.succ m) (Nat.succ n)
+
+def AgdaNatLtRel (m n : Nat) : Type := AgdaNatLeRel (Nat.succ m) n
+
+def agdaNatEqbToEq : (m n : Nat) → AgdaT (agdaNatEq m n) → AgdaId m n
+  | 0, 0, _ => .refl
+  | 0, Nat.succ _, h => nomatch h
+  | Nat.succ _, 0, h => nomatch h
+  | Nat.succ m, Nat.succ n, h => idCong Nat.succ (agdaNatEqbToEq m n h)
+termination_by structural m _ _ => m
+
+def agdaAddIdentityR : (n : Nat) → AgdaId (agdaAdd n 0) n
+  | 0 => .refl
+  | Nat.succ n => idCong Nat.succ (agdaAddIdentityR n)
+termination_by structural n => n
+
+def agdaAddAssoc : (m n o : Nat) → AgdaId (agdaAdd (agdaAdd m n) o) (agdaAdd m (agdaAdd n o))
+  | 0, _, _ => .refl
+  | Nat.succ m, n, o => idCong Nat.succ (agdaAddAssoc m n o)
+termination_by structural m _ _ => m
+
+def agdaMulIdentityL (n : Nat) : AgdaId (agdaMul 1 n) n :=
+  agdaAddIdentityR n
+
+def agdaMulIdentityR : (n : Nat) → AgdaId (agdaMul n 1) n
+  | 0 => .refl
+  | Nat.succ n => idCong Nat.succ (agdaMulIdentityR n)
+termination_by structural n => n
+
+def agdaNatLtbToLt : (m n : Nat) → AgdaT (agdaNatLt m n) → AgdaNatLtRel m n
+  | 0, 0, h => nomatch h
+  | 0, Nat.succ _, _ => .sLeS .zLeN
+  | Nat.succ _, 0, h => nomatch h
+  | Nat.succ m, Nat.succ n, h => .sLeS (agdaNatLtbToLt m n h)
+termination_by structural m _ _ => m
+
+-- Eliminate the successor endpoint explicitly. Lean's generalized
+-- offset-pattern matcher otherwise imports propositional extensionality.
+private def extendTrans {i j k : Nat} (q : AgdaNatLeRel (j + 1) k)
+    (ih : ∀ {n}, AgdaNatLeRel j n → AgdaNatLeRel i n) : AgdaNatLeRel (i + 1) k :=
+  AgdaNatLeRel.casesOn (motive := fun m n _ => m = j + 1 → AgdaNatLeRel (i + 1) n) q
+    (fun eq => False.elim (Nat.add_one_ne_zero j eq.symm))
+    (fun p eq => .sLeS (ih (Nat.succ.inj eq ▸ p))) rfl
+
+def agdaNatLeTrans {i j k : Nat} : AgdaNatLeRel i j → AgdaNatLeRel j k → AgdaNatLeRel i k
+  | .zLeN, _ => .zLeN
+  | .sLeS p, q => extendTrans q (agdaNatLeTrans p)
+termination_by structural p _ => p
+
+private theorem natLeSound {i j : Nat} : AgdaNatLeRel i j → i ≤ j
+  | .zLeN => Nat.zero_le _
+  | .sLeS p => Nat.succ_le_succ (natLeSound p)
+
+def agdaNatLtIrrefl {i j : Nat} : AgdaId i j → AgdaNatLtRel i j → AgdaBot
+  | .refl, p => False.elim (Nat.not_succ_le_self i (natLeSound p))
 
 -- §6 Indexed `Fin` (exact constructor match with `Data.Fin.Base.Fin`)
 
@@ -343,7 +435,7 @@ def agdaFinFromNatMod (m : Nat) (k : Nat) : AgdaFin (Nat.succ k) :=
 class AgdaNonZero (d : Nat) : Prop where
   ne_zero : d ≠ 0
 
-instance {k : Nat} : AgdaNonZero (Nat.succ k) := ⟨Nat.succ_ne_zero k⟩
+instance {k : Nat} : AgdaNonZero (Nat.succ k) := ⟨Nat.add_one_ne_zero k⟩
 instance {n : Nat} [NeZero n] : AgdaNonZero n := ⟨NeZero.ne n⟩
 
 def agdaNatModFin (m : Nat) : (d : Nat) → [_nz : AgdaNonZero d] → AgdaFin d
@@ -352,18 +444,15 @@ def agdaNatModFin (m : Nat) : (d : Nat) → [_nz : AgdaNonZero d] → AgdaFin d
 
 -- §7 Lists (`Agda.Builtin.List.List` = Lean `List`, with 1st-arg structural ops)
 
+@[implemented_by List.append]
 def agdaAppend {A : Type u} : List A → List A → List A
   | [], ys => ys
   | x :: xs, ys => x :: agdaAppend xs ys
 termination_by structural xs _ => xs
 
-private theorem agdaAppend_eq {A : Type u} : ∀ (xs ys : List A), agdaAppend xs ys = List.append xs ys
+theorem agdaAppend_eq {A : Type u} : ∀ (xs ys : List A), agdaAppend xs ys = List.append xs ys
   | [], _ => rfl
   | x :: xs, ys => congrArg (x :: ·) (agdaAppend_eq xs ys)
-
-@[csimp] theorem agdaAppend_csimp : @agdaAppend.{u} = @List.append.{u} := by
-  funext A xs ys
-  exact agdaAppend_eq xs ys
 
 def agdaMap {A : Type u} {B : Type v} (f : A → B) : List A → List B
   | [] => []
@@ -443,12 +532,14 @@ def agdaUpTo (n : Nat) : List Nat :=
 
 def agdaZip {A : Type u} {B : Type v} : List A → List B → List (AgdaProd A B)
   | x :: xs, y :: ys => AgdaSigma.mk x y :: agdaZip xs ys
-  | _, _ => []
+  | [], _ => []
+  | _ :: _, [] => []
 termination_by structural xs _ => xs
 
 def agdaZipPair {A : Type u} {B : Type v} : List A → List B → List (AgdaPair A B)
   | x :: xs, y :: ys => AgdaPair.mk x y :: agdaZipPair xs ys
-  | _, _ => []
+  | [], _ => []
+  | _ :: _, [] => []
 termination_by structural xs _ => xs
 
 def agdaTails {A : Type u} : List A → List (List A)
@@ -465,8 +556,14 @@ def agdaMapMaybe {A : Type u} {B : Type v} (p : A → AgdaMaybe B) : List A → 
 termination_by structural xs => xs
 
 def agdaLookup {A : Type u} : (xs : List A) → AgdaFin (agdaLength xs) → A
-  | x :: _,  .zero  => x
-  | _ :: xs, .suc i => agdaLookup xs i
+  | [], i =>
+    AgdaFin.casesOn (motive := fun n _ => n = 0 → A) i
+      (fun eq => False.elim (Nat.add_one_ne_zero _ eq))
+      (fun _ eq => False.elim (Nat.add_one_ne_zero _ eq)) rfl
+  | x :: xs, i =>
+    AgdaFin.casesOn (motive := fun n _ => n = agdaLength xs + 1 → A) i
+      (fun _ => x) (fun j eq => agdaLookup xs (Nat.succ.inj eq ▸ j)) rfl
+termination_by structural xs _ => xs
 
 def agdaLinesByGo {A : Type u} {P : A → Type v} (dec : (x : A) → AgdaDec (P x)) :
     AgdaMaybe (List A) → List A → List (List A)
@@ -483,7 +580,7 @@ def agdaLinesBy {A : Type u} {P : A → Type v} (dec : (x : A) → AgdaDec (P x)
 
 def agdaWordsCons {A : Type u} : List A → List (List A) → List (List A)
   | [], ass => ass
-  | as_, ass => agdaReverse as_ :: ass
+  | a :: as_, ass => agdaReverse (a :: as_) :: ass
 
 def agdaWordsByGo {A : Type u} {P : A → Type v} (dec : (x : A) → AgdaDec (P x)) :
     List A → List A → List (List A)
@@ -501,148 +598,112 @@ def agdaWordsByList {A : Type u} {P : A → Type v} (dec : (x : A) → AgdaDec (
 
 def agdaCharEq (c d : Char) : Bool := c == d
 def agdaCharToNat (c : Char) : Nat := c.toNat
-def agdaCharFromNat (n : Nat) : Char := Char.ofNat n
+-- Agda.Utils.Char.integerToChar wraps at the Unicode limit and replaces surrogates.
+def agdaCharFromNat (n : Nat) : Char :=
+  let cp := n % 0x110000
+  if Nat.ble 0xd800 cp && Nat.ble cp 0xdfff then '�' else Char.ofNat cp
 
-def agdaIsSpace (c : Char) : Bool :=
-  c == ' ' || c == '\t' || c == '\n' || c == '\r' || c.toNat == 11 || c.toNat == 12
+def agdaCharToNatInjective (a b : Char) (h : AgdaId (agdaCharToNat a) (agdaCharToNat b)) : AgdaId a b :=
+  have eqAB : a = b := by
+    have eqNat : a.val.toNat = b.val.toNat := agdaIdToEq h
+    cases a with
+    | mk va ha =>
+      cases b with
+      | mk vb hb =>
+        cases va with
+        | ofBitVec ba =>
+          cases vb with
+          | ofBitVec bb =>
+            cases BitVec.eq_of_toNat_eq eqNat
+            rfl
+  agdaEqToId eqAB
+
+def agdaAppendAssoc {A : Type u} : (xs ys zs : List A) →
+    AgdaId (agdaAppend (agdaAppend xs ys) zs) (agdaAppend xs (agdaAppend ys zs))
+  | [], _, _ => .refl
+  | x :: xs, ys, zs => idCong (List.cons x) (agdaAppendAssoc xs ys zs)
+termination_by structural xs _ _ => xs
+
+def agdaAppendIdentityL {A : Type u} (xs : List A) : AgdaId (agdaAppend [] xs) xs := .refl
+
+def agdaAppendIdentityR {A : Type u} : (xs : List A) → AgdaId (agdaAppend xs []) xs
+  | [] => .refl
+  | x :: xs => idCong (List.cons x) (agdaAppendIdentityR xs)
+termination_by structural xs => xs
+
+def agdaIsSpace := CharClass.space
 
 def agdaIsDigit (c : Char) : Bool :=
   let n := c.toNat
   48 <= n && n <= 57
 
-def agdaIsAlpha (c : Char) : Bool :=
-  let n := c.toNat
-  (65 <= n && n <= 90) || (97 <= n && n <= 122)
+def agdaIsAlpha := CharClass.alpha
 
-private def utf8DecodeBytes : List UInt8 → List Char
-  | [] => []
-  | b1 :: rest =>
-    let n1 := b1.toNat
-    if n1 < 0x80 then
-      Char.ofNat n1 :: utf8DecodeBytes rest
-    else if n1 < 0xE0 then
-      match rest with
-      | b2 :: rest2 =>
-        let cp := (n1 - 192) * 64 + (b2.toNat - 128)
-        Char.ofNat cp :: utf8DecodeBytes rest2
-      | _ => []
-    else if n1 < 0xF0 then
-      match rest with
-      | b2 :: b3 :: rest3 =>
-        let cp := (n1 - 224) * 4096 + (b2.toNat - 128) * 64 + (b3.toNat - 128)
-        Char.ofNat cp :: utf8DecodeBytes rest3
-      | _ => []
-    else
-      match rest with
-      | b2 :: b3 :: b4 :: rest4 =>
-        let cp := (n1 - 240) * 262144 + (b2.toNat - 128) * 4096 + (b3.toNat - 128) * 64 + (b4.toNat - 128)
-        Char.ofNat cp :: utf8DecodeBytes rest4
-      | _ => []
-termination_by structural bs => bs
+def agdaIsPrint := CharClass.printable
 
-def agdaStrEq (s t : String) : Bool := s == t
-def agdaStrAppend (s t : String) : String := s ++ t
-def agdaToList (s : String) : List Char := utf8DecodeBytes s.toByteArray.data.toList
-def agdaFromList (cs : List Char) : String := String.ofList cs
+-- Native byte arrays compare with memcmp. For kernel reduction, walk both
+-- byte spines once; indexed access in Array.isEqvAux traverses their lists.
+@[extern "lean_sarray_dec_eq"]
+def beqByteArray (s t : @& ByteArray) : Bool :=
+  @List.beq UInt8 ⟨fun a b => Nat.beq a.toNat b.toNat⟩ s.data.toList t.data.toList
+
+-- The native primitive compares the same UTF-8 bytes in place.
+@[extern "lean_string_dec_eq"]
+def agdaStrEq (s t : @& String) : Bool := beqByteArray s.toByteArray t.toByteArray
+def agdaToList (s : String) : List Char := Utf8.decode s.toByteArray.data.toList
+-- The Agda primitive consumes every input scalar before it produces a string.
+-- Without this traversal byte comparisons could inspect a prefix of an open list.
+private def validScalars (cs : List Char) := cs.all fun c => decide c.val.isValidChar
+
+private theorem validScalars_true : ∀ cs, validScalars cs = true
+  | [] => rfl
+  | c :: cs => by
+    change (decide c.val.isValidChar && validScalars cs) = true
+    rw [decide_eq_true c.valid, Bool.true_and, validScalars_true cs]
+
+@[implemented_by String.ofList]
+def agdaFromList (cs : List Char) : String := if validScalars cs then Utf8.encode cs else ""
+
+private theorem agdaFromListEq (cs : List Char) : agdaFromList cs = String.ofList cs := by
+  unfold agdaFromList
+  rw [validScalars_true cs]
+  exact Utf8.encodeEq cs
+
+@[extern "lean_string_append"]
+def agdaStrAppend (s : String) (t : @& String) : String :=
+  -- Agda demands both strings before reducing the primitive. Inspect one byte
+  -- of each spine so neither unit law becomes reflexivity on an open string.
+  match s.toByteArray.data.toList, t.toByteArray.data.toList with
+  | [], [] => ""
+  | [], _ :: _ => t
+  | _ :: _, [] => s
+  | _ :: _, _ :: _ =>
+    .ofByteArray (s.toByteArray ++ t.toByteArray) (Utf8.validAppend s.isValidUTF8 t.isValidUTF8)
+
+def agdaStrToListInjective (s t : String) (h : AgdaId (agdaToList s) (agdaToList t)) : AgdaId s t :=
+  agdaEqToId ((Utf8.encodeOfString s).symm.trans
+    ((congrArg String.ofList (agdaIdToEq h)).trans (Utf8.encodeOfString t)))
+
+def agdaStrFromListInjective (xs ys : List Char) (h : AgdaId (agdaFromList xs) (agdaFromList ys)) : AgdaId xs ys :=
+  let eq := (agdaFromListEq xs).symm.trans ((agdaIdToEq h).trans (agdaFromListEq ys))
+  agdaEqToId ((Utf8.decodeOfList xs).symm.trans ((congrArg agdaToList eq).trans (Utf8.decodeOfList ys)))
+
 def agdaPrimShowNat (n : Nat) : String := toString n
 
-private theorem utf8DecodeBytes_step (b1 : UInt8) (rest : List UInt8) :
-    utf8DecodeBytes (b1 :: rest) =
-      let n1 := b1.toNat
-      if n1 < 0x80 then Char.ofNat n1 :: utf8DecodeBytes rest
-      else if n1 < 0xE0 then match rest with | b2 :: rest2 => Char.ofNat ((n1 - 192) * 64 + (b2.toNat - 128)) :: utf8DecodeBytes rest2 | _ => []
-      else if n1 < 0xF0 then match rest with | b2 :: b3 :: rest3 => Char.ofNat ((n1 - 224) * 4096 + (b2.toNat - 128) * 64 + (b3.toNat - 128)) :: utf8DecodeBytes rest3 | _ => []
-      else match rest with | b2 :: b3 :: b4 :: rest4 => Char.ofNat ((n1 - 240) * 262144 + (b2.toNat - 128) * 4096 + (b3.toNat - 128) * 64 + (b4.toNat - 128)) :: utf8DecodeBytes rest4 | _ => [] := by
-  cases rest with
-  | nil => simp [utf8DecodeBytes]
-  | cons b2 r2 => cases r2 with
-    | nil => simp [utf8DecodeBytes]
-    | cons b3 r3 => cases r3 <;> simp [utf8DecodeBytes]
-
-private theorem utf8Decode_encodeChar (c : Char) (rest : List UInt8) :
-    utf8DecodeBytes (String.utf8EncodeChar c ++ rest) = c :: utf8DecodeBytes rest := by
-  have hv : c.val.toNat < 0x110000 := by
-    have h := c.valid; simp only [UInt32.isValidChar, Nat.isValidChar] at h; omega
-  have hc := Char.ofNat_toNat c
-  have htn : c.toNat = c.val.toNat := rfl
-  simp only [String.utf8EncodeChar]
-  split
-  · rw [List.cons_append, List.nil_append, utf8DecodeBytes_step]
-    simp only [UInt8.toNat_ofNat']
-    split
-    · have e : c.val.toNat % 2 ^ 8 = c.toNat := by omega
-      rw [e, hc]
-    · omega
-  · split
-    · rw [List.cons_append, List.cons_append, List.nil_append, utf8DecodeBytes_step]
-      simp only [UInt8.toNat_ofNat']
-      split
-      · omega
-      · split
-        · have e : (((c.val.toNat / 64 % 32 + 192) % 2 ^ 8 - 192) * 64 + ((c.val.toNat % 64 + 128) % 2 ^ 8 - 128)) = c.toNat := by omega
-          rw [e, hc]
-        · omega
-    · split
-      · rw [List.cons_append, List.cons_append, List.cons_append, List.nil_append, utf8DecodeBytes_step]
-        simp only [UInt8.toNat_ofNat']
-        split
-        · omega
-        · split
-          · omega
-          · split
-            · have e : (((c.val.toNat / 4096 % 16 + 224) % 2 ^ 8 - 224) * 4096 + ((c.val.toNat / 64 % 64 + 128) % 2 ^ 8 - 128) * 64 + ((c.val.toNat % 64 + 128) % 2 ^ 8 - 128)) = c.toNat := by omega
-              rw [e, hc]
-            · omega
-      · rw [List.cons_append, List.cons_append, List.cons_append, List.cons_append, List.nil_append, utf8DecodeBytes_step]
-        simp only [UInt8.toNat_ofNat']
-        split
-        · omega
-        · split
-          · omega
-          · split
-            · omega
-            · have e : (((c.val.toNat / 262144 % 8 + 240) % 2 ^ 8 - 240) * 262144 + ((c.val.toNat / 4096 % 64 + 128) % 2 ^ 8 - 128) * 4096 + ((c.val.toNat / 64 % 64 + 128) % 2 ^ 8 - 128) * 64 + ((c.val.toNat % 64 + 128) % 2 ^ 8 - 128)) = c.toNat := by omega
-              rw [e, hc]
-
-private theorem toByteArray_loop_eq : ∀ (xs : List UInt8) (acc : ByteArray),
-    (List.toByteArray.loop xs acc).data.toList = acc.data.toList ++ xs
-  | [], acc => by simp [List.toByteArray.loop]
-  | x :: xs, acc => by
-      rw [List.toByteArray.loop, toByteArray_loop_eq xs (acc.push x)]
-      simp [ByteArray.push, Array.push, List.append_assoc]
-
-private theorem utf8Decode_flatMap : ∀ (cs : List Char), utf8DecodeBytes (cs.flatMap String.utf8EncodeChar) = cs
-  | [] => rfl
-  | c :: cs => by rw [List.flatMap_cons, utf8Decode_encodeChar, utf8Decode_flatMap cs]
-
-theorem agdaToList_inj (a b : String) (h : agdaToList a = agdaToList b) : a = b := by
-  have hba : a.toByteArray = b.toByteArray := by
-    have ha := a.isValidUTF8
-    have hb := b.isValidUTF8
-    cases ha with | intro ma ema =>
-    cases hb with | intro mb emb =>
-    have emptyL : (ByteArray.emptyWithCapacity 0).data.toList = [] := rfl
-    have da : utf8DecodeBytes a.toByteArray.data.toList = ma := by
-      rw [ema]; simp only [List.utf8Encode, List.toByteArray, ByteArray.empty]
-      rw [toByteArray_loop_eq, emptyL, List.nil_append]; exact utf8Decode_flatMap ma
-    have db : utf8DecodeBytes b.toByteArray.data.toList = mb := by
-      rw [emb]; simp only [List.utf8Encode, List.toByteArray, ByteArray.empty]
-      rw [toByteArray_loop_eq, emptyL, List.nil_append]; exact utf8Decode_flatMap mb
-    have eqm : ma = mb := Eq.trans (Eq.symm da) (Eq.trans h db)
-    rw [ema, emb, eqm]
-  cases a; cases b; simp at hba; subst hba; rfl
+theorem agdaToList_inj (a b : String) (h : agdaToList a = agdaToList b) : a = b :=
+  (Utf8.encodeOfString a).symm.trans ((congrArg String.ofList h).trans (Utf8.encodeOfString b))
 
 def agdaDivHelper : Nat → Nat → Nat → Nat → Nat
   | k, _, 0,     _     => k
   | k, m, n + 1, 0     => agdaDivHelper (k + 1) m n m
   | k, m, n + 1, j + 1 => agdaDivHelper k m n j
-termination_by _ _ n _ => n
+termination_by structural _ _ n _ => n
 
 def agdaModHelper : Nat → Nat → Nat → Nat → Nat
   | k, _, 0,     _     => k
   | _, m, n + 1, 0     => agdaModHelper 0 m n m
   | k, m, n + 1, j + 1 => agdaModHelper (k + 1) m n j
-termination_by _ _ n _ => n
+termination_by structural _ _ n _ => n
 
 def agdaSumElim {A : Type u} {B : Type v} {C : Type w}
     (f : A → C) (g : B → C) : AgdaSum A B → C
@@ -661,7 +722,8 @@ def agdaUnlines : List String → String
   | s :: y :: ys => agdaStrAppend s (agdaStrAppend "\n" (agdaUnlines (y :: ys)))
 termination_by structural xs => xs
 
-def agdaToLower (c : Char) : Char := c.toLower
+def agdaToLower (c : Char) : Char :=
+  if 65 ≤ c.toNat && c.toNat ≤ 90 then Char.ofNat (c.toNat + 32) else c
 
 def agdaCharDecEq (c d : Char) : AgdaDec (AgdaId c d) :=
   if h : c = d then .yes (agdaEqToId h)
@@ -670,6 +732,9 @@ def agdaCharDecEq (c d : Char) : AgdaDec (AgdaId c d) :=
 def agdaStrDecEq (s t : String) : AgdaDec (AgdaId s t) :=
   if h : s = t then .yes (agdaEqToId h)
   else .no (fun p => nomatch (h (agdaIdToEq p)))
+
+def agdaCharEqDecides (c d : Char) := agdaIsYes (agdaCharDecEq c d)
+def agdaStrEqDecides (s t : String) := agdaIsYes (agdaStrDecEq s t)
 
 def agdaStrConcat : List String → String
   | [] => ""
@@ -688,8 +753,6 @@ def agdaLinesByStr {P : Char → Type u} (dec : (c : Char) → AgdaDec (P c)) (s
 def agdaLines (s : String) : List String :=
   agdaLinesByStr (agdaCharDecEq '\n') s
 
-def agdaShowString (s : String) : String := reprStr s
-
 -- §9 Function Combinators (`Function.Base`)
 
 def agdaIdFn {A : Type u} (x : A) : A := x
@@ -705,10 +768,10 @@ def agdaIOPure {A : Type} (a : A) : AgdaIO A := pure a
 def agdaIOBind {A B : Type} (m : AgdaIO A) (k : A → AgdaIO B) : AgdaIO B := m >>= k
 def agdaIOSeq {A B : Type} (m : AgdaIO A) (n : AgdaIO B) : AgdaIO B := m *> n
 def agdaPutStrLn (s : String) : AgdaIO PolyTop := do
-  IO.println s
+  (← IO.getStdout).putStr (agdaStrAppend s "\n")
   pure PolyTop.tt
 def agdaPutStrLn0 (s : String) : AgdaIO AgdaTop := do
-  IO.println s
+  (← IO.getStdout).putStr (agdaStrAppend s "\n")
   pure AgdaTop.tt
 def agdaReadFiniteFile (p : String) : AgdaIO String := IO.FS.readFile p
 def agdaWriteFile (p : String) (s : String) : AgdaIO AgdaTop := do
@@ -902,34 +965,40 @@ def agdaExitFailure0 : AgdaIO AgdaTop := do
   (← IO.getStderr).flush
   IO.Process.exit 1
 
+def agdaRunPrismCatSelfChecks : AgdaIO AgdaTop := do
+  let some binDir := (← IO.appPath).parent | throw <| IO.userError "missing harness executable directory"
+  let checked ← IO.Process.output {cmd := (binDir / "agda2lean").toString, args := #["cat-self-check"]}
+  unless checked.exitCode == 0 do throw <| IO.userError (checked.stdout ++ checked.stderr)
+  pure AgdaTop.tt
+
 def agdaEnableLineBuffering : AgdaIO AgdaTop :=
   pure AgdaTop.tt
 
 -- §9 Inductive Natural & Integer Ordering and `Data.Integer.Base` Arithmetic
 
-inductive AgdaNatLeRel : Nat → Nat → Type where
-  | zLeN : {n : Nat} → AgdaNatLeRel 0 n
-  | sLeS : {m n : Nat} → AgdaNatLeRel m n → AgdaNatLeRel (Nat.succ m) (Nat.succ n)
-
-abbrev AgdaNatLtRel (m n : Nat) : Type :=
-  AgdaNatLeRel (Nat.succ m) n
+-- Invert the ordering through its two-index recursor. A dependent match on
+-- Nat.succ endpoints would bring the offset matcher's propext into the kernel.
+private def lowerLe {m n : Nat} (h : AgdaNatLeRel (m+1) (n+1)) : AgdaNatLeRel m n :=
+  AgdaNatLeRel.casesOn (motive := fun a b _ => AgdaNatLeRel a.pred b.pred) h
+    .zLeN (fun p => p)
 
 def agdaNatLeDec : (m n : Nat) → AgdaDec (AgdaNatLeRel m n)
   | 0,          _          => .yes .zLeN
-  | Nat.succ _, 0          => .no (fun h => nomatch h)
+  | Nat.succ m, 0          => .no (fun h => False.elim (Nat.not_succ_le_zero m (natLeSound h)))
   | Nat.succ m, Nat.succ n =>
       match agdaNatLeDec m n with
       | .yes p => .yes (.sLeS p)
-      | .no np => .no (fun h => match h with | .sLeS p => np p)
+      | .no np => .no (fun h => np (lowerLe h))
 termination_by structural m _ => m
 
 private def agdaNatLeRefl : (x : Nat) → AgdaNatLeRel x x
   | 0          => .zLeN
   | Nat.succ x => .sLeS (agdaNatLeRefl x)
 
-private def agdaNatLeStepR : {m k : Nat} → AgdaNatLeRel m k → AgdaNatLeRel m (Nat.succ k)
-  | 0,          _, _       => .zLeN
-  | Nat.succ _, _, .sLeS h => .sLeS (agdaNatLeStepR h)
+private def agdaNatLeStepR {m k : Nat} : AgdaNatLeRel m k → AgdaNatLeRel m (Nat.succ k)
+  | .zLeN => .zLeN
+  | .sLeS h => .sLeS (agdaNatLeStepR h)
+termination_by structural h => h
 
 def agdaNatMLeNM (m : Nat) : (n : Nat) → AgdaNatLeRel m (agdaAdd n m)
   | 0          => agdaNatLeRefl m

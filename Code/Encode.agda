@@ -19,8 +19,10 @@ open import Code.Transport using (Plan; mkPlan; Proarrow; _⇝_; Memory)
 
 -- 名字：shown 就是最后一段时只写 full，否则写 (q full shown)（Parse 的 decodeQ 两种都认）
 encQ : QName → SExpr
-encQ q = let f = intersperse "." (full q) in
+encQ q@(scopedQName _ _ []) = let f = intersperse "." (full q) in
          if shown q ==ˢ shown (mkQ (full q)) then str f else list (sym "q" ∷ str f ∷ str (shown q) ∷ [])
+
+encQ (scopedQName path sh alts) = list (sym "q" ∷ str (intersperse "." path) ∷ str sh ∷ map str alts)
 
 encHid : Hiding → SExpr
 encHid visible = sym "vis"
@@ -161,6 +163,7 @@ mutual
          ∷ encCons "field" fs)
   encDecl (variable′ vs)       = list (sym "variable" ∷ encVars vs)
   encDecl (module′ x bs ds)    = list (sym "module" ∷ str x ∷ list (sym "params" ∷ encBinds bs) ∷ encDecls ds)
+  encDecl (patSyn n xs p) = list (sym "patsyn" ∷ str n ∷ list (map str xs) ∷ encPat p ∷ [])
   encDecl (unsupported s)      = list (sym "unsupported" ∷ str s ∷ [])
 
   encCons : String → List (Name × Expr) → List SExpr
@@ -203,7 +206,7 @@ encodeDecls ds = list (sym "decls" ∷ encDecls ds)
 -- Canonical serialization erases every presentation-only qualified name,
 -- including module/import names (renameCode intentionally preserves these).
 canonical : SExpr → SExpr
-canonical (list (sym "q" ∷ str f ∷ str sh ∷ [])) = str f
+canonical (list (sym "q" ∷ str f ∷ str sh ∷ as)) = str f
 canonical (list xs) = list (canonicalList xs)
   where
     canonicalList : List SExpr → List SExpr

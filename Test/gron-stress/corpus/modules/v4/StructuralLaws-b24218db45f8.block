@@ -1,0 +1,41 @@
+module StructuralLaws where
+
+open import Data.Bool using (Bool; true; false)
+open import Data.Char using (Char)
+open import Data.Empty using (⊥-elim)
+open import Data.String using (String)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Nullary using (Dec; yes; no)
+import Data.Char.Properties as CharProps
+import Data.String.Properties as StringProps
+
+private
+  answer : {P : Set} → Dec P → Bool
+  answer (yes _) = true
+  answer (no _) = false
+
+  answer-sound : {P : Set} → (decision : Dec P) → answer decision ≡ true → P
+  answer-sound (yes proof) _ = proof
+  answer-sound (no _) ()
+
+  answer-complete : {P : Set} → (decision : Dec P) → P → answer decision ≡ true
+  answer-complete (yes _) _ = refl
+  answer-complete (no refute) proof = ⊥-elim (refute proof)
+
+char-eq : Char → Char → Bool
+char-eq c d = answer (CharProps._≟_ c d)
+
+char-sound : (c d : Char) → (char-eq c d ≡ true) → c ≡ d
+char-sound c d = answer-sound (CharProps._≟_ c d)
+
+char-complete : (c d : Char) → (c ≡ d) → char-eq c d ≡ true
+char-complete c d = answer-complete (CharProps._≟_ c d)
+
+string-eq : String → String → Bool
+string-eq s t = answer (StringProps._≟_ s t)
+
+string-sound : (s t : String) → (string-eq s t ≡ true) → s ≡ t
+string-sound s t = answer-sound (StringProps._≟_ s t)
+
+string-complete : (s t : String) → (s ≡ t) → string-eq s t ≡ true
+string-complete s t = answer-complete (StringProps._≟_ s t)

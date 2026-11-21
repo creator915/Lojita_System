@@ -1,0 +1,8 @@
+module PrimitiveImportProbe where
+
+open import Agda.Builtin.TrustMe using (primTrustMe)
+open import Data.Bool using (true)
+open import Relation.Binary.PropositionalEquality using (_≡_)
+
+check-import : true ≡ true
+check-import = primTrustMe

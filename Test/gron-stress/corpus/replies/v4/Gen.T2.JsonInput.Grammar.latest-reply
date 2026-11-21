@@ -1,0 +1,1792 @@
+(submission
+  (kind plan)
+  (why "按输入后缀进行结构递归，保留未消费输入及语法错误位置，并对解码后相同的键保留最后出现的值。")
+  (main @main)
+  (moves
+    (move bot (unit "Gen.T2.JsonInput.Grammar.choose"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.chooseYes"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.chooseNo"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.splitBool"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.boolHolds"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.falseNotTrue"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.trueNotFalse"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.denyTrue"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.andLeft"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.andRight"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.andRightFalse"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.orLeftFalse"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.orRightFalse"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.orFalse"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.notBelowZero"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.aboveExcludesBelow"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.charNo"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.headNo"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.Suffix"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.joinSuffix"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.Read"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.erase"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.mapRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.dropRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.dropErases"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.pushRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bindRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.pushErases"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.mapPrefix"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.mapErases"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.mapOK"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.mapError"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.ReadAfter"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bindErases"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bindOK"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bindError"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.dispatch"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.dispatchMiss"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.upperHex"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.lowerHex"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.notDecimalAbove"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.hexStep"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.hexRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.belowNextExcludesAbove"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.highNotLow"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.replacement"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.codepoint"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.eraseChoice"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.secondRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.secondView"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.secondErases"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.startsSecond"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.peekUnit"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.utfMode"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.utfRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.highPeek"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.notSecond"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.peekMiss"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.highSecond"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.unitContinuation"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.escapeTag"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.escapeHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.escapeRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.Table"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.tableAt"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.tabulate"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.tableAtLaw"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.prependChar"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bodyContinuation"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bodyHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bodyRow"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bodyTable"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bodyRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bodyPlain"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.bodyAfterSlash"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.DigitRun"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.extendRun"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.spanRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.digitsPair"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.extendRunPair"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.firstDigits"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.firstDigitsErases"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.digitsHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.digitsRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.unsignedHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.unsignedRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.signedHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.signedRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.optionalHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.optionalSelected"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.fractionRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.expSign"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.expBodyHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.expBodyRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.expSigned"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.expMarker"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.exponentRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.chainRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.chainPrefix"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.chainErases"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.numberFinish"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.numberFraction"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.numberHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.numberRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.numberChain"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.wordRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.keepUnshadowed"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.firstMatch"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.resolveSame"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.resolveOther"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.resolvedMatches"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.TrimmedStart"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.headNotSpace"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.Trim"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.dropTrim"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.spaceKind"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.trimRead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.trimmedNotSpace"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.Rows"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.rowTable"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.rowAtLaw"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.trimLookup"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.readTrimmed"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.trimmedAtLaw"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.readTrimLaw"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.trimLookupLaw"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.Frame"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.valueSlot"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.arrayItemsSlot"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.arrayTailSlot"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.objectItemsSlot"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.objectTailSlot"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.memberSlot"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.colonSlot"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.itemsRest"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.itemsHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.tailHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.finishContainer"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.openArray"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.openObject"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.tokenNumber"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.specialToken"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.otherToken"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.valueHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.memberRest"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.memberHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.presentFault"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.valueInMember"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.colonHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.jsonRow"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.jsonRows"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.jsonTable"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.jsonRowHere"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.readJsonHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.valueCellHere"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.arrayItemsCellHere"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.arrayTailCellHere"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.objectItemsCellHere"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.objectTailCellHere"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.memberCellHere"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.colonCellHere"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.jsonRowEnd"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.readJsonEnd"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.memberAtHead"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.valueAtToken"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.orCases"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.spaceNotNumber"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.numberNotSpace"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.numericToken"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.itemsSelected"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.tailRejected"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.itemsClosed"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.tailClosed"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.tailAtComma"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.memberHeadView"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.quotedMember"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.afterColonView"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.valueInMemberErases"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.colonAccepted"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.memberColonView"))
+    (move bot (unit "Gen.T2.JsonInput.Grammar.keepPresentValue"))))
+```agda main
+module Gen.T2.JsonInput.Grammar where
+
+open import Agda.Builtin.Char using (primCharEquality; primNatToChar)
+open import Agda.Builtin.String using (primStringEquality)
+open import Data.Bool using (Bool; false; true; _∧_; _∨_)
+open import Data.Char using (Char; toℕ)
+open import Data.List using (List; []; _∷_; [_]; _++_; any; take)
+open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Nat using (ℕ; zero; suc; _+_; _*_; _∸_; _<ᵇ_)
+open import Data.Product using (_×_; _,_; proj₁; proj₂)
+open import Data.String using (String; fromList; toList) renaming (_++_ to _++ˢ_)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; sym; trans; subst)
+open import Data.Empty using (⊥; ⊥-elim)
+open import Data.Unit using (⊤; tt)
+
+data Expectation : Set where
+  valueStart : Expectation
+  inWord : String → Char → Expectation
+  objectKey : Expectation
+  afterKey : Expectation
+  afterMember : Expectation
+  afterElement : Expectation
+  integerDigit : Expectation
+  fractionalDigit : Expectation
+  exponentDigit : Expectation
+  insideString : Expectation
+  afterEscape : Expectation
+  unicodeDigit : Expectation
+  afterDocument : Expectation
+  exceededDepth : Expectation
+
+data Fault : Set where
+  missingDocument : Fault
+  incompleteDocument : Fault
+  unexpected : Char → Expectation → Fault
+
+data Prefix (A : Set) : Set where
+  consumed : A → List Char → Prefix A
+  failed : Fault → Prefix A
+
+record Comparison : Set where
+  constructor comparison
+  field
+    charRefl : (c : Char) → primCharEquality c c ≡ true
+    charReflects : (c d : Char) → (primCharEquality c d ≡ true) → c ≡ d
+    stringRefl : (s : String) → primStringEquality s s ≡ true
+    stringReflects : (s t : String) → (primStringEquality s t ≡ true) → s ≡ t
+
+record Layout : Set where
+  constructor layoutRules
+  field
+    isSpace : Char → Bool
+    spaceClass : (c : Char) → isSpace c ≡ (primCharEquality c ' ' ∨ (primCharEquality c '	' ∨ (primCharEquality c '\r' ∨ primCharEquality c '\n')))
+    trimSpace : List Char → List Char
+    trimEmpty : trimSpace [] ≡ []
+    trimHead : (c : Char) → (xs : List Char) → (isSpace c ≡ true) → trimSpace (c ∷ xs) ≡ trimSpace xs
+    keepHead : (c : Char) → (xs : List Char) → (isSpace c ≡ false) → trimSpace (c ∷ xs) ≡ (c ∷ xs)
+
+record Constructors (A : Set) : Set where
+  constructor constructors
+  field
+    nullValue : A
+    booleanValue : Bool → A
+    numericValue : String → A
+    textValue : String → A
+    objectValue : List (String × A) → A
+    arrayValue : List A → A
+
+choose : {A : Set} → Bool → A → A → A
+choose true yes no = yes
+choose false yes no = no
+
+chooseYes : {A : Set} → (b : Bool) → (yes no : A) → b ≡ true → choose b yes no ≡ yes
+chooseYes b yes no p = cong (λ bit → choose bit yes no) p
+
+chooseNo : {A : Set} → (b : Bool) → (yes no : A) → b ≡ false → choose b yes no ≡ no
+chooseNo b yes no p = cong (λ bit → choose bit yes no) p
+
+splitBool : {A : Set} → (b : Bool) → (b ≡ true → A) → (b ≡ false → A) → A
+splitBool true yes no = yes refl
+splitBool false yes no = no refl
+
+boolHolds : Bool → Set
+boolHolds true = ⊤
+boolHolds false = ⊥
+
+falseNotTrue : false ≡ true → ⊥
+falseNotTrue p = subst boolHolds (sym p) tt
+
+trueNotFalse : true ≡ false → ⊥
+trueNotFalse p = subst boolHolds p tt
+
+denyTrue : (b : Bool) → b ≢ true → b ≡ false
+denyTrue true no = ⊥-elim (no refl)
+denyTrue false no = refl
+
+andLeft : {b c : Bool} → (b ∧ c) ≡ true → b ≡ true
+andLeft {true} p = refl
+andLeft {false} p = ⊥-elim (falseNotTrue p)
+
+andRight : {b c : Bool} → (b ∧ c) ≡ true → c ≡ true
+andRight {true} p = p
+andRight {false} p = ⊥-elim (falseNotTrue p)
+
+andRightFalse : (b c : Bool) → c ≡ false → (b ∧ c) ≡ false
+andRightFalse true c p = p
+andRightFalse false c p = refl
+
+orLeftFalse : {b c : Bool} → (b ∨ c) ≡ false → b ≡ false
+orLeftFalse {true} p = p
+orLeftFalse {false} p = refl
+
+orRightFalse : {b c : Bool} → (b ∨ c) ≡ false → c ≡ false
+orRightFalse {true} p = ⊥-elim (trueNotFalse p)
+orRightFalse {false} p = p
+
+orFalse : {b c : Bool} → b ≡ false → c ≡ false → (b ∨ c) ≡ false
+orFalse {b} {c} p q = trans (cong (λ bit → bit ∨ c) p) q
+
+notBelowZero : (n : ℕ) → (n <ᵇ zero) ≡ true → ⊥
+notBelowZero zero p = falseNotTrue p
+notBelowZero (suc n) p = falseNotTrue p
+
+aboveExcludesBelow : (lo hi n : ℕ) → (lo <ᵇ suc hi) ≡ true → (hi <ᵇ n) ≡ true → (n <ᵇ lo) ≡ false
+aboveExcludesBelow zero hi zero p q = refl
+aboveExcludesBelow zero hi (suc n) p q = refl
+aboveExcludesBelow (suc lo) zero n p q = ⊥-elim (notBelowZero lo p)
+aboveExcludesBelow (suc lo) (suc hi) zero p q = ⊥-elim (falseNotTrue q)
+aboveExcludesBelow (suc lo) (suc hi) (suc n) p q = aboveExcludesBelow lo hi n p q
+
+charNo : (eqs : Comparison) → (c d : Char) → c ≢ d → primCharEquality c d ≡ false
+charNo eqs c d apart = denyTrue (primCharEquality c d) (λ p → apart (Comparison.charReflects eqs c d p))
+
+headNo : (eqs : Comparison) → (c d : Char) → (xs : List Char) → take 1 (c ∷ xs) ≢ ([ d ]) → primCharEquality c d ≡ false
+headNo eqs c d xs apart = charNo eqs c d (λ p → apart (cong (λ t → [ t ]) p))
+
+data Suffix : List Char → List Char → Set where
+  here : {xs : List Char} → Suffix xs xs
+  skip : {c : Char} → {xs ys : List Char} → Suffix xs ys → Suffix (c ∷ xs) ys
+
+joinSuffix : {xs ys zs : List Char} → Suffix xs ys → Suffix ys zs → Suffix xs zs
+joinSuffix here t = t
+joinSuffix (skip s) t = skip (joinSuffix s t)
+
+data Read (A : Set) (xs : List Char) : Set where
+  readOK : A → (ys : List Char) → Suffix xs ys → Read A xs
+  readError : Fault → Read A xs
+
+erase : {A : Set} → {xs : List Char} → Read A xs → Prefix A
+erase (readOK a ys p) = consumed a ys
+erase (readError e) = failed e
+
+mapRead : {A B : Set} → {xs : List Char} → (A → B) → Read A xs → Read B xs
+mapRead f (readOK a ys p) = readOK (f a) ys p
+mapRead f (readError e) = readError e
+
+dropRead : {A : Set} → {xs : List Char} → (c : Char) → Read A xs → Read A (c ∷ xs)
+dropRead c (readOK a ys s) = readOK a ys (skip s)
+dropRead c (readError e) = readError e
+
+dropErases : {A : Set} → {xs : List Char} → (c : Char) → (r : Read A xs) → erase (dropRead c r) ≡ erase r
+dropErases c (readOK a ys s) = refl
+dropErases c (readError e) = refl
+
+pushRead : {A : Set} → {xs ys : List Char} → Suffix xs ys → Read A ys → Read A xs
+pushRead s (readOK a zs t) = readOK a zs (joinSuffix s t)
+pushRead s (readError e) = readError e
+
+bindRead : {A B : Set} → {xs : List Char} → Read A xs → ((a : A) → (ys : List Char) → Suffix xs ys → Read B ys) → Read B xs
+bindRead (readOK a ys p) k = pushRead p (k a ys p)
+bindRead (readError e) k = readError e
+
+pushErases : {A : Set} → {xs ys : List Char} → (s : Suffix xs ys) → (r : Read A ys) → erase (pushRead s r) ≡ erase r
+pushErases s (readOK a ys t) = refl
+pushErases s (readError e) = refl
+
+mapPrefix : {A B : Set} → (A → B) → Prefix A → Prefix B
+mapPrefix f (consumed a ys) = consumed (f a) ys
+mapPrefix f (failed e) = failed e
+
+mapErases : {A B : Set} → {xs : List Char} → (f : A → B) → (r : Read A xs) → erase (mapRead f r) ≡ mapPrefix f (erase r)
+mapErases f (readOK a ys s) = refl
+mapErases f (readError e) = refl
+
+mapOK : {A B : Set} → {xs : List Char} → (f : A → B) → (r : Read A xs) → {a : A} → {ys : List Char} → erase r ≡ consumed a ys → erase (mapRead f r) ≡ consumed (f a) ys
+mapOK f r p = trans (mapErases f r) (cong (mapPrefix f) p)
+
+mapError : {A B : Set} → {xs : List Char} → (f : A → B) → (r : Read A xs) → {e : Fault} → erase r ≡ failed e → erase (mapRead f r) ≡ failed e
+mapError f r p = trans (mapErases f r) (cong (mapPrefix f) p)
+
+ReadAfter : {A B : Set} → {xs : List Char} → ((a : A) → (ys : List Char) → Suffix xs ys → Read B ys) → Prefix B → Prefix A → Set
+ReadAfter {xs = xs} k p (consumed a ys) = (s : Suffix xs ys) → erase (k a ys s) ≡ p
+ReadAfter k p (failed e) = failed e ≡ p
+
+bindErases : {A B : Set} → {xs : List Char} → (r : Read A xs) → (k : (a : A) → (ys : List Char) → Suffix xs ys → Read B ys) → (p : Prefix B) → ReadAfter k p (erase r) → erase (bindRead r k) ≡ p
+bindErases (readOK a ys s) k p good = trans (pushErases s (k a ys s)) (good s)
+bindErases (readError e) k p good = good
+
+bindOK : {A B : Set} → {xs : List Char} → (r : Read A xs) → (k : (a : A) → (ys : List Char) → Suffix xs ys → Read B ys) → {a : A} → {ys : List Char} → {p : Prefix B} → erase r ≡ consumed a ys → ((s : Suffix xs ys) → erase (k a ys s) ≡ p) → erase (bindRead r k) ≡ p
+bindOK r k {p = p} h good = bindErases r k p (subst (ReadAfter k p) (sym h) good)
+
+bindError : {A B : Set} → {xs : List Char} → (r : Read A xs) → (k : (a : A) → (ys : List Char) → Suffix xs ys → Read B ys) → {e : Fault} → erase r ≡ failed e → erase (bindRead r k) ≡ failed e
+bindError r k {e} h = bindErases r k (failed e) (subst (ReadAfter k (failed e)) (sym h) refl)
+
+dispatch : {A : Set} → Char → List Char → (Char → A) → A → A
+dispatch c [] f no = no
+dispatch c (d ∷ ds) f no = choose (primCharEquality c d) (f d) (dispatch c ds f no)
+
+dispatchMiss : {A : Set} → (c : Char) → (ds : List Char) → (f : Char → A) → (no : A) → any (primCharEquality c) ds ≡ false → dispatch c ds f no ≡ no
+dispatchMiss c [] f no p = refl
+dispatchMiss c (d ∷ ds) f no p =
+  trans (chooseNo (primCharEquality c d) (f d) (dispatch c ds f no) (orLeftFalse p))
+        (dispatchMiss c ds f no (orRightFalse p))
+
+decimalDigit : Char → Bool
+decimalDigit c = (47 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 58)
+
+upperHex : Char → Bool
+upperHex c = (64 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 71)
+
+lowerHex : Char → Bool
+lowerHex c = (96 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 103)
+
+hexadecimalDigit : Char → Maybe ℕ
+hexadecimalDigit c = choose (decimalDigit c) (just (toℕ c ∸ 48))
+  (choose (upperHex c) (just (toℕ c ∸ 55))
+    (choose (lowerHex c) (just (toℕ c ∸ 87)) nothing))
+
+decimalRange : (c : _) → decimalDigit c ≡ ((47 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 58))
+decimalRange c = refl
+
+hexDecimal : (c : _) → (decimalDigit c ≡ true) → hexadecimalDigit c ≡ just (toℕ c ∸ 48)
+hexDecimal c p = chooseYes (decimalDigit c) (just (toℕ c ∸ 48))
+  (choose (upperHex c) (just (toℕ c ∸ 55)) (choose (lowerHex c) (just (toℕ c ∸ 87)) nothing)) p
+
+notDecimalAbove : (c : Char) → (hi : ℕ) → (58 <ᵇ suc hi) ≡ true → (hi <ᵇ toℕ c) ≡ true → decimalDigit c ≡ false
+notDecimalAbove c hi bound above =
+  andRightFalse (47 <ᵇ toℕ c) (toℕ c <ᵇ 58) (aboveExcludesBelow 58 hi (toℕ c) bound above)
+
+hexUppercase : (c : _) → (((64 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 71)) ≡ true) → hexadecimalDigit c ≡ just (toℕ c ∸ 55)
+hexUppercase c p =
+  trans (chooseNo (decimalDigit c) (just (toℕ c ∸ 48))
+          (choose (upperHex c) (just (toℕ c ∸ 55)) (choose (lowerHex c) (just (toℕ c ∸ 87)) nothing))
+          (notDecimalAbove c 64 refl (andLeft {64 <ᵇ toℕ c} {toℕ c <ᵇ 71} p)))
+        (chooseYes (upperHex c) (just (toℕ c ∸ 55)) (choose (lowerHex c) (just (toℕ c ∸ 87)) nothing) p)
+
+hexLowercase : (c : _) → (((96 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 103)) ≡ true) → hexadecimalDigit c ≡ just (toℕ c ∸ 87)
+hexLowercase c p =
+  trans (chooseNo (decimalDigit c) (just (toℕ c ∸ 48))
+          (choose (upperHex c) (just (toℕ c ∸ 55)) (choose (lowerHex c) (just (toℕ c ∸ 87)) nothing))
+          (notDecimalAbove c 96 refl (andLeft {96 <ᵇ toℕ c} {toℕ c <ᵇ 103} p)))
+    (trans (chooseNo (upperHex c) (just (toℕ c ∸ 55)) (choose (lowerHex c) (just (toℕ c ∸ 87)) nothing)
+              (andRightFalse (64 <ᵇ toℕ c) (toℕ c <ᵇ 71) (aboveExcludesBelow 71 96 (toℕ c) refl (andLeft {96 <ᵇ toℕ c} {toℕ c <ᵇ 103} p))))
+           (chooseYes (lowerHex c) (just (toℕ c ∸ 87)) nothing p))
+
+nonHex : (c : _) → ((decimalDigit c ∨ (((64 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 71)) ∨ ((96 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 103)))) ≡ false) → hexadecimalDigit c ≡ nothing
+nonHex c p =
+  trans (chooseNo (decimalDigit c) (just (toℕ c ∸ 48))
+          (choose (upperHex c) (just (toℕ c ∸ 55)) (choose (lowerHex c) (just (toℕ c ∸ 87)) nothing))
+          (orLeftFalse {decimalDigit c} {upperHex c ∨ lowerHex c} p))
+    (trans (chooseNo (upperHex c) (just (toℕ c ∸ 55)) (choose (lowerHex c) (just (toℕ c ∸ 87)) nothing)
+              (orLeftFalse {upperHex c} {lowerHex c} (orRightFalse {decimalDigit c} {upperHex c ∨ lowerHex c} p)))
+           (chooseNo (lowerHex c) (just (toℕ c ∸ 87)) nothing
+              (orRightFalse {upperHex c} {lowerHex c} (orRightFalse {decimalDigit c} {upperHex c ∨ lowerHex c} p))))
+
+hexStep : (c : Char) → {xs : List Char} → Maybe ℕ → (ℕ → Read ℕ xs) → Read ℕ (c ∷ xs)
+hexStep c nothing next = readError (unexpected c unicodeDigit)
+hexStep c (just d) next = dropRead c (next d)
+
+hexRead : ℕ → ℕ → (xs : List Char) → Read ℕ xs
+hexRead zero acc xs = readOK acc xs here
+hexRead (suc n) acc [] = readError incompleteDocument
+hexRead (suc n) acc (c ∷ xs) = hexStep c (hexadecimalDigit c) (λ d → hexRead n ((16 * acc) + d) xs)
+
+hexPrefix : ℕ → ℕ → List Char → Prefix ℕ
+hexPrefix n acc xs = erase (hexRead n acc xs)
+
+hexComplete : (acc : _) → (xs : _) → hexPrefix 0 acc xs ≡ consumed acc xs
+hexComplete acc xs = refl
+
+hexIncomplete : (n : _) → (acc : _) → hexPrefix (suc n) acc [] ≡ failed incompleteDocument
+hexIncomplete n acc = refl
+
+hexUnexpected : (n : _) → (acc : _) → (c : _) → (xs : _) → (hexadecimalDigit c ≡ nothing) → hexPrefix (suc n) acc (c ∷ xs) ≡ failed (unexpected c unicodeDigit)
+hexUnexpected n acc c xs p = cong (λ result → erase (hexStep c result (λ d → hexRead n ((16 * acc) + d) xs))) p
+
+hexNext : (n : _) → (acc : _) → (c : _) → (xs : _) → (d : _) → (hexadecimalDigit c ≡ just d) → hexPrefix (suc n) acc (c ∷ xs) ≡ hexPrefix n ((16 * acc) + d) xs
+hexNext n acc c xs d p =
+  trans (cong (λ result → erase (hexStep c result (λ v → hexRead n ((16 * acc) + v) xs))) p)
+        (dropErases c (hexRead n ((16 * acc) + d) xs))
+
+isHighSurrogate : ℕ → Bool
+isHighSurrogate n = (55295 <ᵇ n) ∧ (n <ᵇ 56320)
+
+isLowSurrogate : ℕ → Bool
+isLowSurrogate n = (56319 <ᵇ n) ∧ (n <ᵇ 57344)
+
+highRange : (n : _) → isHighSurrogate n ≡ ((55295 <ᵇ n) ∧ (n <ᵇ 56320))
+highRange n = refl
+
+lowRange : (n : _) → isLowSurrogate n ≡ ((56319 <ᵇ n) ∧ (n <ᵇ 57344))
+lowRange n = refl
+
+belowNextExcludesAbove : (bound n : ℕ) → (n <ᵇ suc bound) ≡ true → (bound <ᵇ n) ≡ false
+belowNextExcludesAbove zero zero p = refl
+belowNextExcludesAbove zero (suc n) p = ⊥-elim (notBelowZero n p)
+belowNextExcludesAbove (suc bound) zero p = refl
+belowNextExcludesAbove (suc bound) (suc n) p = belowNextExcludesAbove bound n p
+
+highNotLow : (n : ℕ) → isHighSurrogate n ≡ true → isLowSurrogate n ≡ false
+highNotLow n high = cong (λ b → b ∧ (n <ᵇ 57344))
+  (belowNextExcludesAbove 56319 n (andRight {55295 <ᵇ n} {n <ᵇ 56320} high))
+
+replacement : (xs : List Char) → Read Char xs
+replacement xs = readOK (primNatToChar 65533) xs here
+
+codepoint : ℕ → ℕ → Char
+codepoint n m = primNatToChar (65536 + ((1024 * (n ∸ 55296)) + (m ∸ 56320)))
+
+eraseChoice : {A : Set} → {xs : List Char} → (b : Bool) → (yes no : Read A xs) → erase (choose b yes no) ≡ choose b (erase yes) (erase no)
+eraseChoice true yes no = refl
+eraseChoice false yes no = refl
+
+secondRead : (n : ℕ) → (c d : Char) → (xs : List Char) → Read ℕ xs → Read Char (c ∷ d ∷ xs)
+secondRead n c d xs (readError e) = replacement (c ∷ d ∷ xs)
+secondRead n c d xs (readOK m rest s) =
+  choose (isLowSurrogate m) (readOK (codepoint n m) rest (skip (skip s))) (replacement (c ∷ d ∷ xs))
+
+secondView : ℕ → List Char → Prefix ℕ → Prefix Char
+secondView n xs (failed e) = consumed (primNatToChar 65533) xs
+secondView n xs (consumed m rest) = choose (isLowSurrogate m)
+  (consumed (codepoint n m) rest) (consumed (primNatToChar 65533) xs)
+
+secondErases : (n : ℕ) → (c d : Char) → (xs : List Char) → (r : Read ℕ xs) → erase (secondRead n c d xs r) ≡ secondView n (c ∷ d ∷ xs) (erase r)
+secondErases n c d xs (readError e) = refl
+secondErases n c d xs (readOK m rest s) =
+  eraseChoice (isLowSurrogate m) (readOK (codepoint n m) rest (skip (skip s))) (replacement (c ∷ d ∷ xs))
+
+startsSecond : Char → Char → Bool
+startsSecond c d = primCharEquality c '\\' ∧ primCharEquality d 'u'
+
+peekUnit : (n : ℕ) → (xs : List Char) → Read Char xs
+peekUnit n [] = replacement []
+peekUnit n (c ∷ []) = replacement (c ∷ [])
+peekUnit n (c ∷ d ∷ xs) = choose (startsSecond c d) (secondRead n c d xs (hexRead 4 0 xs)) (replacement (c ∷ d ∷ xs))
+
+utfMode : (n : ℕ) → (xs : List Char) → Bool → Bool → Read Char xs
+utfMode n xs true h = replacement xs
+utfMode n xs false true = peekUnit n xs
+utfMode n xs false false = readOK (primNatToChar n) xs here
+
+utfRead : (n : ℕ) → (xs : List Char) → Read Char xs
+utfRead n xs = utfMode n xs (isLowSurrogate n) (isHighSurrogate n)
+
+utf16Escape : Comparison → ℕ → List Char → Prefix Char
+utf16Escape eqs n xs = erase (utfRead n xs)
+
+ordinaryUnit : (eqs : Comparison) → (n : _) → (xs : _) → ((n <ᵇ 65536) ≡ true) → ((isHighSurrogate n ∨ isLowSurrogate n) ≡ false) → utf16Escape eqs n xs ≡ consumed (primNatToChar n) xs
+ordinaryUnit eqs n xs bounded p =
+  trans (cong (λ b → erase (utfMode n xs b (isHighSurrogate n))) (orRightFalse {isHighSurrogate n} {isLowSurrogate n} p))
+        (cong (λ b → erase (utfMode n xs false b)) (orLeftFalse {isHighSurrogate n} {isLowSurrogate n} p))
+
+isolatedLow : (eqs : Comparison) → (n : _) → (xs : _) → (isLowSurrogate n ≡ true) → utf16Escape eqs n xs ≡ consumed (primNatToChar 65533) xs
+isolatedLow eqs n xs p = cong (λ b → erase (utfMode n xs b (isHighSurrogate n))) p
+
+highPeek : (n : ℕ) → (xs : List Char) → isHighSurrogate n ≡ true → erase (utfRead n xs) ≡ erase (peekUnit n xs)
+highPeek n xs p =
+  trans (cong (λ b → erase (utfMode n xs b (isHighSurrogate n))) (highNotLow n p))
+        (cong (λ b → erase (utfMode n xs false b)) p)
+
+notSecond : (eqs : Comparison) → (c d : Char) → (xs : List Char) → take 2 (c ∷ d ∷ xs) ≢ ('\\' ∷ ('u' ∷ [])) → startsSecond c d ≡ false
+notSecond eqs c d xs apart = denyTrue (startsSecond c d) (λ p →
+  apart (trans (cong (λ e → e ∷ d ∷ []) (Comparison.charReflects eqs c '\\' (andLeft {primCharEquality c '\\'} {primCharEquality d 'u'} p)))
+               (cong (λ e → '\\' ∷ e ∷ []) (Comparison.charReflects eqs d 'u' (andRight {primCharEquality c '\\'} {primCharEquality d 'u'} p)))))
+
+peekMiss : (eqs : Comparison) → (n : ℕ) → (xs : List Char) → take 2 xs ≢ ('\\' ∷ ('u' ∷ [])) → erase (peekUnit n xs) ≡ consumed (primNatToChar 65533) xs
+peekMiss eqs n [] apart = refl
+peekMiss eqs n (c ∷ []) apart = refl
+peekMiss eqs n (c ∷ d ∷ xs) apart = cong erase
+  (chooseNo (startsSecond c d) (secondRead n c d xs (hexRead 4 0 xs)) (replacement (c ∷ d ∷ xs)) (notSecond eqs c d xs apart))
+
+noSecondUnit : (eqs : Comparison) → (n : _) → (xs : _) → (isHighSurrogate n ≡ true) → (take 2 xs ≢ ('\\' ∷ ('u' ∷ []))) → utf16Escape eqs n xs ≡ consumed (primNatToChar 65533) xs
+noSecondUnit eqs n xs p apart = trans (highPeek n xs p) (peekMiss eqs n xs apart)
+
+highSecond : (n : ℕ) → (xs : List Char) → isHighSurrogate n ≡ true → erase (utfRead n ('\\' ∷ 'u' ∷ xs)) ≡ secondView n ('\\' ∷ 'u' ∷ xs) (hexPrefix 4 0 xs)
+highSecond n xs p = trans (highPeek n ('\\' ∷ 'u' ∷ xs) p) (secondErases n '\\' 'u' xs (hexRead 4 0 xs))
+
+malformedSecondUnit : (eqs : Comparison) → (n : _) → (xs : _) → (fault : _) → (isHighSurrogate n ≡ true) → (hexPrefix 4 0 xs ≡ failed fault) → utf16Escape eqs n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar 65533) ('\\' ∷ ('u' ∷ xs))
+malformedSecondUnit eqs n xs err p h = trans (highSecond n xs p) (cong (secondView n ('\\' ∷ 'u' ∷ xs)) h)
+
+unmatchedSecondUnit : (eqs : Comparison) → (n : _) → (m : _) → (xs : _) → (rest : _) → (isHighSurrogate n ≡ true) → (hexPrefix 4 0 xs ≡ consumed m rest) → (isLowSurrogate m ≡ false) → utf16Escape eqs n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar 65533) ('\\' ∷ ('u' ∷ xs))
+unmatchedSecondUnit eqs n m xs rest p h low =
+  trans (highSecond n xs p)
+    (trans (cong (secondView n ('\\' ∷ 'u' ∷ xs)) h)
+      (chooseNo (isLowSurrogate m) (consumed (codepoint n m) rest) (consumed (primNatToChar 65533) ('\\' ∷ 'u' ∷ xs)) low))
+
+pairedUnits : (eqs : Comparison) → (n : _) → (m : _) → (xs : _) → (rest : _) → (isHighSurrogate n ≡ true) → (hexPrefix 4 0 xs ≡ consumed m rest) → (isLowSurrogate m ≡ true) → utf16Escape eqs n ('\\' ∷ ('u' ∷ xs)) ≡ consumed (primNatToChar (65536 + ((1024 * (n ∸ 55296)) + (m ∸ 56320)))) rest
+pairedUnits eqs n m xs rest p h low =
+  trans (highSecond n xs p)
+    (trans (cong (secondView n ('\\' ∷ 'u' ∷ xs)) h)
+      (chooseYes (isLowSurrogate m) (consumed (codepoint n m) rest) (consumed (primNatToChar 65533) ('\\' ∷ 'u' ∷ xs)) low))
+
+unitContinuation : {xs : List Char} → ℕ → (rest : List Char) → Suffix xs rest → Read Char rest
+unitContinuation n rest s = utfRead n rest
+
+escapeTag : (xs : List Char) → Char → Read Char xs
+escapeTag xs c = choose (primCharEquality c 'u')
+  (bindRead (hexRead 4 0 xs) unitContinuation)
+  (readOK (choose (primCharEquality c 'b') (primNatToChar 8)
+    (choose (primCharEquality c 'f') (primNatToChar 12)
+      (choose (primCharEquality c 'n') '\n'
+        (choose (primCharEquality c 'r') '\r'
+          (choose (primCharEquality c 't') '	' c))))) xs here)
+
+escapeHead : (c : Char) → (xs : List Char) → Read Char xs
+escapeHead c xs = dispatch c (toList "\"/\\bfnrtu") (escapeTag xs) (readError (unexpected c afterEscape))
+
+escapeRead : (xs : List Char) → Read Char xs
+escapeRead [] = readError incompleteDocument
+escapeRead (c ∷ xs) = dropRead c (escapeHead c xs)
+
+escapePrefix : Comparison → List Char → Prefix Char
+escapePrefix eqs xs = erase (escapeRead xs)
+
+absentEscape : (eqs : Comparison) → escapePrefix eqs [] ≡ failed incompleteDocument
+absentEscape eqs = refl
+
+quoteEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('\"' ∷ xs) ≡ consumed '\"' xs
+quoteEscape eqs xs = refl
+
+slashEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('/' ∷ xs) ≡ consumed '/' xs
+slashEscape eqs xs = refl
+
+backslashEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('\\' ∷ xs) ≡ consumed '\\' xs
+backslashEscape eqs xs = refl
+
+backspaceEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('b' ∷ xs) ≡ consumed (primNatToChar 8) xs
+backspaceEscape eqs xs = refl
+
+formfeedEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('f' ∷ xs) ≡ consumed (primNatToChar 12) xs
+formfeedEscape eqs xs = refl
+
+newlineEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('n' ∷ xs) ≡ consumed '\n' xs
+newlineEscape eqs xs = refl
+
+returnEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('r' ∷ xs) ≡ consumed '\r' xs
+returnEscape eqs xs = refl
+
+tabEscape : (eqs : Comparison) → (xs : _) → escapePrefix eqs ('t' ∷ xs) ≡ consumed '	' xs
+tabEscape eqs xs = refl
+
+escapedUnit : (eqs : Comparison) → (xs : _) → (n : _) → (rest : _) → (hexPrefix 4 0 xs ≡ consumed n rest) → escapePrefix eqs ('u' ∷ xs) ≡ utf16Escape eqs n rest
+escapedUnit eqs xs n rest p =
+  trans (dropErases 'u' (bindRead (hexRead 4 0 xs) unitContinuation))
+        (bindOK (hexRead 4 0 xs) unitContinuation p (λ s → refl))
+
+malformedUnit : (eqs : Comparison) → (xs : _) → (err : _) → (hexPrefix 4 0 xs ≡ failed err) → escapePrefix eqs ('u' ∷ xs) ≡ failed err
+malformedUnit eqs xs err p =
+  trans (dropErases 'u' (bindRead (hexRead 4 0 xs) unitContinuation))
+        (bindError (hexRead 4 0 xs) unitContinuation p)
+
+unknownEscape : (eqs : Comparison) → (c : _) → (xs : _) → (any (primCharEquality c) (toList "\"/\\bfnrtu") ≡ false) → escapePrefix eqs (c ∷ xs) ≡ failed (unexpected c afterEscape)
+unknownEscape eqs c xs p = cong (λ r → erase (dropRead c r))
+  (dispatchMiss c (toList "\"/\\bfnrtu") (escapeTag xs) (readError (unexpected c afterEscape)) p)
+
+-- Each row records a computation on one suffix of the input.
+data Table (Entry : List Char → Set) : List Char → Set where
+  baseRow : Entry [] → Table Entry []
+  consRow : {c : Char} → {xs : List Char} → Entry (c ∷ xs) → Table Entry xs → Table Entry (c ∷ xs)
+
+tableAt : {Entry : List Char → Set} → {xs ys : List Char} → Suffix xs ys → Table Entry xs → Entry ys
+tableAt here (baseRow e) = e
+tableAt here (consRow e t) = e
+tableAt (skip s) (consRow e t) = tableAt s t
+
+tabulate : {Entry : List Char → Set} → Entry [] → ((c : Char) → (xs : List Char) → Table Entry xs → Entry (c ∷ xs)) → (xs : List Char) → Table Entry xs
+tabulate base fill [] = baseRow base
+tabulate base fill (c ∷ xs) =
+  let tail = tabulate base fill xs
+  in consRow (fill c xs tail) tail
+
+tableAtLaw : {Entry : List Char → Set} → (base : Entry []) → (fill : (c : Char) → (xs : List Char) → Table Entry xs → Entry (c ∷ xs)) → {xs ys : List Char} → (s : Suffix xs ys) → tableAt s (tabulate base fill xs) ≡ tableAt here (tabulate base fill ys)
+tableAtLaw base fill here = refl
+tableAtLaw base fill (skip s) = tableAtLaw base fill s
+
+prependChar : Char → String → String
+prependChar c s = fromList ([ c ]) ++ˢ s
+
+bodyContinuation : {xs : List Char} → Table (Read String) xs → Char → (ys : List Char) → Suffix xs ys → Read String ys
+bodyContinuation t c ys s = mapRead (prependChar c) (tableAt s t)
+
+bodyHead : (c : Char) → (xs : List Char) → Table (Read String) xs → Bool → Bool → Bool → Read String xs
+bodyHead c xs t true q b = readError (unexpected c insideString)
+bodyHead c xs t false true b = readOK "" xs here
+bodyHead c xs t false false true = bindRead (escapeRead xs) (bodyContinuation t)
+bodyHead c xs t false false false = mapRead (prependChar c) (tableAt here t)
+
+bodyRow : (c : Char) → (xs : List Char) → Table (Read String) xs → Read String (c ∷ xs)
+bodyRow c xs t = dropRead c (bodyHead c xs t (toℕ c <ᵇ 32) (primCharEquality c '\"') (primCharEquality c '\\'))
+
+bodyTable : (xs : List Char) → Table (Read String) xs
+bodyTable xs = tabulate (readError incompleteDocument) bodyRow xs
+
+bodyRead : (xs : List Char) → Read String xs
+bodyRead xs = tableAt here (bodyTable xs)
+
+stringBody : Comparison → List Char → Prefix String
+stringBody eqs xs = erase (bodyRead xs)
+
+bodyUnclosed : (eqs : Comparison) → stringBody eqs [] ≡ failed incompleteDocument
+bodyUnclosed eqs = refl
+
+bodyClosed : (eqs : Comparison) → (xs : _) → stringBody eqs ('\"' ∷ xs) ≡ consumed "" xs
+bodyClosed eqs xs = refl
+
+bodyControl : (eqs : Comparison) → (c : _) → (xs : _) → ((toℕ c <ᵇ 32) ≡ true) → stringBody eqs (c ∷ xs) ≡ failed (unexpected c insideString)
+bodyControl eqs c xs p = cong (λ bit → erase (dropRead c (bodyHead c xs (bodyTable xs) bit (primCharEquality c '\"') (primCharEquality c '\\')))) p
+
+bodyPlain : (c : Char) → (xs : List Char) → ((toℕ c <ᵇ 32) ≡ false) → (any (primCharEquality c) (toList "\"\\") ≡ false) → erase (bodyRead (c ∷ xs)) ≡ erase (mapRead (prependChar c) (bodyRead xs))
+bodyPlain c xs control special =
+  trans (dropErases c (bodyHead c xs (bodyTable xs) (toℕ c <ᵇ 32) (primCharEquality c '\"') (primCharEquality c '\\')))
+    (trans (cong (λ bit → erase (bodyHead c xs (bodyTable xs) bit (primCharEquality c '\"') (primCharEquality c '\\'))) control)
+      (trans (cong (λ bit → erase (bodyHead c xs (bodyTable xs) false bit (primCharEquality c '\\')))
+                  (orLeftFalse {primCharEquality c '\"'} {primCharEquality c '\\' ∨ false} special))
+             (cong (λ bit → erase (bodyHead c xs (bodyTable xs) false false bit))
+                   (orLeftFalse {primCharEquality c '\\'} {false} (orRightFalse {primCharEquality c '\"'} {primCharEquality c '\\' ∨ false} special)))))
+
+bodyCharacter : (eqs : Comparison) → (c : _) → (xs : _) → (s : _) → (rest : _) → ((toℕ c <ᵇ 32) ≡ false) → (any (primCharEquality c) (toList "\"\\") ≡ false) → (stringBody eqs xs ≡ consumed s rest) → stringBody eqs (c ∷ xs) ≡ consumed (fromList ([ c ]) ++ˢ s) rest
+bodyCharacter eqs c xs s rest control special p =
+  trans (bodyPlain c xs control special) (mapOK (prependChar c) (bodyRead xs) p)
+
+bodyAfterCharacterError : (eqs : Comparison) → (c : _) → (xs : _) → (e : _) → ((toℕ c <ᵇ 32) ≡ false) → (any (primCharEquality c) (toList "\"\\") ≡ false) → (stringBody eqs xs ≡ failed e) → stringBody eqs (c ∷ xs) ≡ failed e
+bodyAfterCharacterError eqs c xs e control special p =
+  trans (bodyPlain c xs control special) (mapError (prependChar c) (bodyRead xs) p)
+
+bodyAfterSlash : (xs : List Char) → erase (bodyRead ('\\' ∷ xs)) ≡ erase (bindRead (escapeRead xs) (bodyContinuation (bodyTable xs)))
+bodyAfterSlash xs = dropErases '\\' (bindRead (escapeRead xs) (bodyContinuation (bodyTable xs)))
+
+bodyEscape : (eqs : Comparison) → (xs : _) → (c : _) → (mid : _) → (s : _) → (rest : _) → (escapePrefix eqs xs ≡ consumed c mid) → (stringBody eqs mid ≡ consumed s rest) → stringBody eqs ('\\' ∷ xs) ≡ consumed (fromList ([ c ]) ++ˢ s) rest
+bodyEscape eqs xs c mid s rest p q =
+  trans (bodyAfterSlash xs)
+    (bindOK (escapeRead xs) (bodyContinuation (bodyTable xs)) p
+      (λ w → trans (cong (λ r → erase (mapRead (prependChar c) r)) (tableAtLaw (readError incompleteDocument) bodyRow w))
+                   (mapOK (prependChar c) (bodyRead mid) q)))
+
+bodyEscapeError : (eqs : Comparison) → (xs : _) → (e : _) → (escapePrefix eqs xs ≡ failed e) → stringBody eqs ('\\' ∷ xs) ≡ failed e
+bodyEscapeError eqs xs e p =
+  trans (bodyAfterSlash xs) (bindError (escapeRead xs) (bodyContinuation (bodyTable xs)) p)
+
+bodyAfterEscapeError : (eqs : Comparison) → (xs : _) → (c : _) → (mid : _) → (e : _) → (escapePrefix eqs xs ≡ consumed c mid) → (stringBody eqs mid ≡ failed e) → stringBody eqs ('\\' ∷ xs) ≡ failed e
+bodyAfterEscapeError eqs xs c mid e p q =
+  trans (bodyAfterSlash xs)
+    (bindOK (escapeRead xs) (bodyContinuation (bodyTable xs)) p
+      (λ w → trans (cong (λ r → erase (mapRead (prependChar c) r)) (tableAtLaw (readError incompleteDocument) bodyRow w))
+                   (mapError (prependChar c) (bodyRead mid) q)))
+
+data DigitRun (xs : List Char) : Set where
+  digitsTo : List Char → (ys : List Char) → Suffix xs ys → DigitRun xs
+
+extendRun : {xs : List Char} → (c : Char) → DigitRun xs → DigitRun (c ∷ xs)
+extendRun c (digitsTo ds ys s) = digitsTo (c ∷ ds) ys (skip s)
+
+spanRead : (xs : List Char) → DigitRun xs
+spanRead [] = digitsTo [] [] here
+spanRead (c ∷ xs) = choose (decimalDigit c) (extendRun c (spanRead xs)) (digitsTo [] (c ∷ xs) here)
+
+digitsPair : {xs : List Char} → DigitRun xs → List Char × List Char
+digitsPair (digitsTo ds rest s) = ds , rest
+
+digitSpan : List Char → List Char × List Char
+digitSpan xs = digitsPair (spanRead xs)
+
+noDigitInput : digitSpan [] ≡ ([] , [])
+noDigitInput = refl
+
+stopDigitSpan : (c : _) → (xs : _) → (decimalDigit c ≡ false) → digitSpan (c ∷ xs) ≡ ([] , (c ∷ xs))
+stopDigitSpan c xs p = cong digitsPair
+  (chooseNo (decimalDigit c) (extendRun c (spanRead xs)) (digitsTo [] (c ∷ xs) here) p)
+
+extendRunPair : {xs : List Char} → (c : Char) → (r : DigitRun xs) → digitsPair (extendRun c r) ≡ ((c ∷ proj₁ (digitsPair r)) , proj₂ (digitsPair r))
+extendRunPair c (digitsTo ds rest s) = refl
+
+extendDigitSpan : (c : _) → (xs : _) → (ds : _) → (rest : _) → (decimalDigit c ≡ true) → (digitSpan xs ≡ (ds , rest)) → digitSpan (c ∷ xs) ≡ ((c ∷ ds) , rest)
+extendDigitSpan c xs ds rest p q =
+  trans (cong digitsPair (chooseYes (decimalDigit c) (extendRun c (spanRead xs)) (digitsTo [] (c ∷ xs) here) p))
+    (trans (extendRunPair c (spanRead xs)) (cong (λ pair → (c ∷ proj₁ pair) , proj₂ pair) q))
+
+firstDigits : {xs : List Char} → Char → DigitRun xs → Read (List Char) xs
+firstDigits c (digitsTo ds rest s) = readOK (c ∷ ds) rest s
+
+firstDigitsErases : {xs : List Char} → (c : Char) → (r : DigitRun xs) → erase (firstDigits c r) ≡ consumed (c ∷ proj₁ (digitsPair r)) (proj₂ (digitsPair r))
+firstDigitsErases c (digitsTo ds rest s) = refl
+
+digitsHead : Expectation → Char → (xs : List Char) → Read (List Char) xs
+digitsHead site c xs = choose (decimalDigit c) (firstDigits c (spanRead xs)) (readError (unexpected c site))
+
+digitsRead : Expectation → (xs : List Char) → Read (List Char) xs
+digitsRead site [] = readError incompleteDocument
+digitsRead site (c ∷ xs) = dropRead c (digitsHead site c xs)
+
+requiredDigits : Expectation → List Char → Prefix (List Char)
+requiredDigits site xs = erase (digitsRead site xs)
+
+missingDigits : (site : _) → requiredDigits site [] ≡ failed incompleteDocument
+missingDigits site = refl
+
+rejectedDigits : (site : _) → (c : _) → (xs : _) → (decimalDigit c ≡ false) → requiredDigits site (c ∷ xs) ≡ failed (unexpected c site)
+rejectedDigits site c xs p = cong (λ r → erase (dropRead c r))
+  (chooseNo (decimalDigit c) (firstDigits c (spanRead xs)) (readError (unexpected c site)) p)
+
+acceptedDigits : (site : _) → (c : _) → (xs : _) → (ds : _) → (rest : _) → (decimalDigit c ≡ true) → (digitSpan xs ≡ (ds , rest)) → requiredDigits site (c ∷ xs) ≡ consumed (c ∷ ds) rest
+acceptedDigits site c xs ds rest p q =
+  trans (dropErases c (digitsHead site c xs))
+    (trans (cong erase (chooseYes (decimalDigit c) (firstDigits c (spanRead xs)) (readError (unexpected c site)) p))
+      (trans (firstDigitsErases c (spanRead xs)) (cong (λ pair → consumed (c ∷ proj₁ pair) (proj₂ pair)) q)))
+
+unsignedHead : Char → (xs : List Char) → Read (List Char) xs
+unsignedHead c xs = choose (primCharEquality c '0') (readOK ([ '0' ]) xs here) (digitsHead integerDigit c xs)
+
+unsignedRead : (xs : List Char) → Read (List Char) xs
+unsignedRead [] = readError incompleteDocument
+unsignedRead (c ∷ xs) = dropRead c (unsignedHead c xs)
+
+unsignedInteger : Comparison → List Char → Prefix (List Char)
+unsignedInteger eqs xs = erase (unsignedRead xs)
+
+zeroInteger : (eqs : Comparison) → (xs : _) → unsignedInteger eqs ('0' ∷ xs) ≡ consumed ([ '0' ]) xs
+zeroInteger eqs xs = refl
+
+otherInteger : (eqs : Comparison) → (xs : _) → (take 1 xs ≢ ([ '0' ])) → unsignedInteger eqs xs ≡ requiredDigits integerDigit xs
+otherInteger eqs [] p = refl
+otherInteger eqs (c ∷ xs) p = cong (λ r → erase (dropRead c r))
+  (chooseNo (primCharEquality c '0') (readOK ([ '0' ]) xs here) (digitsHead integerDigit c xs) (headNo eqs c '0' xs p))
+
+signedHead : Char → (xs : List Char) → Read (List Char) xs
+signedHead c xs = choose (primCharEquality c '-') (mapRead (λ ds → '-' ∷ ds) (unsignedRead xs)) (unsignedHead c xs)
+
+signedRead : (xs : List Char) → Read (List Char) xs
+signedRead [] = readError incompleteDocument
+signedRead (c ∷ xs) = dropRead c (signedHead c xs)
+
+signedInteger : Comparison → List Char → Prefix (List Char)
+signedInteger eqs xs = erase (signedRead xs)
+
+positiveInteger : (eqs : Comparison) → (xs : _) → (take 1 xs ≢ ([ '-' ])) → signedInteger eqs xs ≡ unsignedInteger eqs xs
+positiveInteger eqs [] p = refl
+positiveInteger eqs (c ∷ xs) p = cong (λ r → erase (dropRead c r))
+  (chooseNo (primCharEquality c '-') (mapRead (λ ds → '-' ∷ ds) (unsignedRead xs)) (unsignedHead c xs) (headNo eqs c '-' xs p))
+
+negativeInteger : (eqs : Comparison) → (xs : _) → (ds : _) → (rest : _) → (unsignedInteger eqs xs ≡ consumed ds rest) → signedInteger eqs ('-' ∷ xs) ≡ consumed ('-' ∷ ds) rest
+negativeInteger eqs xs ds rest p =
+  trans (dropErases '-' (mapRead (λ chars → '-' ∷ chars) (unsignedRead xs)))
+        (mapOK (λ chars → '-' ∷ chars) (unsignedRead xs) p)
+
+negativeIntegerError : (eqs : Comparison) → (xs : _) → (e : _) → (unsignedInteger eqs xs ≡ failed e) → signedInteger eqs ('-' ∷ xs) ≡ failed e
+negativeIntegerError eqs xs e p =
+  trans (dropErases '-' (mapRead (λ chars → '-' ∷ chars) (unsignedRead xs)))
+        (mapError (λ chars → '-' ∷ chars) (unsignedRead xs) p)
+
+optionalHead : (c : Char) → (xs : List Char) → Bool → Read (List Char) xs → Read (List Char) (c ∷ xs)
+optionalHead c xs true r = dropRead c (mapRead (λ ds → c ∷ ds) r)
+optionalHead c xs false r = readOK [] (c ∷ xs) here
+
+optionalSelected : (c : Char) → (xs : List Char) → (b : Bool) → (r : Read (List Char) xs) → b ≡ true → erase (optionalHead c xs b r) ≡ erase (mapRead (λ ds → c ∷ ds) r)
+optionalSelected c xs b r p =
+  trans (cong (λ j → erase (optionalHead c xs j r)) p) (dropErases c (mapRead (λ ds → c ∷ ds) r))
+
+fractionRead : (xs : List Char) → Read (List Char) xs
+fractionRead [] = readOK [] [] here
+fractionRead (c ∷ xs) = optionalHead c xs (primCharEquality c '.') (digitsRead fractionalDigit xs)
+
+fraction : Comparison → List Char → Prefix (List Char)
+fraction eqs xs = erase (fractionRead xs)
+
+noFraction : (eqs : Comparison) → (xs : _) → (take 1 xs ≢ ([ '.' ])) → fraction eqs xs ≡ consumed [] xs
+noFraction eqs [] p = refl
+noFraction eqs (c ∷ xs) p =
+  cong (λ bit → erase (optionalHead c xs bit (digitsRead fractionalDigit xs))) (headNo eqs c '.' xs p)
+
+fractionWithDigits : (eqs : Comparison) → (xs : _) → (ds : _) → (rest : _) → (requiredDigits fractionalDigit xs ≡ consumed ds rest) → fraction eqs ('.' ∷ xs) ≡ consumed ('.' ∷ ds) rest
+fractionWithDigits eqs xs ds rest p =
+  trans (dropErases '.' (mapRead (λ chars → '.' ∷ chars) (digitsRead fractionalDigit xs)))
+        (mapOK (λ chars → '.' ∷ chars) (digitsRead fractionalDigit xs) p)
+
+fractionWithoutDigits : (eqs : Comparison) → (xs : _) → (e : _) → (requiredDigits fractionalDigit xs ≡ failed e) → fraction eqs ('.' ∷ xs) ≡ failed e
+fractionWithoutDigits eqs xs e p =
+  trans (dropErases '.' (mapRead (λ chars → '.' ∷ chars) (digitsRead fractionalDigit xs)))
+        (mapError (λ chars → '.' ∷ chars) (digitsRead fractionalDigit xs) p)
+
+expSign : Char → Bool
+expSign c = primCharEquality c '+' ∨ primCharEquality c '-'
+
+expBodyHead : Char → (xs : List Char) → Read (List Char) xs
+expBodyHead c xs = choose (expSign c) (mapRead (λ ds → c ∷ ds) (digitsRead exponentDigit xs)) (digitsHead exponentDigit c xs)
+
+expBodyRead : (xs : List Char) → Read (List Char) xs
+expBodyRead [] = readError incompleteDocument
+expBodyRead (c ∷ xs) = dropRead c (expBodyHead c xs)
+
+exponentBody : Comparison → List Char → Prefix (List Char)
+exponentBody eqs xs = erase (expBodyRead xs)
+
+exponentWithoutSign : (eqs : Comparison) → (xs : _) → (take 1 xs ≢ ([ '+' ])) → (take 1 xs ≢ ([ '-' ])) → exponentBody eqs xs ≡ requiredDigits exponentDigit xs
+exponentWithoutSign eqs [] p q = refl
+exponentWithoutSign eqs (c ∷ xs) p q = cong (λ r → erase (dropRead c r))
+  (chooseNo (expSign c) (mapRead (λ ds → c ∷ ds) (digitsRead exponentDigit xs)) (digitsHead exponentDigit c xs)
+    (orFalse (headNo eqs c '+' xs p) (headNo eqs c '-' xs q)))
+
+expSigned : (c : Char) → (xs : List Char) → expSign c ≡ true → erase (expBodyRead (c ∷ xs)) ≡ erase (mapRead (λ ds → c ∷ ds) (digitsRead exponentDigit xs))
+expSigned c xs p =
+  trans (dropErases c (expBodyHead c xs))
+    (cong erase (chooseYes (expSign c) (mapRead (λ ds → c ∷ ds) (digitsRead exponentDigit xs)) (digitsHead exponentDigit c xs) p))
+
+exponentWithSign : (eqs : Comparison) → (c : _) → (xs : _) → (ds : _) → (rest : _) → ((primCharEquality c '+' ∨ primCharEquality c '-') ≡ true) → (requiredDigits exponentDigit xs ≡ consumed ds rest) → exponentBody eqs (c ∷ xs) ≡ consumed (c ∷ ds) rest
+exponentWithSign eqs c xs ds rest p q =
+  trans (expSigned c xs p) (mapOK (λ chars → c ∷ chars) (digitsRead exponentDigit xs) q)
+
+exponentSignError : (eqs : Comparison) → (c : _) → (xs : _) → (e : _) → ((primCharEquality c '+' ∨ primCharEquality c '-') ≡ true) → (requiredDigits exponentDigit xs ≡ failed e) → exponentBody eqs (c ∷ xs) ≡ failed e
+exponentSignError eqs c xs e p q =
+  trans (expSigned c xs p) (mapError (λ chars → c ∷ chars) (digitsRead exponentDigit xs) q)
+
+expMarker : Char → Bool
+expMarker c = primCharEquality c 'e' ∨ primCharEquality c 'E'
+
+exponentRead : (xs : List Char) → Read (List Char) xs
+exponentRead [] = readOK [] [] here
+exponentRead (c ∷ xs) = optionalHead c xs (expMarker c) (expBodyRead xs)
+
+exponent : Comparison → List Char → Prefix (List Char)
+exponent eqs xs = erase (exponentRead xs)
+
+noExponent : (eqs : Comparison) → (xs : _) → (take 1 xs ≢ ([ 'e' ])) → (take 1 xs ≢ ([ 'E' ])) → exponent eqs xs ≡ consumed [] xs
+noExponent eqs [] p q = refl
+noExponent eqs (c ∷ xs) p q =
+  cong (λ bit → erase (optionalHead c xs bit (expBodyRead xs)))
+       (orFalse (headNo eqs c 'e' xs p) (headNo eqs c 'E' xs q))
+
+exponentWithDigits : (eqs : Comparison) → (c : _) → (xs : _) → (ds : _) → (rest : _) → ((primCharEquality c 'e' ∨ primCharEquality c 'E') ≡ true) → (exponentBody eqs xs ≡ consumed ds rest) → exponent eqs (c ∷ xs) ≡ consumed (c ∷ ds) rest
+exponentWithDigits eqs c xs ds rest p q =
+  trans (optionalSelected c xs (expMarker c) (expBodyRead xs) p)
+        (mapOK (λ chars → c ∷ chars) (expBodyRead xs) q)
+
+exponentWithoutDigits : (eqs : Comparison) → (c : _) → (xs : _) → (e : _) → ((primCharEquality c 'e' ∨ primCharEquality c 'E') ≡ true) → (exponentBody eqs xs ≡ failed e) → exponent eqs (c ∷ xs) ≡ failed e
+exponentWithoutDigits eqs c xs e p q =
+  trans (optionalSelected c xs (expMarker c) (expBodyRead xs) p)
+        (mapError (λ chars → c ∷ chars) (expBodyRead xs) q)
+
+chainRead : {A B : Set} → {xs : List Char} → Read A xs → (A → (ys : List Char) → Read B ys) → Read B xs
+chainRead r k = bindRead r (λ a ys s → k a ys)
+
+chainPrefix : {A B : Set} → Prefix A → (A → List Char → Prefix B) → Prefix B
+chainPrefix (consumed a ys) k = k a ys
+chainPrefix (failed e) k = failed e
+
+chainErases : {A B : Set} → {xs : List Char} → (r : Read A xs) → (k : A → (ys : List Char) → Read B ys) → erase (chainRead r k) ≡ chainPrefix (erase r) (λ a ys → erase (k a ys))
+chainErases (readOK a ys s) k = pushErases s (k a ys)
+chainErases (readError e) k = refl
+
+numberFinish : List Char → List Char → (xs : List Char) → Read String xs
+numberFinish i f xs = mapRead (λ d → fromList (i ++ (f ++ d))) (exponentRead xs)
+
+numberFraction : List Char → (xs : List Char) → Read String xs
+numberFraction i xs = chainRead (fractionRead xs) (numberFinish i)
+
+numberHead : Char → (xs : List Char) → Read String xs
+numberHead c xs = chainRead (signedHead c xs) numberFraction
+
+numberRead : (xs : List Char) → Read String xs
+numberRead [] = readError incompleteDocument
+numberRead (c ∷ xs) = dropRead c (numberHead c xs)
+
+numberPrefix : Comparison → List Char → Prefix String
+numberPrefix eqs xs = erase (numberRead xs)
+
+numberChain : (eqs : Comparison) → (xs : List Char) → numberPrefix eqs xs ≡ chainPrefix (signedInteger eqs xs) (λ i ys → erase (numberFraction i ys))
+numberChain eqs [] = refl
+numberChain eqs (c ∷ xs) =
+  trans (dropErases c (numberHead c xs))
+    (trans (chainErases (signedHead c xs) numberFraction)
+           (cong (λ p → chainPrefix p (λ i ys → erase (numberFraction i ys))) (sym (dropErases c (signedHead c xs)))))
+
+numberWithParts : (eqs : Comparison) → (xs : _) → (i : _) → (r : _) → (f : _) → (q : _) → (d : _) → (rest : _) → (signedInteger eqs xs ≡ consumed i r) → (fraction eqs r ≡ consumed f q) → (exponent eqs q ≡ consumed d rest) → numberPrefix eqs xs ≡ consumed (fromList (i ++ (f ++ d))) rest
+numberWithParts eqs xs i r f q d rest p h j =
+  trans (numberChain eqs xs)
+    (trans (cong (λ w → chainPrefix w (λ a ys → erase (numberFraction a ys))) p)
+      (trans (chainErases (fractionRead r) (numberFinish i))
+        (trans (cong (λ w → chainPrefix w (λ a ys → erase (numberFinish i a ys))) h)
+          (mapOK (λ chars → fromList (i ++ (f ++ chars))) (exponentRead q) j))))
+
+numberIntegerError : (eqs : Comparison) → (xs : _) → (e : _) → (signedInteger eqs xs ≡ failed e) → numberPrefix eqs xs ≡ failed e
+numberIntegerError eqs xs e p =
+  trans (numberChain eqs xs) (cong (λ w → chainPrefix w (λ a ys → erase (numberFraction a ys))) p)
+
+numberFractionError : (eqs : Comparison) → (xs : _) → (i : _) → (r : _) → (e : _) → (signedInteger eqs xs ≡ consumed i r) → (fraction eqs r ≡ failed e) → numberPrefix eqs xs ≡ failed e
+numberFractionError eqs xs i r e p h =
+  trans (numberChain eqs xs)
+    (trans (cong (λ w → chainPrefix w (λ a ys → erase (numberFraction a ys))) p)
+      (trans (chainErases (fractionRead r) (numberFinish i))
+             (cong (λ w → chainPrefix w (λ a ys → erase (numberFinish i a ys))) h)))
+
+numberExponentError : (eqs : Comparison) → (xs : _) → (i : _) → (r : _) → (f : _) → (q : _) → (e : _) → (signedInteger eqs xs ≡ consumed i r) → (fraction eqs r ≡ consumed f q) → (exponent eqs q ≡ failed e) → numberPrefix eqs xs ≡ failed e
+numberExponentError eqs xs i r f q e p h j =
+  trans (numberChain eqs xs)
+    (trans (cong (λ w → chainPrefix w (λ a ys → erase (numberFraction a ys))) p)
+      (trans (chainErases (fractionRead r) (numberFinish i))
+        (trans (cong (λ w → chainPrefix w (λ a ys → erase (numberFinish i a ys))) h)
+               (mapError (λ chars → fromList (i ++ (f ++ chars))) (exponentRead q) j))))
+
+wordRead : {A : Set} → A → String → List Char → (xs : List Char) → Read A xs
+wordRead a word [] xs = readOK a xs here
+wordRead a word (c ∷ cs) [] = readError incompleteDocument
+wordRead a word (c ∷ cs) (d ∷ xs) = choose (primCharEquality c d)
+  (dropRead d (wordRead a word cs xs)) (readError (unexpected d (inWord word c)))
+
+literalSuffix : {A : Set} → Comparison → A → String → List Char → List Char → Prefix A
+literalSuffix eqs a word expect xs = erase (wordRead a word expect xs)
+
+wordComplete : {A : Set} → (eqs : Comparison) → (a : _) → (word : _) → (xs : _) → literalSuffix {A} eqs a word [] xs ≡ consumed a xs
+wordComplete eqs a word xs = refl
+
+wordIncomplete : {A : Set} → (eqs : Comparison) → (a : _) → (word : _) → (c : _) → (cs : _) → literalSuffix {A} eqs a word (c ∷ cs) [] ≡ failed incompleteDocument
+wordIncomplete eqs a word c cs = refl
+
+wordMatched : {A : Set} → (eqs : Comparison) → (a : _) → (word : _) → (c : _) → (cs : _) → (xs : _) → literalSuffix {A} eqs a word (c ∷ cs) (c ∷ xs) ≡ literalSuffix {A} eqs a word cs xs
+wordMatched eqs a word c cs xs =
+  trans (cong erase (chooseYes (primCharEquality c c) (dropRead c (wordRead a word cs xs)) (readError (unexpected c (inWord word c))) (Comparison.charRefl eqs c)))
+        (dropErases c (wordRead a word cs xs))
+
+wordMismatch : {A : Set} → (eqs : Comparison) → (a : _) → (word : _) → (c : _) → (d : _) → (cs : _) → (xs : _) → (primCharEquality c d ≡ false) → literalSuffix {A} eqs a word (c ∷ cs) (d ∷ xs) ≡ failed (unexpected d (inWord word c))
+wordMismatch eqs a word c d cs xs p = cong erase
+  (chooseNo (primCharEquality c d) (dropRead d (wordRead a word cs xs)) (readError (unexpected d (inWord word c))) p)
+
+matchingValues : {A : Set} → Comparison → String → List (String × A) → List A
+matchingValues eqs k [] = []
+matchingValues eqs k ((l , v) ∷ fields) =
+  let older = matchingValues eqs k fields
+  in choose (primStringEquality k l) (older ++ ([ v ])) older
+
+noMatchingValues : {A : Set} → (eqs : Comparison) → (k : _) → matchingValues {A} eqs k [] ≡ []
+noMatchingValues eqs k = refl
+
+nextMatchingValue : {A : Set} → (eqs : Comparison) → (k : _) → (v : _) → (fields : _) → matchingValues {A} eqs k ((k , v) ∷ fields) ≡ (matchingValues {A} eqs k fields ++ ([ v ]))
+nextMatchingValue eqs k v fields = chooseYes (primStringEquality k k)
+  (matchingValues eqs k fields ++ ([ v ])) (matchingValues eqs k fields) (Comparison.stringRefl eqs k)
+
+otherMatchingValue : {A : Set} → (eqs : Comparison) → (k : _) → (l : _) → (v : _) → (fields : _) → (primStringEquality k l ≡ false) → matchingValues {A} eqs k ((l , v) ∷ fields) ≡ matchingValues {A} eqs k fields
+otherMatchingValue eqs k l v fields p = chooseNo (primStringEquality k l)
+  (matchingValues eqs k fields ++ ([ v ])) (matchingValues eqs k fields) p
+
+keepUnshadowed : {A : Set} → List A → String × A → List (String × A) → List (String × A)
+keepUnshadowed [] fieldEntry fields = fieldEntry ∷ fields
+keepUnshadowed (a ∷ as) fieldEntry fields = fields
+
+resolveFields : {A : Set} → Comparison → List (String × A) → List (String × A)
+resolveFields eqs [] = []
+resolveFields eqs ((k , v) ∷ fields) = keepUnshadowed (matchingValues eqs k fields) (k , v) (resolveFields eqs fields)
+
+firstMatch : {A : Set} → List A → List A
+firstMatch [] = []
+firstMatch (v ∷ vs) = [ v ]
+
+resolveSame : {A : Set} → (eqs : Comparison) → (k : String) → (v : A) → (kept : List (String × A)) → (matches : List A) →
+  matchingValues eqs k kept ≡ firstMatch matches →
+  matchingValues eqs k (keepUnshadowed matches (k , v) kept) ≡ firstMatch (matches ++ ([ v ]))
+resolveSame eqs k v kept [] p =
+  trans (nextMatchingValue eqs k v kept) (cong (λ ms → ms ++ ([ v ])) p)
+resolveSame eqs k v kept (a ∷ as) p = p
+
+resolveOther : {A : Set} → (eqs : Comparison) → (k l : String) → (v : A) → (kept : List (String × A)) → (matches : List A) →
+  primStringEquality k l ≡ false → matchingValues eqs k (keepUnshadowed matches (l , v) kept) ≡ matchingValues eqs k kept
+resolveOther eqs k l v kept [] p = otherMatchingValue eqs k l v kept p
+resolveOther eqs k l v kept (a ∷ as) p = refl
+
+resolvedMatches : {A : Set} → (eqs : Comparison) → (k : String) → (fields : List (String × A)) →
+  matchingValues eqs k (resolveFields eqs fields) ≡ firstMatch (matchingValues eqs k fields)
+resolvedMatches eqs k [] = refl
+resolvedMatches eqs k ((l , v) ∷ fields) = splitBool (primStringEquality k l)
+  (λ same →
+    subst (λ key → matchingValues eqs key (resolveFields eqs ((l , v) ∷ fields)) ≡ firstMatch (matchingValues eqs key ((l , v) ∷ fields)))
+      (sym (Comparison.stringReflects eqs k l same))
+      (trans (resolveSame eqs l v (resolveFields eqs fields) (matchingValues eqs l fields) (resolvedMatches eqs l fields))
+             (sym (cong firstMatch (nextMatchingValue eqs l v fields)))))
+  (λ other →
+    trans (resolveOther eqs k l v (resolveFields eqs fields) (matchingValues eqs l fields) other)
+      (trans (resolvedMatches eqs k fields) (sym (cong firstMatch (otherMatchingValue eqs k l v fields other)))))
+
+resolveEmpty : {A : Set} → (eqs : Comparison) → resolveFields {A} eqs [] ≡ []
+resolveEmpty eqs = refl
+
+resolveAbsent : {A : Set} → (eqs : Comparison) → (k : _) → (fields : _) → (matchingValues {A} eqs k fields ≡ []) → matchingValues {A} eqs k (resolveFields {A} eqs fields) ≡ []
+resolveAbsent eqs k fields p = trans (resolvedMatches eqs k fields) (cong firstMatch p)
+
+resolveNewest : {A : Set} → (eqs : Comparison) → (k : _) → (v : _) → (older : _) → (fields : _) → (matchingValues {A} eqs k fields ≡ (v ∷ older)) → matchingValues {A} eqs k (resolveFields {A} eqs fields) ≡ ([ v ])
+resolveNewest eqs k v older fields p = trans (resolvedMatches eqs k fields) (cong firstMatch p)
+
+data TrimmedStart (layout : Layout) : List Char → Set where
+  trimmedEnd : TrimmedStart layout []
+  trimmedHead : {c : Char} → {xs : List Char} → Layout.isSpace layout c ≡ false → TrimmedStart layout (c ∷ xs)
+
+headNotSpace : {layout : Layout} → {c : Char} → {xs : List Char} → TrimmedStart layout (c ∷ xs) → Layout.isSpace layout c ≡ false
+headNotSpace (trimmedHead p) = p
+
+record Trim (layout : Layout) (xs : List Char) : Set where
+  constructor trimTo
+  field
+    trimChars : List Char
+    trimSuffix : Suffix xs trimChars
+    trimAgrees : Layout.trimSpace layout xs ≡ trimChars
+    trimStarts : TrimmedStart layout trimChars
+
+dropTrim : (layout : Layout) → (c : Char) → (xs : List Char) → Layout.isSpace layout c ≡ true → Trim layout xs → Trim layout (c ∷ xs)
+dropTrim layout c xs p (trimTo ys s equal start) =
+  trimTo ys (skip s) (trans (Layout.trimHead layout c xs p) equal) start
+
+spaceKind : Char → Bool
+spaceKind c = primCharEquality c ' ' ∨ (primCharEquality c '	' ∨ (primCharEquality c '\r' ∨ primCharEquality c '\n'))
+
+trimRead : (layout : Layout) → (xs : List Char) → Trim layout xs
+trimRead layout [] = trimTo [] here (Layout.trimEmpty layout) trimmedEnd
+trimRead layout (c ∷ xs) = splitBool (spaceKind c)
+  (λ p → dropTrim layout c xs (trans (Layout.spaceClass layout c) p) (trimRead layout xs))
+  (λ p → trimTo (c ∷ xs) here
+    (Layout.keepHead layout c xs (trans (Layout.spaceClass layout c) p))
+    (trimmedHead (trans (Layout.spaceClass layout c) p)))
+
+trimmedNotSpace : (layout : Layout) → (xs : List Char) → (c : Char) → (cs : List Char) → Layout.trimSpace layout xs ≡ (c ∷ cs) → Layout.isSpace layout c ≡ false
+trimmedNotSpace layout xs c cs p = headNotSpace
+  (subst (TrimmedStart layout) (trans (sym (Trim.trimAgrees (trimRead layout xs))) p) (Trim.trimStarts (trimRead layout xs)))
+
+record Rows (Entry : List Char → Set) : Set where
+  constructor rows
+  field
+    atEnd : Entry []
+    atHead : (c : Char) → (xs : List Char) → Table Entry xs → Entry (c ∷ xs)
+
+rowTable : {Entry : List Char → Set} → Rows Entry → (xs : List Char) → Table Entry xs
+rowTable (rows base fill) xs = tabulate base fill xs
+
+rowAtLaw : {Entry : List Char → Set} → (r : Rows Entry) → {xs ys : List Char} → (s : Suffix xs ys) → tableAt s (rowTable r xs) ≡ tableAt here (rowTable r ys)
+rowAtLaw (rows base fill) s = tableAtLaw base fill s
+
+trimLookup : {Entry : List Char → Set} → {R : Set} → {layout : Layout} → {base xs : List Char} →
+  ((ys : List Char) → Entry ys → Read R ys) → Suffix base xs → Table Entry base → Trim layout xs → Read R xs
+trimLookup slot s t (trimTo ys tail p start) =
+  pushRead tail (slot ys (tableAt (joinSuffix s tail) t))
+
+readTrimmed : {Entry : List Char → Set} → {R : Set} →
+  ((ys : List Char) → Entry ys → Read R ys) → (layout : Layout) → {base : List Char} →
+  (xs : List Char) → Suffix base xs → Table Entry base → Read R xs
+readTrimmed slot layout xs s t = trimLookup slot s t (trimRead layout xs)
+
+trimmedAtLaw : {Entry : List Char → Set} → {R : Set} → (r : Rows Entry) → (slot : (ys : List Char) → Entry ys → Read R ys) →
+  {layout : Layout} → {base xs : List Char} → (s : Suffix base xs) → (tr : Trim layout xs) →
+  erase (trimLookup slot s (rowTable r base) tr) ≡
+  erase (slot (Trim.trimChars tr) (tableAt here (rowTable r (Trim.trimChars tr))))
+trimmedAtLaw r slot s (trimTo ys tail p start) =
+  trans (pushErases tail (slot ys (tableAt (joinSuffix s tail) (rowTable r _))))
+        (cong (λ entry → erase (slot ys entry)) (rowAtLaw r (joinSuffix s tail)))
+
+readTrimLaw : {Entry : List Char → Set} → {R : Set} → (r : Rows Entry) → (slot : (ys : List Char) → Entry ys → Read R ys) →
+  (layout : Layout) → {base : List Char} → (xs : List Char) → (s : Suffix base xs) → (ys : List Char) → Layout.trimSpace layout xs ≡ ys →
+  erase (readTrimmed slot layout xs s (rowTable r base)) ≡ erase (slot ys (tableAt here (rowTable r ys)))
+readTrimLaw r slot layout xs s ys p =
+  trans (trimmedAtLaw r slot s (trimRead layout xs))
+        (cong (λ tail → erase (slot tail (tableAt here (rowTable r tail))))
+          (trans (sym (Trim.trimAgrees (trimRead layout xs))) p))
+
+trimLookupLaw : {Entry : List Char → Set} → {R : Set} → (r : Rows Entry) → (slot : (ys : List Char) → Entry ys → Read R ys) →
+  (layout : Layout) → {base : List Char} → (xs : List Char) → (s : Suffix base xs) →
+  erase (readTrimmed slot layout xs s (rowTable r base)) ≡ erase (readTrimmed slot layout xs here (rowTable r xs))
+trimLookupLaw r slot layout xs s =
+  trans (readTrimLaw r slot layout xs s (Layout.trimSpace layout xs) refl)
+        (sym (readTrimLaw r slot layout xs here (Layout.trimSpace layout xs) refl))
+
+record Frame (A : Set) (xs : List Char) : Set where
+  constructor frame
+  field
+    valueCell : ℕ → Read A xs
+    arrayItemsCell : ℕ → Bool → Read (List A) xs
+    arrayTailCell : ℕ → Read (List A) xs
+    objectItemsCell : ℕ → Bool → Read (List (String × A)) xs
+    objectTailCell : ℕ → Read (List (String × A)) xs
+    memberCell : ℕ → Read (String × A) xs
+    colonCell : ℕ → Read A xs
+
+valueSlot : {A : Set} → ℕ → (xs : List Char) → Frame A xs → Read A xs
+valueSlot budget xs row = Frame.valueCell row budget
+
+arrayItemsSlot : {A : Set} → ℕ → Bool → (xs : List Char) → Frame A xs → Read (List A) xs
+arrayItemsSlot budget empty xs row = Frame.arrayItemsCell row budget empty
+
+arrayTailSlot : {A : Set} → ℕ → (xs : List Char) → Frame A xs → Read (List A) xs
+arrayTailSlot budget xs row = Frame.arrayTailCell row budget
+
+objectItemsSlot : {A : Set} → ℕ → Bool → (xs : List Char) → Frame A xs → Read (List (String × A)) xs
+objectItemsSlot budget empty xs row = Frame.objectItemsCell row budget empty
+
+objectTailSlot : {A : Set} → ℕ → (xs : List Char) → Frame A xs → Read (List (String × A)) xs
+objectTailSlot budget xs row = Frame.objectTailCell row budget
+
+memberSlot : {A : Set} → ℕ → (xs : List Char) → Frame A xs → Read (String × A) xs
+memberSlot budget xs row = Frame.memberCell row budget
+
+colonSlot : {A : Set} → ℕ → (xs : List Char) → Frame A xs → Read A xs
+colonSlot budget xs row = Frame.colonCell row budget
+
+itemsRest : {Entry : List Char → Set} → {X : Set} → {xs : List Char} →
+  ((ys : List Char) → Entry ys → Read (List X) ys) → Layout → Table Entry xs →
+  X → (ys : List Char) → Suffix xs ys → Read (List X) ys
+itemsRest slot layout t v ys s = mapRead (λ vs → v ∷ vs) (readTrimmed slot layout ys s t)
+
+itemsHead : {X : Set} → (c close : Char) → (xs : List Char) → Bool → Read X xs →
+  ((v : X) → (ys : List Char) → Suffix xs ys → Read (List X) ys) → Read (List X) (c ∷ xs)
+itemsHead c close xs empty first next = choose (empty ∧ primCharEquality c close)
+  (readOK [] xs (skip here)) (dropRead c (bindRead first next))
+
+tailHead : {X : Set} → (c close : Char) → (xs : List Char) → Expectation → Read (List X) xs → Read (List X) (c ∷ xs)
+tailHead c close xs site next = choose (primCharEquality c close) (readOK [] xs (skip here))
+  (choose (primCharEquality c ',') (dropRead c next) (readError (unexpected c site)))
+
+finishContainer : {X R : Set} → {xs : List Char} → Char → (List X → R) → (ℕ → Read (List X) xs) → ℕ → Read R xs
+finishContainer opening build items zero = readError (unexpected opening exceededDepth)
+finishContainer opening build items (suc budget) = mapRead build (items budget)
+
+openArray : {A : Set} → Layout → Constructors A → (xs : List Char) → Table (Frame A) xs → ℕ → Read A xs
+openArray layout build xs t =
+  finishContainer '[' (Constructors.arrayValue build)
+    (λ n → readTrimmed (arrayItemsSlot n true) layout xs here t)
+
+openObject : {A : Set} → Comparison → Layout → Constructors A → (xs : List Char) → Table (Frame A) xs → ℕ → Read A xs
+openObject eqs layout build xs t =
+  finishContainer '{' (λ fields → Constructors.objectValue build (resolveFields eqs fields))
+    (λ n → readTrimmed (objectItemsSlot n true) layout xs here t)
+
+tokenNumber : Char → Bool
+tokenNumber c = decimalDigit c ∨ primCharEquality c '-'
+
+specialToken : {A : Set} → Comparison → Layout → Constructors A → (xs : List Char) → Table (Frame A) xs → ℕ → Char → Read A xs
+specialToken eqs layout build xs t budget c =
+  choose (primCharEquality c 't') (wordRead (Constructors.booleanValue build true) "true" (toList "rue") xs)
+    (choose (primCharEquality c 'f') (wordRead (Constructors.booleanValue build false) "false" (toList "alse") xs)
+      (choose (primCharEquality c 'n') (wordRead (Constructors.nullValue build) "null" (toList "ull") xs)
+        (choose (primCharEquality c '\"') (mapRead (Constructors.textValue build) (bodyRead xs))
+          (choose (primCharEquality c '[') (openArray layout build xs t budget)
+             (openObject eqs layout build xs t budget)))))
+
+otherToken : {A : Set} → Comparison → Layout → Constructors A → (c : Char) → (xs : List Char) → Table (Frame A) xs → ℕ → Read A xs
+otherToken eqs layout build c xs t budget =
+  dispatch c (toList "tfn\"[{") (specialToken eqs layout build xs t budget) (readError (unexpected c valueStart))
+
+valueHead : {A : Set} → Comparison → Layout → Constructors A → (c : Char) → (xs : List Char) → Table (Frame A) xs → ℕ → Read A xs
+valueHead eqs layout build c xs t budget =
+  choose (tokenNumber c) (mapRead (Constructors.numericValue build) (numberHead c xs))
+    (otherToken eqs layout build c xs t budget)
+
+memberRest : {A : Set} → {xs : List Char} → Layout → ℕ → Table (Frame A) xs →
+  String → (ys : List Char) → Suffix xs ys → Read (String × A) ys
+memberRest layout budget t k ys s =
+  mapRead (λ v → k , v) (readTrimmed (colonSlot budget) layout ys s t)
+
+memberHead : {A : Set} → Layout → (c : Char) → (xs : List Char) → Table (Frame A) xs → ℕ → Read (String × A) xs
+memberHead layout c xs t budget = choose (primCharEquality c '\"')
+  (bindRead (bodyRead xs) (memberRest layout budget t)) (readError (unexpected c objectKey))
+
+presentFault : Fault → Fault
+presentFault missingDocument = incompleteDocument
+presentFault incompleteDocument = incompleteDocument
+presentFault (unexpected c site) = unexpected c site
+
+valueInMember : {A : Set} → {xs : List Char} → Read A xs → Read A xs
+valueInMember (readOK v rest s) = readOK v rest s
+valueInMember (readError e) = readError (presentFault e)
+
+colonHead : {A : Set} → Layout → (c : Char) → (xs : List Char) → Table (Frame A) xs → ℕ → Read A (c ∷ xs)
+colonHead layout c xs t budget = choose (primCharEquality c ':')
+  (dropRead c (valueInMember (readTrimmed (valueSlot budget) layout xs here t))) (readError (unexpected c afterKey))
+
+jsonRow : {A : Set} → Comparison → Layout → Constructors A → (c : Char) → (xs : List Char) → Table (Frame A) xs → Frame A (c ∷ xs)
+jsonRow eqs layout build c xs t =
+  let value = valueHead eqs layout build c xs t
+      member = memberHead layout c xs t
+  in frame
+    (λ budget → dropRead c (value budget))
+    (λ budget empty → itemsHead c ']' xs empty (value budget) (itemsRest (arrayTailSlot budget) layout t))
+    (λ budget → tailHead c ']' xs afterElement (readTrimmed (arrayItemsSlot budget false) layout xs here t))
+    (λ budget empty → itemsHead c '}' xs empty (member budget) (itemsRest (objectTailSlot budget) layout t))
+    (λ budget → tailHead c '}' xs afterMember (readTrimmed (objectItemsSlot budget false) layout xs here t))
+    (λ budget → dropRead c (member budget))
+    (colonHead layout c xs t)
+
+jsonRows : {A : Set} → Comparison → Layout → Constructors A → Rows (Frame A)
+jsonRows eqs layout build = rows
+  (frame (λ budget → readError missingDocument)
+    (λ budget empty → readError incompleteDocument)
+    (λ budget → readError incompleteDocument)
+    (λ budget empty → readError incompleteDocument)
+    (λ budget → readError incompleteDocument)
+    (λ budget → readError incompleteDocument)
+    (λ budget → readError incompleteDocument))
+  (jsonRow eqs layout build)
+
+jsonTable : {A : Set} → Comparison → Layout → Constructors A → (xs : List Char) → Table (Frame A) xs
+jsonTable eqs layout build xs = rowTable (jsonRows eqs layout build) xs
+
+valueAtDepth : {A : Set} → Comparison → Layout → Constructors A → ℕ → List Char → Prefix A
+valueAtDepth eqs layout build budget xs =
+  erase (readTrimmed (valueSlot budget) layout xs here (jsonTable eqs layout build xs))
+
+arrayItems : {A : Set} → Comparison → Layout → Constructors A → ℕ → Bool → List Char → Prefix (List A)
+arrayItems eqs layout build budget empty xs =
+  erase (readTrimmed (arrayItemsSlot budget empty) layout xs here (jsonTable eqs layout build xs))
+
+arrayTail : {A : Set} → Comparison → Layout → Constructors A → ℕ → List Char → Prefix (List A)
+arrayTail eqs layout build budget xs =
+  erase (readTrimmed (arrayTailSlot budget) layout xs here (jsonTable eqs layout build xs))
+
+objectItems : {A : Set} → Comparison → Layout → Constructors A → ℕ → Bool → List Char → Prefix (List (String × A))
+objectItems eqs layout build budget empty xs =
+  erase (readTrimmed (objectItemsSlot budget empty) layout xs here (jsonTable eqs layout build xs))
+
+objectTail : {A : Set} → Comparison → Layout → Constructors A → ℕ → List Char → Prefix (List (String × A))
+objectTail eqs layout build budget xs =
+  erase (readTrimmed (objectTailSlot budget) layout xs here (jsonTable eqs layout build xs))
+
+memberPrefix : {A : Set} → Comparison → Layout → Constructors A → ℕ → List Char → Prefix (String × A)
+memberPrefix eqs layout build budget xs =
+  erase (memberSlot budget xs (tableAt here (jsonTable eqs layout build xs)))
+
+memberValue : {A : Set} → Comparison → Layout → Constructors A → ℕ → List Char → Prefix A
+memberValue eqs layout build budget xs =
+  erase (readTrimmed (colonSlot budget) layout xs here (jsonTable eqs layout build xs))
+
+jsonRowHere : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (c : Char) → (xs : List Char) →
+  tableAt here (jsonTable eqs layout build (c ∷ xs)) ≡ jsonRow eqs layout build c xs (jsonTable eqs layout build xs)
+jsonRowHere eqs layout build c xs = refl
+
+readJsonHead : {A X : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) →
+  (slot : (ys : List Char) → Frame A ys → Read X ys) → (xs : List Char) → (c : Char) → (cs : List Char) →
+  Layout.trimSpace layout xs ≡ (c ∷ cs) →
+  erase (readTrimmed slot layout xs here (jsonTable eqs layout build xs)) ≡
+  erase (slot (c ∷ cs) (jsonRow eqs layout build c cs (jsonTable eqs layout build cs)))
+readJsonHead eqs layout build slot xs c cs p =
+  trans (readTrimLaw (jsonRows eqs layout build) slot layout xs here (c ∷ cs) p)
+        (cong (λ row → erase (slot (c ∷ cs) row)) (jsonRowHere eqs layout build c cs))
+
+valueCellHere : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (c : Char) → (xs : List Char) → (t : Table (Frame A) xs) → (budget : ℕ) →
+  erase (valueSlot budget (c ∷ xs) (jsonRow eqs layout build c xs t)) ≡ erase (dropRead c (valueHead eqs layout build c xs t budget))
+valueCellHere eqs layout build c xs t budget = refl
+
+arrayItemsCellHere : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (c : Char) → (xs : List Char) → (t : Table (Frame A) xs) → (budget : ℕ) → (empty : Bool) →
+  erase (arrayItemsSlot budget empty (c ∷ xs) (jsonRow eqs layout build c xs t)) ≡ erase (itemsHead c ']' xs empty (valueHead eqs layout build c xs t budget) (itemsRest (arrayTailSlot budget) layout t))
+arrayItemsCellHere eqs layout build c xs t budget empty = refl
+
+arrayTailCellHere : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (c : Char) → (xs : List Char) → (t : Table (Frame A) xs) → (budget : ℕ) →
+  erase (arrayTailSlot budget (c ∷ xs) (jsonRow eqs layout build c xs t)) ≡ erase (tailHead c ']' xs afterElement (readTrimmed (arrayItemsSlot budget false) layout xs here t))
+arrayTailCellHere eqs layout build c xs t budget = refl
+
+objectItemsCellHere : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (c : Char) → (xs : List Char) → (t : Table (Frame A) xs) → (budget : ℕ) → (empty : Bool) →
+  erase (objectItemsSlot budget empty (c ∷ xs) (jsonRow eqs layout build c xs t)) ≡ erase (itemsHead c '}' xs empty (memberHead layout c xs t budget) (itemsRest (objectTailSlot budget) layout t))
+objectItemsCellHere eqs layout build c xs t budget empty = refl
+
+objectTailCellHere : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (c : Char) → (xs : List Char) → (t : Table (Frame A) xs) → (budget : ℕ) →
+  erase (objectTailSlot budget (c ∷ xs) (jsonRow eqs layout build c xs t)) ≡ erase (tailHead c '}' xs afterMember (readTrimmed (objectItemsSlot budget false) layout xs here t))
+objectTailCellHere eqs layout build c xs t budget = refl
+
+memberCellHere : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (c : Char) → (xs : List Char) → (t : Table (Frame A) xs) → (budget : ℕ) →
+  erase (memberSlot budget (c ∷ xs) (jsonRow eqs layout build c xs t)) ≡ erase (dropRead c (memberHead layout c xs t budget))
+memberCellHere eqs layout build c xs t budget = refl
+
+colonCellHere : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (c : Char) → (xs : List Char) → (t : Table (Frame A) xs) → (budget : ℕ) →
+  erase (colonSlot budget (c ∷ xs) (jsonRow eqs layout build c xs t)) ≡ erase (colonHead layout c xs t budget)
+colonCellHere eqs layout build c xs t budget = refl
+
+jsonRowEnd : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) →
+  tableAt here (jsonTable eqs layout build []) ≡ Rows.atEnd (jsonRows eqs layout build)
+jsonRowEnd eqs layout build = refl
+
+readJsonEnd : {A X : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) →
+  (slot : (ys : List Char) → Frame A ys → Read X ys) → (xs : List Char) →
+  Layout.trimSpace layout xs ≡ [] →
+  erase (readTrimmed slot layout xs here (jsonTable eqs layout build xs)) ≡
+  erase (slot [] (Rows.atEnd (jsonRows eqs layout build)))
+readJsonEnd eqs layout build slot xs p =
+  trans (readTrimLaw (jsonRows eqs layout build) slot layout xs here [] p)
+        (cong (λ row → erase (slot [] row)) (jsonRowEnd eqs layout build))
+
+memberAtHead : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : ℕ) → (c : Char) → (xs : List Char) →
+  memberPrefix eqs layout build budget (c ∷ xs) ≡ erase (memberHead layout c xs (jsonTable eqs layout build xs) budget)
+memberAtHead eqs layout build budget c xs =
+  trans (cong (λ row → erase (memberSlot budget (c ∷ xs) row)) (jsonRowHere eqs layout build c xs))
+    (trans (memberCellHere eqs layout build c xs (jsonTable eqs layout build xs) budget)
+           (dropErases c (memberHead layout c xs (jsonTable eqs layout build xs) budget)))
+
+valueAtToken : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : ℕ) → (c : Char) → (xs : List Char) →
+  Layout.isSpace layout c ≡ false →
+  valueAtDepth eqs layout build budget (c ∷ xs) ≡ erase (valueHead eqs layout build c xs (jsonTable eqs layout build xs) budget)
+valueAtToken eqs layout build budget c xs p =
+  trans (readJsonHead eqs layout build (valueSlot budget) (c ∷ xs) c xs (Layout.keepHead layout c xs p))
+    (trans (valueCellHere eqs layout build c xs (jsonTable eqs layout build xs) budget)
+           (dropErases c (valueHead eqs layout build c xs (jsonTable eqs layout build xs) budget)))
+
+emptyPrefix : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → valueAtDepth {A} eqs layout build budget [] ≡ failed missingDocument
+emptyPrefix eqs layout build budget = readJsonEnd eqs layout build (valueSlot budget) [] (Layout.trimEmpty layout)
+
+leadingSpace : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (c : _) → (xs : _) → (Layout.isSpace layout c ≡ true) → valueAtDepth {A} eqs layout build budget (c ∷ xs) ≡ valueAtDepth {A} eqs layout build budget xs
+leadingSpace eqs layout build budget c xs p =
+  trans (readTrimLaw (jsonRows eqs layout build) (valueSlot budget) layout (c ∷ xs) here (Layout.trimSpace layout xs) (Layout.trimHead layout c xs p))
+        (sym (readTrimLaw (jsonRows eqs layout build) (valueSlot budget) layout xs here (Layout.trimSpace layout xs) refl))
+
+unexpectedStart : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (c : _) → (xs : _) → ((Layout.isSpace layout c ∨ (decimalDigit c ∨ any (primCharEquality c) (toList "-tfn\"[{"))) ≡ false) → valueAtDepth {A} eqs layout build budget (c ∷ xs) ≡ failed (unexpected c valueStart)
+unexpectedStart eqs layout build budget c xs p =
+  let d = decimalDigit c
+      minus = primCharEquality c '-'
+      allowed = any (primCharEquality c) (toList "tfn\"[{")
+      otherOff = orRightFalse {Layout.isSpace layout c} {d ∨ (minus ∨ allowed)} p
+      minusOff = orRightFalse {d} {minus ∨ allowed} otherOff
+      t = jsonTable eqs layout build xs
+  in trans (valueAtToken eqs layout build budget c xs (orLeftFalse {Layout.isSpace layout c} {d ∨ (minus ∨ allowed)} p))
+       (trans (cong erase (chooseNo (tokenNumber c) (mapRead (Constructors.numericValue build) (numberHead c xs))
+                (otherToken eqs layout build c xs t budget)
+                (orFalse (orLeftFalse {d} {minus ∨ allowed} otherOff) (orLeftFalse {minus} {allowed} minusOff))))
+         (cong erase (dispatchMiss c (toList "tfn\"[{") (specialToken eqs layout build xs t budget)
+           (readError (unexpected c valueStart)) (orRightFalse {minus} {allowed} minusOff))))
+
+truePrefix : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → valueAtDepth {A} eqs layout build budget ('t' ∷ xs) ≡ literalSuffix {A} eqs (Constructors.booleanValue build true) "true" (toList "rue") xs
+truePrefix eqs layout build budget xs = valueAtToken eqs layout build budget 't' xs (Layout.spaceClass layout 't')
+
+falsePrefix : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → valueAtDepth {A} eqs layout build budget ('f' ∷ xs) ≡ literalSuffix {A} eqs (Constructors.booleanValue build false) "false" (toList "alse") xs
+falsePrefix eqs layout build budget xs = valueAtToken eqs layout build budget 'f' xs (Layout.spaceClass layout 'f')
+
+nullPrefix : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → valueAtDepth {A} eqs layout build budget ('n' ∷ xs) ≡ literalSuffix {A} eqs (Constructors.nullValue build) "null" (toList "ull") xs
+nullPrefix eqs layout build budget xs = valueAtToken eqs layout build budget 'n' xs (Layout.spaceClass layout 'n')
+
+orCases : {R : Set} → (b c : Bool) → (b ∨ c) ≡ true → (b ≡ true → R) → (c ≡ true → R) → R
+orCases true c h yes no = yes refl
+orCases false c h yes no = no h
+
+spaceNotNumber : (eqs : Comparison) → (c : Char) → spaceKind c ≡ true → tokenNumber c ≡ false
+spaceNotNumber eqs c p =
+  orCases (primCharEquality c ' ') (primCharEquality c '	' ∨ (primCharEquality c '\r' ∨ primCharEquality c '\n')) p
+    (λ q → cong tokenNumber (Comparison.charReflects eqs c ' ' q))
+    (λ q → orCases (primCharEquality c '	') (primCharEquality c '\r' ∨ primCharEquality c '\n') q
+      (λ h → cong tokenNumber (Comparison.charReflects eqs c '	' h))
+      (λ h → orCases (primCharEquality c '\r') (primCharEquality c '\n') h
+        (λ j → cong tokenNumber (Comparison.charReflects eqs c '\r' j))
+        (λ j → cong tokenNumber (Comparison.charReflects eqs c '\n' j))))
+
+numberNotSpace : (eqs : Comparison) → (layout : Layout) → (c : Char) → tokenNumber c ≡ true → Layout.isSpace layout c ≡ false
+numberNotSpace eqs layout c p = denyTrue (Layout.isSpace layout c)
+  (λ h → trueNotFalse (trans (sym p) (spaceNotNumber eqs c (trans (sym (Layout.spaceClass layout c)) h))))
+
+numericToken : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : ℕ) → (c : Char) → (xs : List Char) → tokenNumber c ≡ true →
+  valueAtDepth eqs layout build budget (c ∷ xs) ≡ erase (mapRead (Constructors.numericValue build) (numberHead c xs))
+numericToken eqs layout build budget c xs p =
+  trans (valueAtToken eqs layout build budget c xs (numberNotSpace eqs layout c p))
+    (cong erase (chooseYes (tokenNumber c) (mapRead (Constructors.numericValue build) (numberHead c xs))
+      (otherToken eqs layout build c xs (jsonTable eqs layout build xs) budget) p))
+
+numberValue : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (c : _) → (xs : _) → (s : _) → (rest : _) → ((decimalDigit c ∨ primCharEquality c '-') ≡ true) → (numberPrefix eqs (c ∷ xs) ≡ consumed s rest) → valueAtDepth {A} eqs layout build budget (c ∷ xs) ≡ consumed (Constructors.numericValue build s) rest
+numberValue eqs layout build budget c xs s rest p q =
+  trans (numericToken eqs layout build budget c xs p)
+        (mapOK (Constructors.numericValue build) (numberHead c xs) (trans (sym (dropErases c (numberHead c xs))) q))
+
+numberValueError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (c : _) → (xs : _) → (e : _) → ((decimalDigit c ∨ primCharEquality c '-') ≡ true) → (numberPrefix eqs (c ∷ xs) ≡ failed e) → valueAtDepth {A} eqs layout build budget (c ∷ xs) ≡ failed e
+numberValueError eqs layout build budget c xs e p q =
+  trans (numericToken eqs layout build budget c xs p)
+        (mapError (Constructors.numericValue build) (numberHead c xs) (trans (sym (dropErases c (numberHead c xs))) q))
+
+stringValue : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (s : _) → (rest : _) → (stringBody eqs xs ≡ consumed s rest) → valueAtDepth {A} eqs layout build budget ('\"' ∷ xs) ≡ consumed (Constructors.textValue build s) rest
+stringValue eqs layout build budget xs s rest p =
+  trans (valueAtToken eqs layout build budget '\"' xs (Layout.spaceClass layout '\"'))
+        (mapOK (Constructors.textValue build) (bodyRead xs) p)
+
+stringValueError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (e : _) → (stringBody eqs xs ≡ failed e) → valueAtDepth {A} eqs layout build budget ('\"' ∷ xs) ≡ failed e
+stringValueError eqs layout build budget xs e p =
+  trans (valueAtToken eqs layout build budget '\"' xs (Layout.spaceClass layout '\"'))
+        (mapError (Constructors.textValue build) (bodyRead xs) p)
+
+arrayValue : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (vs : _) → (rest : _) → (arrayItems {A} eqs layout build budget true xs ≡ consumed vs rest) → valueAtDepth {A} eqs layout build (suc budget) ('[' ∷ xs) ≡ consumed (Constructors.arrayValue build vs) rest
+arrayValue eqs layout build budget xs vs rest p =
+  trans (valueAtToken eqs layout build (suc budget) '[' xs (Layout.spaceClass layout '['))
+        (mapOK (Constructors.arrayValue build) (readTrimmed (arrayItemsSlot budget true) layout xs here (jsonTable eqs layout build xs)) p)
+
+arrayValueError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (e : _) → (arrayItems {A} eqs layout build budget true xs ≡ failed e) → valueAtDepth {A} eqs layout build (suc budget) ('[' ∷ xs) ≡ failed e
+arrayValueError eqs layout build budget xs e p =
+  trans (valueAtToken eqs layout build (suc budget) '[' xs (Layout.spaceClass layout '['))
+        (mapError (Constructors.arrayValue build) (readTrimmed (arrayItemsSlot budget true) layout xs here (jsonTable eqs layout build xs)) p)
+
+arrayAtDepthLimit : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (xs : _) → valueAtDepth {A} eqs layout build zero ('[' ∷ xs) ≡ failed (unexpected '[' exceededDepth)
+arrayAtDepthLimit eqs layout build xs = valueAtToken eqs layout build zero '[' xs (Layout.spaceClass layout '[')
+
+objectValue : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (fields : _) → (rest : _) → (objectItems {A} eqs layout build budget true xs ≡ consumed fields rest) → valueAtDepth {A} eqs layout build (suc budget) ('{' ∷ xs) ≡ consumed (Constructors.objectValue build (resolveFields {A} eqs fields)) rest
+objectValue eqs layout build budget xs fields rest p =
+  trans (valueAtToken eqs layout build (suc budget) '{' xs (Layout.spaceClass layout '{'))
+        (mapOK (λ fields → Constructors.objectValue build (resolveFields eqs fields)) (readTrimmed (objectItemsSlot budget true) layout xs here (jsonTable eqs layout build xs)) p)
+
+objectValueError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (e : _) → (objectItems {A} eqs layout build budget true xs ≡ failed e) → valueAtDepth {A} eqs layout build (suc budget) ('{' ∷ xs) ≡ failed e
+objectValueError eqs layout build budget xs e p =
+  trans (valueAtToken eqs layout build (suc budget) '{' xs (Layout.spaceClass layout '{'))
+        (mapError (λ fields → Constructors.objectValue build (resolveFields eqs fields)) (readTrimmed (objectItemsSlot budget true) layout xs here (jsonTable eqs layout build xs)) p)
+
+objectAtDepthLimit : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (xs : _) → valueAtDepth {A} eqs layout build zero ('{' ∷ xs) ≡ failed (unexpected '{' exceededDepth)
+objectAtDepthLimit eqs layout build xs = valueAtToken eqs layout build zero '{' xs (Layout.spaceClass layout '{')
+
+itemsSelected : {X : Set} → (c close : Char) → (xs : List Char) → (empty : Bool) → (first : Read X xs) →
+  (next : (v : X) → (ys : List Char) → Suffix xs ys → Read (List X) ys) →
+  (empty ∧ primCharEquality c close) ≡ false →
+  erase (itemsHead c close xs empty first next) ≡ erase (bindRead first next)
+itemsSelected c close xs empty first next p =
+  trans (cong erase (chooseNo (empty ∧ primCharEquality c close) (readOK [] xs (skip here)) (dropRead c (bindRead first next)) p))
+        (dropErases c (bindRead first next))
+
+tailRejected : {X : Set} → (c close : Char) → (xs : List Char) → (site : Expectation) → (next : Read (List X) xs) →
+  (primCharEquality c close ∨ primCharEquality c ',') ≡ false →
+  erase (tailHead c close xs site next) ≡ failed (unexpected c site)
+tailRejected c close xs site next p =
+  trans (cong erase (chooseNo (primCharEquality c close) (readOK [] xs (skip here))
+    (choose (primCharEquality c ',') (dropRead c next) (readError (unexpected c site)))
+    (orLeftFalse {primCharEquality c close} {primCharEquality c ','} p)))
+    (cong erase (chooseNo (primCharEquality c ',') (dropRead c next) (readError (unexpected c site))
+      (orRightFalse {primCharEquality c close} {primCharEquality c ','} p)))
+
+itemsClosed : {X : Set} → (eqs : Comparison) → (close : Char) → (xs : List Char) → (first : Read X xs) →
+  (next : (v : X) → (ys : List Char) → Suffix xs ys → Read (List X) ys) →
+  erase (itemsHead close close xs true first next) ≡ consumed [] xs
+itemsClosed eqs close xs first next = cong erase
+  (chooseYes (primCharEquality close close) (readOK [] xs (skip here)) (dropRead close (bindRead first next)) (Comparison.charRefl eqs close))
+
+tailClosed : {X : Set} → (eqs : Comparison) → (close : Char) → (xs : List Char) → (site : Expectation) → (next : Read (List X) xs) →
+  erase (tailHead close close xs site next) ≡ consumed [] xs
+tailClosed eqs close xs site next = cong erase
+  (chooseYes (primCharEquality close close) (readOK [] xs (skip here))
+    (choose (primCharEquality close ',') (dropRead close next) (readError (unexpected close site))) (Comparison.charRefl eqs close))
+
+tailAtComma : {X : Set} → (close : Char) → (xs : List Char) → (site : Expectation) → (next : Read (List X) xs) →
+  primCharEquality ',' close ≡ false → erase (tailHead ',' close xs site next) ≡ erase next
+tailAtComma close xs site next p =
+  trans (cong erase (chooseNo (primCharEquality ',' close) (readOK [] xs (skip here)) (dropRead ',' next) p))
+        (dropErases ',' next)
+
+arrayItemsEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (Layout.trimSpace layout xs ≡ []) → arrayItems {A} eqs layout build budget empty xs ≡ failed incompleteDocument
+arrayItemsEOF eqs layout build budget empty xs p =
+  readJsonEnd eqs layout build (arrayItemsSlot budget empty) xs p
+
+arrayEmpty : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (']' ∷ rest)) → arrayItems {A} eqs layout build budget true xs ≡ consumed [] rest
+arrayEmpty eqs layout build budget xs rest p =
+  let t = jsonTable eqs layout build rest
+  in trans (readJsonHead eqs layout build (arrayItemsSlot budget true) xs ']' rest p)
+       (trans (arrayItemsCellHere eqs layout build ']' rest t budget true)
+              (itemsClosed eqs ']' rest (valueHead eqs layout build ']' rest t budget) (itemsRest (arrayTailSlot budget) layout t)))
+
+arrayItem : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (v : _) → (mid : _) → (vs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c ']') ≡ false) → (valueAtDepth {A} eqs layout build budget (c ∷ cs) ≡ consumed v mid) → (arrayTail {A} eqs layout build budget mid ≡ consumed vs rest) → arrayItems {A} eqs layout build budget empty xs ≡ consumed (v ∷ vs) rest
+arrayItem eqs layout build budget empty xs c cs v mid vs rest trimmed selected parsed after =
+  let t = jsonTable eqs layout build cs
+      first = valueHead eqs layout build c cs t budget
+      next = itemsRest (arrayTailSlot budget) layout t
+  in trans (readJsonHead eqs layout build (arrayItemsSlot budget empty) xs c cs trimmed)
+       (trans (trans (arrayItemsCellHere eqs layout build c cs t budget empty)
+                     (itemsSelected c ']' cs empty first next selected))
+         (bindOK first next (trans (sym (valueAtToken eqs layout build budget c cs (trimmedNotSpace layout xs c cs trimmed))) parsed)
+           (λ s → mapOK (λ rs → v ∷ rs) (readTrimmed (arrayTailSlot budget) layout mid s t)
+           (trans (trimLookupLaw (jsonRows eqs layout build) (arrayTailSlot budget) layout mid s) after))))
+
+arrayItemError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (e : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c ']') ≡ false) → (valueAtDepth {A} eqs layout build budget (c ∷ cs) ≡ failed e) → arrayItems {A} eqs layout build budget empty xs ≡ failed e
+arrayItemError eqs layout build budget empty xs c cs e trimmed selected parsed =
+  let t = jsonTable eqs layout build cs
+      first = valueHead eqs layout build c cs t budget
+      next = itemsRest (arrayTailSlot budget) layout t
+  in trans (readJsonHead eqs layout build (arrayItemsSlot budget empty) xs c cs trimmed)
+       (trans (trans (arrayItemsCellHere eqs layout build c cs t budget empty)
+                     (itemsSelected c ']' cs empty first next selected))
+         (bindError first next (trans (sym (valueAtToken eqs layout build budget c cs (trimmedNotSpace layout xs c cs trimmed))) parsed)))
+
+arrayAfterItemError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (v : _) → (mid : _) → (e : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c ']') ≡ false) → (valueAtDepth {A} eqs layout build budget (c ∷ cs) ≡ consumed v mid) → (arrayTail {A} eqs layout build budget mid ≡ failed e) → arrayItems {A} eqs layout build budget empty xs ≡ failed e
+arrayAfterItemError eqs layout build budget empty xs c cs v mid e trimmed selected parsed after =
+  let t = jsonTable eqs layout build cs
+      first = valueHead eqs layout build c cs t budget
+      next = itemsRest (arrayTailSlot budget) layout t
+  in trans (readJsonHead eqs layout build (arrayItemsSlot budget empty) xs c cs trimmed)
+       (trans (trans (arrayItemsCellHere eqs layout build c cs t budget empty)
+                     (itemsSelected c ']' cs empty first next selected))
+         (bindOK first next (trans (sym (valueAtToken eqs layout build budget c cs (trimmedNotSpace layout xs c cs trimmed))) parsed)
+           (λ s → mapError (λ rs → v ∷ rs) (readTrimmed (arrayTailSlot budget) layout mid s t)
+           (trans (trimLookupLaw (jsonRows eqs layout build) (arrayTailSlot budget) layout mid s) after))))
+
+arrayTailEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (Layout.trimSpace layout xs ≡ []) → arrayTail {A} eqs layout build budget xs ≡ failed incompleteDocument
+arrayTailEOF eqs layout build budget xs p =
+  readJsonEnd eqs layout build (arrayTailSlot budget) xs p
+
+arrayTailClose : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (']' ∷ rest)) → arrayTail {A} eqs layout build budget xs ≡ consumed [] rest
+arrayTailClose eqs layout build budget xs rest p =
+  let t = jsonTable eqs layout build rest
+  in trans (readJsonHead eqs layout build (arrayTailSlot budget) xs ']' rest p)
+       (trans (arrayTailCellHere eqs layout build ']' rest t budget)
+              (tailClosed eqs ']' rest afterElement (readTrimmed (arrayItemsSlot budget false) layout rest here t)))
+
+arrayTailComma : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (',' ∷ rest)) → arrayTail {A} eqs layout build budget xs ≡ arrayItems {A} eqs layout build budget false rest
+arrayTailComma eqs layout build budget xs rest p =
+  let t = jsonTable eqs layout build rest
+  in trans (readJsonHead eqs layout build (arrayTailSlot budget) xs ',' rest p)
+       (trans (arrayTailCellHere eqs layout build ',' rest t budget)
+              (tailAtComma ']' rest afterElement (readTrimmed (arrayItemsSlot budget false) layout rest here t) refl))
+
+arrayTailUnexpected : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (c : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (c ∷ rest)) → ((primCharEquality c ']' ∨ primCharEquality c ',') ≡ false) → arrayTail {A} eqs layout build budget xs ≡ failed (unexpected c afterElement)
+arrayTailUnexpected eqs layout build budget xs c rest p q =
+  let t = jsonTable eqs layout build rest
+  in trans (readJsonHead eqs layout build (arrayTailSlot budget) xs c rest p)
+       (trans (arrayTailCellHere eqs layout build c rest t budget)
+              (tailRejected c ']' rest afterElement (readTrimmed (arrayItemsSlot budget false) layout rest here t) q))
+
+objectItemsEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (Layout.trimSpace layout xs ≡ []) → objectItems {A} eqs layout build budget empty xs ≡ failed incompleteDocument
+objectItemsEOF eqs layout build budget empty xs p =
+  readJsonEnd eqs layout build (objectItemsSlot budget empty) xs p
+
+objectEmpty : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ ('}' ∷ rest)) → objectItems {A} eqs layout build budget true xs ≡ consumed [] rest
+objectEmpty eqs layout build budget xs rest p =
+  let t = jsonTable eqs layout build rest
+  in trans (readJsonHead eqs layout build (objectItemsSlot budget true) xs '}' rest p)
+       (trans (objectItemsCellHere eqs layout build '}' rest t budget true)
+              (itemsClosed eqs '}' rest (memberHead layout '}' rest t budget) (itemsRest (objectTailSlot budget) layout t)))
+
+objectItem : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (entry : _) → (mid : _) → (fields : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c '}') ≡ false) → (memberPrefix {A} eqs layout build budget (c ∷ cs) ≡ consumed entry mid) → (objectTail {A} eqs layout build budget mid ≡ consumed fields rest) → objectItems {A} eqs layout build budget empty xs ≡ consumed (entry ∷ fields) rest
+objectItem eqs layout build budget empty xs c cs entry mid fields rest trimmed selected parsed after =
+  let t = jsonTable eqs layout build cs
+      first = memberHead layout c cs t budget
+      next = itemsRest (objectTailSlot budget) layout t
+  in trans (readJsonHead eqs layout build (objectItemsSlot budget empty) xs c cs trimmed)
+       (trans (trans (objectItemsCellHere eqs layout build c cs t budget empty)
+                     (itemsSelected c '}' cs empty first next selected))
+         (bindOK first next (trans (sym (memberAtHead eqs layout build budget c cs)) parsed)
+           (λ s → mapOK (λ rs → entry ∷ rs) (readTrimmed (objectTailSlot budget) layout mid s t)
+           (trans (trimLookupLaw (jsonRows eqs layout build) (objectTailSlot budget) layout mid s) after))))
+
+objectItemError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (e : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c '}') ≡ false) → (memberPrefix {A} eqs layout build budget (c ∷ cs) ≡ failed e) → objectItems {A} eqs layout build budget empty xs ≡ failed e
+objectItemError eqs layout build budget empty xs c cs e trimmed selected parsed =
+  let t = jsonTable eqs layout build cs
+      first = memberHead layout c cs t budget
+      next = itemsRest (objectTailSlot budget) layout t
+  in trans (readJsonHead eqs layout build (objectItemsSlot budget empty) xs c cs trimmed)
+       (trans (trans (objectItemsCellHere eqs layout build c cs t budget empty)
+                     (itemsSelected c '}' cs empty first next selected))
+         (bindError first next (trans (sym (memberAtHead eqs layout build budget c cs)) parsed)))
+
+objectAfterItemError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (empty : _) → (xs : _) → (c : _) → (cs : _) → (entry : _) → (mid : _) → (e : _) → (Layout.trimSpace layout xs ≡ (c ∷ cs)) → ((empty ∧ primCharEquality c '}') ≡ false) → (memberPrefix {A} eqs layout build budget (c ∷ cs) ≡ consumed entry mid) → (objectTail {A} eqs layout build budget mid ≡ failed e) → objectItems {A} eqs layout build budget empty xs ≡ failed e
+objectAfterItemError eqs layout build budget empty xs c cs entry mid e trimmed selected parsed after =
+  let t = jsonTable eqs layout build cs
+      first = memberHead layout c cs t budget
+      next = itemsRest (objectTailSlot budget) layout t
+  in trans (readJsonHead eqs layout build (objectItemsSlot budget empty) xs c cs trimmed)
+       (trans (trans (objectItemsCellHere eqs layout build c cs t budget empty)
+                     (itemsSelected c '}' cs empty first next selected))
+         (bindOK first next (trans (sym (memberAtHead eqs layout build budget c cs)) parsed)
+           (λ s → mapError (λ rs → entry ∷ rs) (readTrimmed (objectTailSlot budget) layout mid s t)
+           (trans (trimLookupLaw (jsonRows eqs layout build) (objectTailSlot budget) layout mid s) after))))
+
+objectTailEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (Layout.trimSpace layout xs ≡ []) → objectTail {A} eqs layout build budget xs ≡ failed incompleteDocument
+objectTailEOF eqs layout build budget xs p =
+  readJsonEnd eqs layout build (objectTailSlot budget) xs p
+
+objectTailClose : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ ('}' ∷ rest)) → objectTail {A} eqs layout build budget xs ≡ consumed [] rest
+objectTailClose eqs layout build budget xs rest p =
+  let t = jsonTable eqs layout build rest
+  in trans (readJsonHead eqs layout build (objectTailSlot budget) xs '}' rest p)
+       (trans (objectTailCellHere eqs layout build '}' rest t budget)
+              (tailClosed eqs '}' rest afterMember (readTrimmed (objectItemsSlot budget false) layout rest here t)))
+
+objectTailComma : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (',' ∷ rest)) → objectTail {A} eqs layout build budget xs ≡ objectItems {A} eqs layout build budget false rest
+objectTailComma eqs layout build budget xs rest p =
+  let t = jsonTable eqs layout build rest
+  in trans (readJsonHead eqs layout build (objectTailSlot budget) xs ',' rest p)
+       (trans (objectTailCellHere eqs layout build ',' rest t budget)
+              (tailAtComma '}' rest afterMember (readTrimmed (objectItemsSlot budget false) layout rest here t) refl))
+
+objectTailUnexpected : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (c : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (c ∷ rest)) → ((primCharEquality c '}' ∨ primCharEquality c ',') ≡ false) → objectTail {A} eqs layout build budget xs ≡ failed (unexpected c afterMember)
+objectTailUnexpected eqs layout build budget xs c rest p q =
+  let t = jsonTable eqs layout build rest
+  in trans (readJsonHead eqs layout build (objectTailSlot budget) xs c rest p)
+       (trans (objectTailCellHere eqs layout build c rest t budget)
+              (tailRejected c '}' rest afterMember (readTrimmed (objectItemsSlot budget false) layout rest here t) q))
+
+memberHeadView : {A : Set} → (layout : Layout) → (c : Char) → (xs : List Char) → (t : Table (Frame A) xs) → (budget : ℕ) →
+  erase (memberHead layout c xs t budget) ≡
+  choose (primCharEquality c '\"') (erase (bindRead (bodyRead xs) (memberRest layout budget t))) (failed (unexpected c objectKey))
+memberHeadView layout c xs t budget =
+  eraseChoice (primCharEquality c '\"') (bindRead (bodyRead xs) (memberRest layout budget t)) (readError (unexpected c objectKey))
+
+quotedMember : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : ℕ) → (xs : List Char) →
+  memberPrefix eqs layout build budget ('\"' ∷ xs) ≡
+  erase (bindRead (bodyRead xs) (memberRest layout budget (jsonTable eqs layout build xs)))
+quotedMember eqs layout build budget xs =
+  trans (memberAtHead eqs layout build budget '\"' xs)
+        (memberHeadView layout '\"' xs (jsonTable eqs layout build xs) budget)
+
+memberEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → memberPrefix {A} eqs layout build budget [] ≡ failed incompleteDocument
+memberEOF eqs layout build budget =
+  cong (λ row → erase (memberSlot budget [] row)) (jsonRowEnd eqs layout build)
+
+memberBadStart : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (c : _) → (xs : _) → (primCharEquality c '\"' ≡ false) → memberPrefix {A} eqs layout build budget (c ∷ xs) ≡ failed (unexpected c objectKey)
+memberBadStart eqs layout build budget c xs p =
+  let t = jsonTable eqs layout build xs
+  in trans (memberAtHead eqs layout build budget c xs)
+       (trans (memberHeadView layout c xs t budget)
+         (chooseNo (primCharEquality c '\"') (erase (bindRead (bodyRead xs) (memberRest layout budget t))) (failed (unexpected c objectKey)) p))
+
+memberWithValue : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (k : _) → (mid : _) → (v : _) → (rest : _) → (stringBody eqs xs ≡ consumed k mid) → (memberValue {A} eqs layout build budget mid ≡ consumed v rest) → memberPrefix {A} eqs layout build budget ('\"' ∷ xs) ≡ consumed (k , v) rest
+memberWithValue eqs layout build budget xs k mid v rest p q =
+  let t = jsonTable eqs layout build xs
+  in trans (quotedMember eqs layout build budget xs)
+       (bindOK (bodyRead xs) (memberRest layout budget t) p
+         (λ s → mapOK (λ a → k , a) (readTrimmed (colonSlot budget) layout mid s t)
+           (trans (trimLookupLaw (jsonRows eqs layout build) (colonSlot budget) layout mid s) q)))
+
+memberKeyError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (e : _) → (stringBody eqs xs ≡ failed e) → memberPrefix {A} eqs layout build budget ('\"' ∷ xs) ≡ failed e
+memberKeyError eqs layout build budget xs e p =
+  trans (quotedMember eqs layout build budget xs)
+        (bindError (bodyRead xs) (memberRest layout budget (jsonTable eqs layout build xs)) p)
+
+memberValueError : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (k : _) → (mid : _) → (e : _) → (stringBody eqs xs ≡ consumed k mid) → (memberValue {A} eqs layout build budget mid ≡ failed e) → memberPrefix {A} eqs layout build budget ('\"' ∷ xs) ≡ failed e
+memberValueError eqs layout build budget xs k mid e p q =
+  let t = jsonTable eqs layout build xs
+  in trans (quotedMember eqs layout build budget xs)
+       (bindOK (bodyRead xs) (memberRest layout budget t) p
+         (λ s → mapError (λ a → k , a) (readTrimmed (colonSlot budget) layout mid s t)
+           (trans (trimLookupLaw (jsonRows eqs layout build) (colonSlot budget) layout mid s) q)))
+
+afterColonView : {A : Set} → Prefix A → Prefix A
+afterColonView (consumed v rest) = consumed v rest
+afterColonView (failed e) = failed (presentFault e)
+
+valueInMemberErases : {A : Set} → {xs : List Char} → (r : Read A xs) → erase (valueInMember r) ≡ afterColonView (erase r)
+valueInMemberErases (readOK v rest s) = refl
+valueInMemberErases (readError e) = refl
+
+colonAccepted : {A : Set} → (layout : Layout) → (xs : List Char) → (t : Table (Frame A) xs) → (budget : ℕ) →
+  erase (colonHead layout ':' xs t budget) ≡ afterColonView (erase (readTrimmed (valueSlot budget) layout xs here t))
+colonAccepted layout xs t budget =
+  let r = readTrimmed (valueSlot budget) layout xs here t
+  in trans (dropErases ':' (valueInMember r)) (valueInMemberErases r)
+
+memberColonView : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : ℕ) → (xs rest : List Char) → Layout.trimSpace layout xs ≡ (':' ∷ rest) →
+  memberValue eqs layout build budget xs ≡ afterColonView (valueAtDepth eqs layout build budget rest)
+memberColonView eqs layout build budget xs rest p =
+  let t = jsonTable eqs layout build rest
+  in trans (readJsonHead eqs layout build (colonSlot budget) xs ':' rest p)
+       (trans (colonCellHere eqs layout build ':' rest t budget) (colonAccepted layout rest t budget))
+
+keepPresentValue : {A : Set} → (p : Prefix A) → p ≢ failed missingDocument → afterColonView p ≡ p
+keepPresentValue (consumed v rest) apart = refl
+keepPresentValue (failed missingDocument) apart = ⊥-elim (apart refl)
+keepPresentValue (failed incompleteDocument) apart = refl
+keepPresentValue (failed (unexpected c site)) apart = refl
+
+valueAfterColon : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (':' ∷ rest)) → (valueAtDepth {A} eqs layout build budget rest ≢ failed missingDocument) → memberValue {A} eqs layout build budget xs ≡ valueAtDepth {A} eqs layout build budget rest
+valueAfterColon eqs layout build budget xs rest p q =
+  trans (memberColonView eqs layout build budget xs rest p)
+        (keepPresentValue (valueAtDepth eqs layout build budget rest) q)
+
+valueEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (Layout.trimSpace layout xs ≡ []) → memberValue {A} eqs layout build budget xs ≡ failed incompleteDocument
+valueEOF eqs layout build budget xs p = readJsonEnd eqs layout build (colonSlot budget) xs p
+
+valueAfterColonEOF : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (':' ∷ rest)) → (valueAtDepth {A} eqs layout build budget rest ≡ failed missingDocument) → memberValue {A} eqs layout build budget xs ≡ failed incompleteDocument
+valueAfterColonEOF eqs layout build budget xs rest p q =
+  trans (memberColonView eqs layout build budget xs rest p) (cong afterColonView q)
+
+memberMissingColon : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → (budget : _) → (xs : _) → (c : _) → (rest : _) → (Layout.trimSpace layout xs ≡ (c ∷ rest)) → (primCharEquality c ':' ≡ false) → memberValue {A} eqs layout build budget xs ≡ failed (unexpected c afterKey)
+memberMissingColon eqs layout build budget xs c rest p q =
+  let t = jsonTable eqs layout build rest
+  in trans (readJsonHead eqs layout build (colonSlot budget) xs c rest p)
+       (trans (colonCellHere eqs layout build c rest t budget)
+         (cong erase (chooseNo (primCharEquality c ':')
+           (dropRead c (valueInMember (readTrimmed (valueSlot budget) layout rest here t)))
+           (readError (unexpected c afterKey)) q)))
+
+leadingNumberExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → valueAtDepth eqs layout build 10000 (toList " 	\r\n1x") ≡ consumed (Constructors.numericValue build "1") ([ 'x' ])
+leadingNumberExample eqs layout build = refl
+
+leadingZeroExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → valueAtDepth eqs layout build 10000 (toList "[01]") ≡ failed (unexpected '1' afterElement)
+leadingZeroExample eqs layout build = refl
+
+exponentErrorExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → valueAtDepth eqs layout build 10000 (toList "[1e+]") ≡ failed (unexpected ']' exponentDigit)
+exponentErrorExample eqs layout build = refl
+
+surrogateExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → valueAtDepth eqs layout build 10000 (toList "[\"\\uD83D\\uDE00\",\"\\uD800\",\"\\uDC00\",\"\\uD800\\u0041\",\"a\\/b\"]") ≡ consumed (Constructors.arrayValue build (Constructors.textValue build (fromList ([ primNatToChar 128512 ])) ∷ (Constructors.textValue build (fromList ([ primNatToChar 65533 ])) ∷ (Constructors.textValue build (fromList ([ primNatToChar 65533 ])) ∷ (Constructors.textValue build (fromList (primNatToChar 65533 ∷ ([ 'A' ]))) ∷ ([ Constructors.textValue build "a/b" ])))))) []
+surrogateExample eqs layout build = refl
+
+nestedExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → valueAtDepth eqs layout build 10000 (toList "[[\"a\"],1][[\"b\"],2]") ≡ consumed (Constructors.arrayValue build (Constructors.arrayValue build ([ Constructors.textValue build "a" ]) ∷ ([ Constructors.numericValue build "1" ]))) (toList "[[\"b\"],2]")
+nestedExample eqs layout build = refl
+
+record RepeatedKeys {A : Set} (eqs : Comparison) (layout : Layout) (build : Constructors A) : Set where
+  constructor repeatedKeys
+  field
+    selectedFields : List (String × A)
+    repeatedKeyPrefix : valueAtDepth eqs layout build 10000 (toList "{\"a\":{\"x\":1},\"a\":{\"y\":2},\"\\u0062\":0,\"b\":1}") ≡ consumed (Constructors.objectValue build selectedFields) []
+    latestA : matchingValues eqs "a" selectedFields ≡ (Constructors.objectValue build (("y" , Constructors.numericValue build "2") ∷ []) ∷ [])
+    latestB : matchingValues eqs "b" selectedFields ≡ (Constructors.numericValue build "1" ∷ [])
+
+repeatedKeyExample : {A : Set} → (eqs : Comparison) → (layout : Layout) → (build : Constructors A) → RepeatedKeys eqs layout build
+repeatedKeyExample eqs layout build = repeatedKeys
+  (("a" , Constructors.objectValue build (("y" , Constructors.numericValue build "2") ∷ [])) ∷ (("b" , Constructors.numericValue build "1") ∷ []))
+  refl refl refl
+
+
+
+
+```

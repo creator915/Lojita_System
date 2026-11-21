@@ -7,7 +7,7 @@ open import Data.List.Base using (List; []; _∷_; _++_; map; concatMap; reverse
 open import Data.Maybe.Base using (Maybe; just; nothing)
 open import Data.Nat.Base using (ℕ; zero; suc; _≡ᵇ_)
 open import Data.Product using (_×_; _,_; proj₁; proj₂)
-open import Data.String.Base using (String; intersperse; toList; fromList) renaming (_++_ to _++ˢ_)
+open import Data.String.Base using (String; unlines; intersperse; toList; fromList) renaming (_++_ to _++ˢ_)
 open import Data.Unit.Base using (⊤; tt)
 import IO.Primitive as Prim
 import IO.Primitive.Finite as PF
@@ -16,19 +16,20 @@ open import Function.Base using (case_of_)
 
 open import OwnershipIO using (RunningIO; EnvIO; onCall)
 open import OwnershipIO.FFI using (mkdirP; fileExists; dirExists; listDirectory; absolutePath; failIO; readProcessAt; ProcResult; procResult; stripStdlibWarnings)
-open import OwnershipIO.MetaFFI using (withPrivateTemp; writeUTF8; catchIO; copyReadOnly; sealDirectory)
-open import Code using (Code; full; modName; eqList; anyᵇ; filterᵇ; _==ˢ_; closedImplOK; flagsOK; flagsOf; ImplProblem; flagEnvelopeViolation)
-open import Code.SExpr using (SExpr; list; str; sym)
-open import Code.Encode using (encodeCanonical; encodeCode)
+open import OwnershipIO.MetaFFI using (withPrivateTemp; writeUTF8; catchIO; copyReadOnly; sealDirectory; inspectSourceDiag; appendNarrowingEvent)
+open import Code using (Code; QName; validIndependence; full; modName; eqList; anyᵇ; filterᵇ; hasWord; _==ˢ_; closedImplOK; flagsOK; flagsOf; ImplProblem; flagEnvelopeViolation)
+open import Code.SExpr using (SExpr; list; str; sym; showSExpr)
+open import Code.Encode using (encodeCode; encodeCanonical)
 open import Code.Parse using (parse)
 open import Code.Render using (render)
+open import Code.Prompt using (showRefuteProblem)
 open import Code.AgdaTool using (parentPath)
-open import Code.Protocol using (AIReq; AIReply; AgdaCheckReq; agdaCheck; DumpReq; dumpReq; DumpResult; dumped; dumpFailed)
-open import Code.Transport using (CheckResult; pass; fail; nullᵇ)
+open import Code.Protocol using (AIReq; AIReply; AgdaCheckReq; CheckPurpose; agdaCheck; checkRequest; ordinaryCheck; independenceCheck; narrowedSubspec; checkPurpose; DumpReq; dumpReq; DumpResult; dumped; dumpFailed)
+open import Code.Transport using (refuteStubOf; specΔ; CheckResult; pass; fail; nullᵇ)
 open import Code.Harness using (NodeΨ)
-open import Code.AI using (Backend; aiService; isConcurrentBackend; withBackendAncestors)
+open import Code.AI using (Backend; CodexCLIBackend; narrowLog; aiService; isConcurrentBackend; withBackendAncestors; withBackendNarrowLog)
 open import Code.Driver using (nodeEnvironmentWith; nodeEnvironmentForBackend)
-open import Meta.Boundary using (ModulePath; checkModulePaths; checkObjectModuleSafe)
+open import Meta.Boundary using (ModulePath; importPaths; checkModulePaths; checkObjectModuleSafe)
 import Meta.Sandbox as Sandbox
 open Sandbox using (codeView)
 
@@ -107,20 +108,26 @@ private
   SourceUnit : Set
   SourceUnit = ModulePath × String
 
-  rejectPath : ∀ {A : Set} → ModulePath → Prim.IO A
-  rejectPath path = failIO ("sandbox: forbidden module name or import in " ++ˢ intersperse "." path)
-
-  prepareSource : Bool → String → Prim.IO SourceUnit
-  prepareSource allowMain src = OwnershipIO.MetaFFI.inspectSource src >>= λ where
+  prepareSource : String → Bool → String → Prim.IO SourceUnit
+  prepareSource log allowMain src = OwnershipIO.MetaFFI.inspectSource src >>= λ where
     (just (path ∷ imports)) → if checkModulePaths allowMain path imports
-      then return (path , src) else rejectPath path
-    _ → failIO "sandbox: expected a named Agda module"
+      then return (path , src) else Sandbox.rejectModulePaths log path imports
+    _ → inspectSourceDiag src >>= λ diag →
+      failIO ("sandbox: expected a named Agda module — " ++ˢ diag)
 
   prepareCode : Bool → Code → Prim.IO SourceUnit
   prepareCode allowMain c = if checkObjectModuleSafe allowMain c then
-    (prepareSource allowMain (render c) >>= λ { unit@(path , _) →
-      if eqList _==ˢ_ path (full (modName c)) then return unit else rejectPath path })
-    else rejectPath (full (modName c))
+    (let rendered = render c
+         mName = intersperse "." (full (modName c))
+     in OwnershipIO.MetaFFI.inspectSource rendered >>= λ where
+       (just (path ∷ imports)) →
+         if checkModulePaths allowMain path imports ∧ eqList _==ˢ_ path (full (modName c))
+           then return (path , rendered) else Sandbox.rejectModulePaths "" path imports
+       _ → inspectSourceDiag rendered >>= λ diag →
+         appendNarrowingEvent "" "roundtrip_reparse_fail" mName diag >>
+         failIO ("sandbox: expected a named Agda module — rendered AST of " ++ˢ mName
+                 ++ˢ " failed Agda re-parse (renderer narrowing gate; rewrite the offending literal/syntax shown below):\n" ++ˢ diag))
+    else Sandbox.rejectModulePaths "" (full (modName c)) (importPaths c)
 
   prepareAll : ∀ {A : Set} → (A → Prim.IO SourceUnit) → List A → Prim.IO (List SourceUnit)
   prepareAll _ [] = return []
@@ -142,143 +149,158 @@ private
   depFlags [] = []
   depFlags (f ∷ fs) = "--dep" ∷ f ∷ depFlags fs
 
-  loadFileUnit : String → Prim.IO SourceUnit
-  loadFileUnit f = PF.readFile f >>= prepareSource false
+  validateIR : String → Bool → Code → Prim.IO ⊤
+  validateIR log allowMain c = if checkObjectModuleSafe allowMain c then return tt
+    else Sandbox.rejectModulePaths log (full (modName c)) (importPaths c)
 
-  dedupUnits : List ModulePath → List SourceUnit → List SourceUnit
-  dedupUnits _ [] = []
-  dedupUnits seen (u@(p , _) ∷ us) =
-    if anyᵇ (eqList _==ˢ_ p) seen
-      then dedupUnits seen us
-      else u ∷ dedupUnits (p ∷ seen) us
+  validateDeps : String → List Code → Prim.IO ⊤
+  validateDeps log [] = return tt
+  validateDeps log (c ∷ cs) = validateIR log false c >> validateDeps log cs
 
-  collectAncestorUnits : (repo work : String) → List String → List ModulePath → Prim.IO (List SourceUnit)
-  collectAncestorUnits repo work ancestors localPaths =
-    if nullᵇ ancestors then return []
-    else do
-      mkdirP (work / "_ancestors")
-      sealedDirs ← Sandbox.sealAncestorsTo repo (work / "_ancestors") ancestors
-      agdaFiles ← walkAllDirs sealedDirs
-      rawUnits ← prepareAll loadFileUnit agdaFiles
-      return (dedupUnits localPaths rawUnits)
+  writeBundle : String → Code → List Code → Prim.IO String
+  writeBundle dir mainC deps = do
+    let path = dir / "bundle.sexp"
+    writeUTF8 path (showSExpr (list (sym "bundle" ∷ map encodeCode (deps ++ (mainC ∷ [])))))
+    return path
 
-------------------------------------------------------------------------
--- §1  Prism Stream Interceptor for `DumpReq` (Raw Agda → Code)
-------------------------------------------------------------------------
-
-private
-  prismDumpIntercept : (dumpBin repo scratch : String) → List String → DumpReq → Prim.IO DumpResult
-  prismDumpIntercept dumpBin repo scratch ancestors req@(dumpReq src rawDeps codeDeps) =
-    fileExists (prismBinPath repo) >>= λ hasBin →
-    if not hasBin then
-      Sandbox.sandboxDump dumpBin repo scratch ancestors req
-    else
-      catchIO runIntercept λ e → return (dumpFailed e)
+  -- Session callers provide sealed ancestors as Code. Older callers with only
+  -- source directories scope those files once at the same frontend boundary.
+  ancestorCodes : (log repo work : String) → List String → List ModulePath → Prim.IO (List Code)
+  ancestorCodes _ _ _ [] _ = return []
+  ancestorCodes log repo work dirs known = Sandbox.withWhitelistView repo work dirs λ where
+      includes@(ctx ∷ std ∷ sealed) → do
+        files ← walkAllDirs sealed
+        bin ← absolutePath (repo / "dump/dump")
+        load bin (concatMap (λ i → "-i" ∷ i ∷ []) includes) known files
+      _ → failIO "sandbox: missing sealed include directories"
     where
-      runIntercept : Prim.IO DumpResult
-      runIntercept = do
-        mainU@(mainPath , _) ← prepareSource false src
-        cUnits ← prepareAll (prepareCode false) codeDeps
-        sUnits ← prepareAll (λ pair → prepareSource false (proj₂ pair)) rawDeps
-        bin ← absolutePath (prismBinPath repo)
-        withPrivateTemp scratch λ work → do
-          let explicitUnits = cUnits ++ sUnits
-              seenPaths = mainPath ∷ map proj₁ explicitUnits
-          ancUnits ← collectAncestorUnits repo work ancestors seenPaths
-          let srcDir = work / "agda_src"
-          mkdirP srcDir
-          depPaths ← writeUnits srcDir (ancUnits ++ explicitUnits)
-          _ ← writeUnits srcDir (mainU ∷ [])
-          let mainFile = srcDir / relAgdaFile mainPath
-          readProcessAt work 60000 bin ("prism-dump" ∷ depFlags depPaths ++ ("--main" ∷ mainFile ∷ [])) "" >>= λ where
-            (procResult zero out _) →
-              case parse out of λ where
-                nothing  → Sandbox.sandboxDump dumpBin repo scratch ancestors req
-                (just c) →
-                  if eqList _==ˢ_ (full (modName c)) mainPath ∧ checkObjectModuleSafe false c
-                    then return (dumped c)
-                    else rejectPath mainPath
-            (procResult code out err) →
-              if code ≡ᵇ exitBot then
-                Sandbox.sandboxDump dumpBin repo scratch ancestors req
-              else if code ≡ᵇ exitSyntaxErr then
-                return (dumpFailed (stripStdlibWarnings (out ++ˢ err)))
-              else
-                Sandbox.sandboxDump dumpBin repo scratch ancestors req
-        where open import Function.Base using (case_of_)
+      load : String → List String → List ModulePath → List String → Prim.IO (List Code)
+      load bin args seen [] = return []
+      load bin args seen (f ∷ fs) = do
+        path , _ ← PF.readFile f >>= prepareSource log false
+        if anyᵇ (eqList _==ˢ_ path) seen then load bin args seen fs else do
+          readProcessAt work 60000 bin (args ++ (f ∷ [])) "" >>= λ where
+            (procResult zero out _) → case parse out of λ where
+              nothing → failIO "sandbox: invalid ancestor IR"
+              (just c) → do
+                validateIR log false c
+                if eqList _==ˢ_ path (full (modName c)) then
+                  (load bin args (path ∷ seen) fs >>= λ cs → return (c ∷ cs))
+                  else failIO "sandbox: ancestor module name mismatch"
+            (procResult _ out err) → failIO (stripStdlibWarnings (out ++ˢ err))
+
+-- Every backend consumes the same scope-checked Code. Backend mode selects
+-- the checking kernel after this boundary.
+switchDumpWithLog : String → BackendMode → (dumpBin repo scratch : String) → List String → DumpReq → Prim.IO DumpResult
+switchDumpWithLog log _ = Sandbox.sandboxDumpWithLog log
 
 switchDump : BackendMode → (dumpBin repo scratch : String) → List String → DumpReq → Prim.IO DumpResult
-switchDump legacyAgda dumpBin repo scratch ancestors req =
-  Sandbox.sandboxDump dumpBin repo scratch ancestors req
-switchDump leanPrism dumpBin repo scratch ancestors req =
-  prismDumpIntercept dumpBin repo scratch ancestors req
-switchDump shadowAudit dumpBin repo scratch ancestors req = do
-  pRes ← prismDumpIntercept dumpBin repo scratch ancestors req
-  aRes ← Sandbox.sandboxDump dumpBin repo scratch ancestors req
-  verify pRes aRes
-  where
-    verify : DumpResult → DumpResult → Prim.IO DumpResult
-    verify (dumped c₁) (dumped c₂) =
-      if encodeCanonical c₁ ==ˢ encodeCanonical c₂
-        then return (dumped c₁)
-        else return (dumpFailed "SHADOW_AUDIT_VIOLATION: canonical Code mismatch between LeanPrism and LegacyAgda")
-    verify (dumpFailed _) (dumpFailed e) = return (dumpFailed e)
-    verify (dumped _) (dumpFailed e) =
-      return (dumpFailed ("SHADOW_AUDIT_VIOLATION: LeanPrism accepted invalid Agda rejected by LegacyAgda:\n" ++ˢ e))
-    verify (dumpFailed e) (dumped _) =
-      return (dumpFailed ("SHADOW_AUDIT_VIOLATION: LeanPrism falsely rejected valid Agda:\n" ++ˢ e))
+switchDump = switchDumpWithLog ""
 
 ------------------------------------------------------------------------
 -- §2  Prism Stream Interceptor for `AgdaCheckReq` (Code + Deps → CheckResult)
 ------------------------------------------------------------------------
 
 private
-  prismCheckIntercept : (repo scratch : String) → List String → AgdaCheckReq → Prim.IO CheckResult
-  prismCheckIntercept repo scratch ancestors req@(agdaCheck mainC depCs) =
+  prismCheckIntercept : (log repo scratch : String) → List String → AgdaCheckReq → Prim.IO CheckResult
+  prismCheckIntercept log repo scratch ancestors (checkRequest mainC depCs purpose) =
     fileExists (prismBinPath repo) >>= λ hasBin →
     if not hasBin then
-      Sandbox.sandboxAgdaCheck repo scratch ancestors req
+      reportUnsupported "prism_check_unavailable" "Lean Prism binary is unavailable"
     else
       catchIO runIntercept λ e → return (fail e)
     where
+      reportUnsupported : String → String → Prim.IO CheckResult
+      reportUnsupported kind reason = case purpose of λ where
+        (independenceCheck _ _ _ _) →
+          appendNarrowingEvent log "independence_prism_required" (intersperse "." (full (modName mainC))) reason >>
+          return (fail ("independence requires a scope-checked, kernel-audited witness. Rewrite the proof using FastFocus-supported syntax and run check_agda again:\n" ++ˢ reason))
+        _ → appendNarrowingEvent log kind (intersperse "." (full (modName mainC))) reason >>
+            return (fail ("Prism could not verify the projected module:\n" ++ˢ reason))
+
+      -- Recompute the permitted assumption set from the authored task bytes.
+      -- A discrepancy with the logical task is a failed witness transaction.
+      witnessInput : QName → String → List Code → Code → Prim.IO SourceUnit
+      witnessInput _ "" _ _ = failIO "INDEPENDENCE_SPEC_ERROR: missing authored SPECIFICATION source"
+      witnessInput spec raw bases expected = Sandbox.sandboxDump (repo / "dump/dump") repo scratch ancestors
+        (dumpReq raw [] bases) >>= λ where
+          (dumpFailed e) → failIO e
+          (dumped actual) →
+            let stub = refuteStubOf (specΔ (modName actual) (Code.decls actual) []) in
+            if not (eqList _==ˢ_ (full spec) (full (modName actual)) ∧ (encodeCanonical stub ==ˢ encodeCanonical expected))
+            then failIO "INDEPENDENCE_SPEC_ERROR: authored SPECIFICATION and staged postulate stub disagree"
+            else if encodeCanonical actual ==ˢ encodeCanonical stub
+                 then prepareSource log false raw else prepareCode false stub
+
+      checkedWitness : QName → List String → String → Prim.IO SourceUnit
+      checkedWitness spec flags witness = Sandbox.sandboxDump (repo / "dump/dump") repo scratch ancestors
+        (dumpReq witness [] depCs) >>= λ where
+          (dumpFailed e) → failIO e
+          (dumped actual) → case validIndependence spec flags actual of λ where
+            [] → if encodeCanonical actual ==ˢ encodeCanonical mainC
+                 then prepareSource log false witness
+                 else failIO "INDEPENDENCE_SPEC_ERROR: authored witness and staged proof disagree"
+            ps@(_ ∷ _) → failIO ("Agda independent witness gate:\n" ++ˢ unlines (map showRefuteProblem ps))
+
+      inputs : String → List Code → CheckPurpose → List Code → Prim.IO (List String)
+      inputs work inherited (independenceCheck spec flags raw witness) (stub ∷ bases) = do
+        s ← witnessInput spec raw bases stub
+        ds ← prepareAll (prepareCode false) (inherited ++ bases)
+        w ← checkedWitness spec flags witness
+        paths ← writeUnits work (s ∷ ds)
+        files ← writeUnits work (w ∷ [])
+        case files of λ where
+          (file ∷ []) → return ("--independence-spec" ∷ intersperse "." (full spec) ∷ "--main" ∷ file ∷ depFlags paths)
+          _ → failIO "INDEPENDENCE_SPEC_ERROR: missing witness source"
+      inputs _ _ (independenceCheck _ _ _ _) [] = failIO "INDEPENDENCE_SPEC_ERROR: missing specification"
+      inputs work inherited _ cs = writeBundle work mainC (inherited ++ cs) >>= λ bundle →
+        return ("--sexpr-bundle" ∷ bundle ∷ [])
+
+      rejectTypeError : String → Prim.IO CheckResult
+      rejectTypeError detail =
+        (if hasWord "INDEPENDENCE_AXIOM_ERROR:" detail
+         then appendNarrowingEvent log "independence_axiom" (intersperse "." (full (modName mainC))) detail
+         else return tt) >> return (fail detail)
+
       runIntercept : Prim.IO CheckResult
       runIntercept = do
-        mainU@(mainPath , _) ← prepareCode false mainC
-        depUnits ← prepareAll (prepareCode false) depCs
+        validateIR log false mainC
+        validateDeps log depCs
         bin ← absolutePath (prismBinPath repo)
         lib ← absolutePath (prismLibDir repo)
-        dbFlags ← dumpBinFlags repo
         withPrivateTemp scratch λ work → do
-          let seenPaths = mainPath ∷ map proj₁ depUnits
-          ancUnits ← collectAncestorUnits repo work ancestors seenPaths
-          let srcDir = work / "agda_src"
-              leanWork = work / "lean_work"
-          mkdirP srcDir
-          mkdirP leanWork
-          depPaths ← writeUnits srcDir (ancUnits ++ depUnits)
-          _ ← writeUnits srcDir (mainU ∷ [])
-          let mainFile = srcDir / relAgdaFile mainPath
+          let known = map (λ c → full (modName c)) (mainC ∷ depCs)
+          inherited ← ancestorCodes log repo work ancestors known
+          args ← inputs work inherited purpose depCs
           readProcessAt work 120000 bin
-            ("prism-check" ∷ "--lib-dir" ∷ lib ∷ "--work-dir" ∷ leanWork
-             ∷ dbFlags ++ depFlags depPaths ++ ("--main" ∷ mainFile ∷ [])) "" >>= λ where
+            ("prism-check" ∷ "--lib-dir" ∷ lib ∷ "--work-dir" ∷ (work / "lean_work")
+             ∷ args) "" >>= λ where
             (procResult zero _ _) → return pass
             (procResult code out err) →
-              if code ≡ᵇ exitBot then
-                Sandbox.sandboxAgdaCheck repo scratch ancestors req
+              if code ≡ᵇ exitBot then (case purpose of λ where
+                ordinaryCheck → if Code.elemᵇ _==ˢ_ "--without-K" (flagsOf mainC)
+                                   ∧ Code.elemᵇ _==ˢ_ "--safe" (flagsOf mainC)
+                  then Sandbox.sandboxAgdaCheck repo scratch ancestors (agdaCheck mainC depCs)
+                  else reportUnsupported "prism_unsupported" (out ++ˢ err)
+                _ → reportUnsupported "prism_unsupported" (out ++ˢ err))
               else if (code ≡ᵇ exitSyntaxErr) then
                 return (fail (stripStdlibWarnings (out ++ˢ err)))
               else if (code ≡ᵇ exitTypeErr) then
-                return (fail (stripStdlibWarnings (out ++ˢ err)))
+                rejectTypeError (stripStdlibWarnings (out ++ˢ err))
               else
-                Sandbox.sandboxAgdaCheck repo scratch ancestors req
+                reportUnsupported "prism_check_unavailable" (out ++ˢ err)
 
-switchCheck : BackendMode → (repo scratch : String) → List String → AgdaCheckReq → Prim.IO CheckResult
-switchCheck legacyAgda repo scratch ancestors req =
+switchCheckWithLog : String → BackendMode → (repo scratch : String) → List String → AgdaCheckReq → Prim.IO CheckResult
+switchCheckWithLog log _ _ _ _ (checkRequest c _ (narrowedSubspec kind detail)) =
+  Sandbox.recordSubspecRejection log c kind detail
+switchCheckWithLog log _ repo scratch ancestors req@(checkRequest _ _ (independenceCheck _ _ _ _)) =
+  prismCheckIntercept log repo scratch ancestors req
+switchCheckWithLog log legacyAgda repo scratch ancestors req =
   Sandbox.sandboxAgdaCheck repo scratch ancestors req
-switchCheck leanPrism repo scratch ancestors req =
-  prismCheckIntercept repo scratch ancestors req
-switchCheck shadowAudit repo scratch ancestors req = do
-  pRes ← prismCheckIntercept repo scratch ancestors req
+switchCheckWithLog log leanPrism repo scratch ancestors req =
+  prismCheckIntercept log repo scratch ancestors req
+switchCheckWithLog log shadowAudit repo scratch ancestors req = do
+  pRes ← prismCheckIntercept log repo scratch ancestors req
   aRes ← Sandbox.sandboxAgdaCheck repo scratch ancestors req
   verify pRes aRes
   where
@@ -289,6 +311,9 @@ switchCheck shadowAudit repo scratch ancestors req = do
       return (fail ("SHADOW_AUDIT_VIOLATION: LeanPrism passed invalid module rejected by LegacyAgda:\n" ++ˢ e))
     verify (fail e) pass =
       return (fail ("SHADOW_AUDIT_VIOLATION: LeanPrism rejected valid module accepted by LegacyAgda:\n" ++ˢ e))
+
+switchCheck : BackendMode → (repo scratch : String) → List String → AgdaCheckReq → Prim.IO CheckResult
+switchCheck = switchCheckWithLog ""
 
 ------------------------------------------------------------------------
 -- §3  Prism Native Executable Compiler (`build-exe` Replacement + Entry Gate)
@@ -393,25 +418,18 @@ private
     where
       buildFast : Prim.IO CheckResult
       buildFast = do
-        mainU@(mainPath , _) ← prepareCode true mainC
-        depUnits ← prepareAll (prepareCode false) depCs
+        validateIR "" true mainC
+        validateDeps "" depCs
         bin ← absolutePath (prismBinPath repo)
         lib ← absolutePath (prismLibDir repo)
         ir  ← absolutePath (prismIrDir repo)
-        dbFlags ← dumpBinFlags repo
         outAbs ← absolutePath outBin
         withPrivateTemp scratch λ work → do
-          let srcDir = work / "agda_src"
-              leanWork = work / "lean_work"
-          mkdirP srcDir
-          mkdirP leanWork
-          depPaths ← writeUnits srcDir depUnits
-          _ ← writeUnits srcDir (mainU ∷ [])
-          let mainFile = srcDir / relAgdaFile mainPath
+          bundle ← writeBundle work mainC depCs
           readProcessAt work 180000 bin
             ("prism-build" ∷ "--lib-dir" ∷ lib ∷ "--ir-dir" ∷ ir
-             ∷ "--work-dir" ∷ leanWork ∷ "--out" ∷ outAbs
-             ∷ dbFlags ++ depFlags depPaths ++ ("--main" ∷ mainFile ∷ [])) "" >>= λ where
+             ∷ "--work-dir" ∷ (work / "lean_work") ∷ "--out" ∷ outAbs
+             ∷ "--sexpr-bundle" ∷ bundle ∷ []) "" >>= λ where
             (procResult zero _ _) → return pass
             (procResult code out err) →
               if code ≡ᵇ exitBot then
@@ -457,7 +475,7 @@ switchSessionCompileExe leanPrism repo scratch outBin entryFile depFiles _ legac
     runSessionBuild : Prim.IO CheckResult
     runSessionBuild = do
       mainSrc ← PF.readFile entryFile
-      _ ← prepareSource true mainSrc
+      _ ← prepareSource "" true mainSrc
       bin ← absolutePath (prismBinPath repo)
       lib ← absolutePath (prismLibDir repo)
       ir  ← absolutePath (prismIrDir repo)
@@ -468,7 +486,7 @@ switchSessionCompileExe leanPrism repo scratch outBin entryFile depFiles _ legac
       mkdirP scratch
       withPrivateTemp scratch λ leanWork →
         readProcessAt leanWork 60000 bin
-          ("prism-dump" ∷ dbFlags ++ depFlags depAbs ++ ("--main" ∷ mainAbs ∷ [])) "" >>= λ where
+          ("prism-dump" ∷ "--write-bundle" ∷ (leanWork / "bundle.sexp") ∷ dbFlags ++ depFlags depAbs ++ ("--main" ∷ mainAbs ∷ [])) "" >>= λ where
           (procResult zero dOut _) →
             case parse dOut of λ where
               nothing → legacyBuild
@@ -482,7 +500,7 @@ switchSessionCompileExe leanPrism repo scratch outBin entryFile depFiles _ legac
                       readProcessAt leanWork 180000 bin
                         ("prism-build" ∷ "--lib-dir" ∷ lib ∷ "--ir-dir" ∷ ir
                          ∷ "--work-dir" ∷ leanWork ∷ "--out" ∷ outAbs
-                         ∷ dbFlags ++ depFlags depAbs ++ ("--main" ∷ mainAbs ∷ [])) "" >>= λ where
+                         ∷ "--sexpr-bundle" ∷ (leanWork / "bundle.sexp") ∷ []) "" >>= λ where
                         (procResult zero _ _) → return pass
                         (procResult code out err) →
                           if code ≡ᵇ exitBot then legacyBuild
@@ -561,8 +579,18 @@ switchNodeEnvironmentUsing defaultMode ai repo dumpBin scratch ancestorDirs = no
   (onCall (switchAgdaTool defaultMode repo (scratch ++ˢ "/agda") ancestorDirs))
 
 switchNodeEnvironment : BackendMode → Backend → (repo dumpBin scratch : String) → List String → Prim.IO (EnvIO NodeΨ)
-switchNodeEnvironment defaultMode backend repo dumpBin scratch ancestorDirs =
-  let b′ = withBackendAncestors repo ancestorDirs backend in
+switchNodeEnvironment defaultMode backend repo dumpBin scratch ancestorDirs = do
+  envLog ← lookupEnv "CODETRANSPORT_NARROW_LOG"
+  let log = case envLog of λ where
+        (just path) → path
+        nothing → defaultLog backend
+      b′ = withBackendNarrowLog log (withBackendAncestors repo ancestorDirs backend)
   nodeEnvironmentForBackend (isConcurrentBackend b′) (aiService b′)
-    (onCall (switchDumpTool defaultMode dumpBin repo (scratch ++ˢ "/dump") ancestorDirs))
-    (onCall (switchAgdaTool defaultMode repo (scratch ++ˢ "/agda") ancestorDirs))
+    (λ req → resolveBackendMode defaultMode >>= λ mode →
+       switchDumpWithLog log mode dumpBin repo (scratch ++ˢ "/dump") ancestorDirs req)
+    (λ req → resolveBackendMode defaultMode >>= λ mode →
+       switchCheckWithLog log mode repo (scratch ++ˢ "/agda") ancestorDirs req)
+  where
+    defaultLog : Backend → String
+    defaultLog (CodexCLIBackend cfg) = narrowLog cfg
+    defaultLog _ = scratch ++ˢ "/narrowing-events.jsonl"

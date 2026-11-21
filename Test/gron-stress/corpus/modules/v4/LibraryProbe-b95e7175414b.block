@@ -1,0 +1,26 @@
+module LibraryProbe where
+
+open import Agda.Builtin.Char using (Char; primCharEquality)
+open import Agda.Builtin.String using (String; primStringEquality)
+open import Data.Bool using (Bool)
+open import Data.Empty using (⊥-elim)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Nullary using (Dec; Reflects; does; yes; no; ofʸ; ofⁿ)
+import Data.Char.Properties as Char
+import Data.String.Properties as String
+
+agree : {P : Set} {b : Bool} → Reflects P b → (decision : Dec P) → b ≡ does decision
+agree (ofʸ p) (yes _) = refl
+agree (ofʸ p) (no disproves) = ⊥-elim (disproves p)
+agree (ofⁿ disproves) (yes p) = ⊥-elim (disproves p)
+agree (ofⁿ disproves) (no _) = refl
+
+charWithReflection :
+  ((c d : Char) → Reflects (c ≡ d) (primCharEquality c d)) →
+  (c d : Char) → primCharEquality c d ≡ does (c Char.≟ d)
+charWithReflection reflect c d = agree (reflect c d) (c Char.≟ d)
+
+stringWithReflection :
+  ((s t : String) → Reflects (s ≡ t) (primStringEquality s t)) →
+  (s t : String) → primStringEquality s t ≡ does (s String.≟ t)
+stringWithReflection reflect s t = agree (reflect s t) (s String.≟ t)

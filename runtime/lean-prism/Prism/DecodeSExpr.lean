@@ -1,4 +1,4 @@
-import Prism.Parser
+import Prism.StdScope
 
 set_option autoImplicit false
 set_option relaxedAutoImplicit false
@@ -8,84 +8,58 @@ set_option relaxedAutoImplicit false
 
 Decodes scope-checked `CodeMod` S-expressions emitted by `dump/dump` (exact inverse of
 `Prism.Outcome.encodeCodeMod`) and synthesizes `ExportedModule` metadata while enforcing
-the exact same closed-whitelist import, `--safe`, and `--guardedness` invariants as
-`Prism.Parser`.
+the backend mirror whitelist and supported compiler options.
 -/
 
 namespace Prism
 
-private inductive STok : Type where
-  | lparen
-  | rparen
-  | strTok : String → STok
-  | atom   : String → STok
+private def wireSpace (c : Char) := c == ' ' || c == '\n' || c == '\r' || c == '\t'
 
-private partial def lexSExprChars : List Char → List STok → Option (List STok)
-  | [], acc => some acc.reverse
-  | c :: cs, acc =>
-      if c == ' ' || c == '\n' || c == '\r' || c == '\t' then
-        lexSExprChars cs acc
-      else if c == '(' then
-        lexSExprChars cs (.lparen :: acc)
-      else if c == ')' then
-        lexSExprChars cs (.rparen :: acc)
-      else if c == '"' then
-        let rec readStr : List Char → List Char → Option (String × List Char)
-          | [], _ => none
-          | '"' :: rest, sAcc => some (String.ofList sAcc.reverse, rest)
-          | '\\' :: '"' :: rest, sAcc  => readStr rest ('"' :: sAcc)
-          | '\\' :: '\\' :: rest, sAcc => readStr rest ('\\' :: sAcc)
-          | '\\' :: 'n' :: rest, sAcc  => readStr rest ('\n' :: sAcc)
-          | '\\' :: 'r' :: rest, sAcc  => readStr rest ('\r' :: sAcc)
-          | '\\' :: 't' :: rest, sAcc  => readStr rest ('\t' :: sAcc)
-          | '\\' :: esc :: rest, sAcc  => readStr rest (esc :: sAcc)
-          | ch :: rest, sAcc           => readStr rest (ch :: sAcc)
-        match readStr cs [] with
-        | some (s, rest) => lexSExprChars rest (.strTok s :: acc)
-        | none           => none
-      else
-        let rec readAtom : List Char → List Char → String × List Char
-          | [], aAcc => (String.ofList aAcc.reverse, [])
-          | ch :: rest, aAcc =>
-              if ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t' ||
-                 ch == '(' || ch == ')' || ch == '"' then
-                (String.ofList aAcc.reverse, ch :: rest)
-              else
-                readAtom rest (ch :: aAcc)
-        let (w, rest) := readAtom (c :: cs) []
-        lexSExprChars rest (.atom w :: acc)
+private partial def quotedAtom (txt : String) (start : String.Pos.Raw) :
+    Option (String × String.Pos.Raw) := do
+  let rec loop (pos : String.Pos.Raw) (out : String) : Option (String × String.Pos.Raw) := do
+    let stop := String.Pos.Raw.nextUntil txt (fun c => c == '"' || c == '\\') pos
+    if stop.atEnd txt then none else
+      let part := String.Pos.Raw.extract txt pos stop
+      let next := stop.next txt
+      if stop.get txt == '"' then return (out ++ part, next)
+      if next.atEnd txt then none else
+        let c := match next.get txt with
+          | 'n' => '\n' | 'r' => '\r' | 't' => '\t' | escaped => escaped
+        loop (next.next txt) ((out ++ part).push c)
+  loop start ""
 
-private def parseNatAtom (s : String) : Option Nat :=
-  let cs := s.toList
-  if !cs.isEmpty && cs.all (fun c => '0' <= c && c <= '9') then
-    some (cs.foldl (fun acc c => acc * 10 + (c.toNat - '0'.toNat)) 0)
-  else none
-
-mutual
-  private partial def parseOneSExpr : List STok → Option (SExpr × List STok)
-    | [] => none
-    | .lparen :: rest => do
-        let (xs, after) ← parseSExprList rest []
-        some (.list xs, after)
-    | .rparen :: _ => none
-    | .strTok s :: rest => some (.str s, rest)
-    | .atom w :: rest =>
-        match parseNatAtom w with
-        | some n => some (.num n, rest)
-        | none   => some (.sym w, rest)
-
-  private partial def parseSExprList : List STok → List SExpr → Option (List SExpr × List STok)
-    | [], _ => none
-    | .rparen :: rest, acc => some (acc.reverse, rest)
-    | toks, acc => do
-        let (x, after) ← parseOneSExpr toks
-        parseSExprList after (x :: acc)
-end
-
-def parseSExprText (txt : String) : Option SExpr := do
-  let toks ← lexSExprChars txt.toList []
-  let (e, rem) ← parseOneSExpr toks
-  if rem.isEmpty then some e else none
+/-- Scan the wire once, retaining a stack of open lists. Qualified names and
+    unescaped literals are sliced directly from the UTF-8 input. -/
+partial def parseSExprText (txt : String) : Option SExpr := do
+  let mut parents : List (List SExpr) := []
+  let mut items : List SExpr := []
+  let mut pos : String.Pos.Raw := 0
+  while !pos.atEnd txt do
+    let c := pos.get txt
+    if wireSpace c then
+      pos := pos.next txt
+    else if c == '(' then
+      parents := items :: parents
+      items := []
+      pos := pos.next txt
+    else if c == ')' then
+      let prev :: outer := parents | return ← none
+      items := .list items.reverse :: prev
+      parents := outer
+      pos := pos.next txt
+    else if c == '"' then
+      let (value, next) ← quotedAtom txt (pos.next txt)
+      items := .str value :: items
+      pos := next
+    else
+      let stop := String.Pos.Raw.nextUntil txt
+        (fun ch => wireSpace ch || ch == '(' || ch == ')' || ch == '"') (pos.next txt)
+      let word := String.Pos.Raw.extract txt pos stop
+      items := (match word.toNat? with | some n => .num n | none => .sym word) :: items
+      pos := stop
+  let [result] := items | none
+  if parents.isEmpty then some result else none
 
 -- §2 Decode `SExpr` → `CodeMod` (exact mirror of `Code/Parse.agda` & `Dump.hs`)
 
@@ -94,7 +68,9 @@ private def splitDotsStr (s : String) : List String :=
 
 def decQ : SExpr → Option QName
   | .str s => some (mkQ (splitDotsStr s))
-  | .list [.sym "q", .str f, .str sh] => some { full := splitDotsStr f, shown := sh }
+  | .list (.sym "q" :: .str f :: .str sh :: alts) => do
+      let paths ← alts.mapM fun | .str path => some (splitDotsStr path) | _ => none
+      some { full := splitDotsStr f, shown := sh, canonAlts := paths }
   | _ => none
 
 private def decHid : SExpr → Option Hiding
@@ -160,6 +136,17 @@ private def decDir : SExpr → Option Directive
         | _              => none
       some { dusing := uOpt, dhiding := hs, drenaming := rs, dpublic := pub }
   | _ => none
+
+private instance : Inhabited Expr := ⟨.meta_⟩
+
+private partial def patternBuilder : Pat → Expr
+  | .varP x => .var x
+  | .conP q ps => ps.foldl (fun e a => .app e ⟨a.hid, a.label, patternBuilder a.thing⟩) (.con q)
+  | .litP l => .lit l
+  | .dotP e => e
+  | .recP fs => .rec_ (fs.map fun (n, p) => (n, patternBuilder p))
+  | .asP x _ => .var x
+  | .wildP | .absurdP | .projP _ => .meta_
 
 mutual
   partial def decExpr : SExpr → Option Expr
@@ -355,7 +342,7 @@ mutual
               let a ← decAssoc aS
               fixes := fixes ++ [.fixity a prec op]
           | _ => none
-        some (fixes ++ [.dataDef m x ps cons])
+        some (.dataDef m x ps cons :: fixes)
     | .list [.sym "recsig", mS, .str x, .list (.sym "params" :: bSs), eS] => do
         let m ← decMods mS
         let bs ← bSs.mapM decBind
@@ -380,7 +367,7 @@ mutual
               let a ← decAssoc aS
               fixes := fixes ++ [.fixity a prec op]
           | _ => none
-        some (fixes ++ [.recDef m x ps { coind := co, constr := cn } flds])
+        some (.recDef m x ps { coind := co, constr := cn } flds :: fixes)
     | .list (.sym "variable" :: vSs) => do
         let vs ← vSs.mapM fun
           | .list [.sym "var", .str n, eS] => do
@@ -392,6 +379,10 @@ mutual
         let bs ← bSs.mapM decBind
         let dsList ← dSs.mapM decDecls
         some [.module_ x bs dsList.flatten]
+    | .list [.sym "patsyn", .str name, .list args, term] => do
+        let ps ← decStrList args
+        let pat ← decPat term
+        some [.patSyn name ps pat (patternBuilder pat)]
     | .list [.sym "unsupported", .str s] =>
         some [.unsupported s]
     | _ => none
@@ -406,6 +397,21 @@ def decodeCodeMod (s : SExpr) : Option CodeMod :=
       some { modName := nm, params := ps, decls := dsList.flatten }
   | _ => none
 
+/-- Keep authored bytes alongside the authoritative AST. The same wire tree
+    supplies each occurrence's ambiguity metadata, without another scope pass. -/
+partial def decodeSurfacePoint (wire : SExpr) (surface : CatStructure.SurfaceView) :
+    Option CatStructure.PreTCPoint := do
+  let code ← decodeCodeMod wire
+  let rec gather : List SExpr → List CatStructure.AmbQ → List CatStructure.AmbQ
+    | [], acc => acc.reverse
+    | (.list (.sym "q" :: .str name :: .str shown :: alts)) :: rest, acc =>
+      let paths := alts.filterMap fun | .str s => some (splitDotsStr s) | _ => none
+      let q : QName := {full := splitDotsStr name, shown, canonAlts := paths}
+      gather rest (if paths.isEmpty then acc else ⟨q, paths⟩ :: acc)
+    | (.list xs) :: rest, acc => gather (xs ++ rest) acc
+    | _ :: rest, acc => gather rest acc
+  return ⟨code, gather [wire] [], surface⟩
+
 -- §3 Synthesize `ExportedModule` & Enforce Closed Whitelist / Pragma Gates on Decoded `CodeMod`
 
 private partial def countVisibleConArgs : Expr → Nat
@@ -416,7 +422,7 @@ private partial def countVisibleConArgs : Expr → Nat
   | _ => 0
 
 mutual
-  private partial def allImportsInDecl : Decl → List QName
+  partial def allImportsInDecl : Decl → List QName
     | .import_ m _ _ _ => [m]
     | .fun_ _ _ cs     => cs.flatMap allImportsInClause
     | .module_ _ _ ds  => ds.flatMap allImportsInDecl
@@ -442,7 +448,23 @@ mutual
     | _            => []
 end
 
-def synthesizeExportedModule (deps : List ExportedModule) (cm : CodeMod) : PrismOutcome ExportedModule := do
+-- A scoped bodyless signature represents a postulate in a Code bundle.
+-- Verify it in each declaration scope, including local where blocks.
+private partial def safeDeclError (ds : List Decl) : Option String :=
+  let bodies := ds.filterMap fun | .fun_ _ name _ => some name | _ => none
+  let rec clauses : List Clause → Option String
+    | [] => none
+    | .clause _ rhs localDs :: rest =>
+      safeDeclError localDs <|> (match rhs with | .withRHS _ cs => clauses cs | _ => none) <|> clauses rest
+  ds.findSome? fun
+    | .sig _ name _ => if bodies.contains name then none else some s!"cannot postulate {name} with --safe"
+    | .module_ _ _ body => safeDeclError body
+    | .fun_ m name cs =>
+      if m.termCheck != .check then some s!"termination pragma on {name} forbidden with --safe"
+      else clauses cs
+    | _ => none
+
+def synthesizeExportedModule (deps : List ExportedModule) (cm : CodeMod) (forExe := false) : PrismOutcome ExportedModule := do
   if !cm.params.isEmpty then
     .bot "parameterized top-level module routed to Agda"
   let pfx := cm.modName.full
@@ -453,12 +475,15 @@ def synthesizeExportedModule (deps : List ExportedModule) (cm : CodeMod) : Prism
     if let .pragma s := d then
       if s.startsWith "FOREIGN" || s.startsWith "COMPILE" then
         PrismOutcome.bot s!"GHC FFI pragma '{s}' routed to Agda"
-      checkOptionsPragma s
+      checkOptionsPragma s forExe
       let toks := s.splitOn " "
       if toks.contains "--safe" then selfSafe := true
       if toks.contains "--guardedness" then selfGuarded := true
     if let .unsupported u := d then
       PrismOutcome.bot s!"unsupported construct '{u}' routed to Agda"
+
+  if selfSafe then
+    if let some err := safeDeclError cm.decls then PrismOutcome.syntaxErr err
 
   -- Validate all imports (including `where`-scoped imports) against `deps` U `StdScope`!
   let mut depCoinds : List (List String) := []
@@ -542,6 +567,10 @@ def synthesizeExportedModule (deps : List ExportedModule) (cm : CodeMod) : Prism
             }]
           for fs in fSyms do
             localSyms := localSyms ++ [{ fs with localName := rNm ++ "." ++ fs.localName }]
+    | .patSyn name args _ _ =>
+        localSyms := localSyms ++ [{
+            localName := name, canonPath := pfx ++ [name], kind := .conSym,
+            leanName := ns ++ "." ++ leanMangleIdent name, conArity := args.length }]
     | .sig m fNm _ =>
         if !m.isPrivate && fNm != "_" && !(localSyms.any (·.localName == fNm)) then
           localSyms := localSyms ++ [{

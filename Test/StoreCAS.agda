@@ -13,10 +13,10 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import IO.Primitive using (IO; return; _>>=_)
 open import IO.Primitive.Finite using (putStrLn)
 open import OwnershipIO using (ModelIO; ModelsIO)
-open import OwnershipIO.FFI using (failIO; listDirectory; removeAll)
+open import OwnershipIO.FFI using (failIO; currentDirectory; listDirectory; removeAll)
 open import OwnershipIO.MetaFFI using (_>>_; withPrivateTemp; readUTF8; writeUTF8)
 open import Code using (Code; Name; code; qn; mkQ; sig; plain; def; fun; clause; head; rhs;
-                       lit; natL; eqCode; eqDecls; eqList; _==ˢ_; unit)
+                       lit; natL; eqCode; eqDecls; eqList; import′; everything; authoredPoint; authoredSurface; _==ˢ_; unit)
 open import Code.Tree using (HomeShape; node; HomeSt; KidsCtx; Leaves; Interface)
 open import Code.Transport using (Memory)
 open import Code.Codecs using (HomeValue; eqMemory)
@@ -126,6 +126,28 @@ private
     assert "permuting child slots preserves the root" (old ==ˢ sorted)
     assert "interface canonicalizes shown" (encodeIfaceBlob (iface "X") ==ˢ encodeIfaceBlob (iface "Y"))
     assert "memory canonicalizes shown" (encodeMemBlob (memory "A" "X") ==ˢ encodeMemBlob (memory "A" "Y"))
+    let text = "module A where\n-- keep this comment\nopen import Data.Nat using (ℕ)\nvalue : ℕ\nvalue = 1\n"
+    authored ← storeTreeWithSurfaces ((program "A" 1 , text) ∷ []) dir [] "T" "" (tree 1)
+    shown ← getCommit dir authored >>= require "authored commit"
+    assert "surface leaves preserve the semantic root" (rootHome shown ==ˢ old)
+    verifyCommitDAG dir authored >>= assert "authored presentation verifies"
+    views ← commitSurfaces dir authored >>= require "source presentation"
+    recovered ← require "authored leaf" (authoredSurface views (program "A" 1))
+    assert "exact source bytes restored" (text ==ˢ recovered)
+    assert "edited code invalidates its old surface" (is-nothing (authoredSurface views (program "A" 2)))
+    let childImport = mkQ ("A" ∷ [])
+        parent = code (mkQ ("Root" ∷ [])) [] (import′ childImport false everything [] ∷ [])
+        edited = record parent { decls = Code.decls parent ++ iface "ℕ" }
+        enrich = Code.Transport.withChildIface childImport (iface "ℕ")
+        parentSrc = "module Root where\n-- preserve as written\nimport A\n"
+        home : HomeValue
+        home = node [] , enrich parent , [] , [] , tt
+    enriched ← storeTreeWithSurfaces ((parent , parentSrc) ∷ []) dir [] "Parent" "" home
+    verifyCommitDAG dir enriched >>= assert "presentation with a child interface verifies"
+    parentViews ← commitSurfaces dir enriched >>= require "parent presentations"
+    (ir , original) ← require "parent presentation" (authoredPoint parentViews (enrich parent))
+    assert "scoped presentation excludes harness assumptions" (eqCode ir parent ∧ (original ==ˢ parentSrc))
+    assert "real parent edits invalidate authored source" (is-nothing (authoredSurface parentViews (enrich edited)))
     putStrLn "PASS  HomeValue round trip, canonical order and presentation"
 
     before ← listDirectory (dir ++ˢ "/objects/home")
@@ -166,4 +188,4 @@ private
     where import Data.Nat.Base as ℕ
 
 main : IO ⊤
-main = withPrivateTemp "/tmp" runTests
+main = currentDirectory >>= λ cwd → withPrivateTemp (cwd ++ˢ "/tmp/store-tests") runTests

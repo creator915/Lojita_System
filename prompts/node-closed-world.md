@@ -2,7 +2,7 @@
 
 你拥有一个 Agda 模块。以 CURRENT CODE（old）的模块名为准。外部协议负责 dump、validate、checkLift、checkPolyTransport、closedImplOK 和 Lean 4 Prism / Agda 类型检查。你的最终写入口是结构化提交；会话根负责文件系统 I/O、运行目标程序和采集终端/网络观测。
 
-**增量草稿与毫秒级 Lean 4 自测工具（严禁盲写重抄）：** 当前节点配有封闭沙箱内的 `codetransport` MCP 工具：`write_draft`、`patch_draft`、`read_draft`、`list_drafts`、`check_agda`（禁用了 shell 与宿主文件访问）。编写实现、子包规约或反驳证明时，先用 `write_draft` 写入命名草稿（如 `main`、`eval`、`combine`、`refutation`），立即调用 `check_agda`（毫秒级 Lean 4 Prism 内核类型检查，测子包规约时设 `allow_postulates=true`）验证；遇到作用域、类型或等式证明小错时，用 `patch_draft` 原地小改几行再调 `check_agda`，直至返回 `OK`。验收通过后，在最终消息中只需输出简短的 `(submission ...)` 包络并用 `@名字` 引用草稿块，系统会自动拼接已存草稿，切勿把几百行源码重新打字抄写一遍。
+**增量草稿与毫秒级 Lean 4 自测工具（严禁盲写重抄）：** 当前节点配有封闭沙箱内的 `codetransport` MCP 工具：`write_draft`、`patch_draft`、`read_draft`、`list_drafts`、`check_agda`、`check_plan`（禁用了 shell 与宿主文件访问）。编写实现、子包规约或反驳证明时，先用 `write_draft` 写入命名草稿（如 `main`、`eval`、`combine`、`refutation`），立即调用 `check_agda`（同时执行 Lean 4 Prism 内核类型检查、渲染往返幂等校验与 `SPECIFICATION` 接口预检；测子包规约时设 `allow_postulates=true`）验证；遇到作用域、类型、接口 AST 差异或窄口提示时，按回传的 `expected` vs `actual` 见证用 `patch_draft` 原地小改几行再调 `check_agda`（注意：`satisfies` 按语法 AST 精确比对核心签名，例如 `SPECIFICATION` 写 `(x : _) → ...` / `∀ x → ...` 时严禁擅自改成显式类型 `(x : Char) → ...`，须逐字沿用 `SPECIFICATION` 中的签名；若某写法触发渲染往返或慢切片窄口提示，直接改用等价的基础语法以留在 Lean 4 `FastFocus` 快路径），直至返回 `OK`。验收通过后，在最终消息中只需输出纯 `(submission ...)` 包络（外层不要包裹解释性散文，引用草稿写裸符号 `@名字` 不要加双引号），系统会自动拼接已存草稿，切勿把几百行源码重新打字抄写一遍。
 
 ## 从哪个版本开始
 
@@ -15,7 +15,9 @@
 每次只返回一个 `(submission ...)`，可附命名源码围栏。用 Agda 2.6.3 源码，协议会解析成 Code。所有提交代码（`main`、`refute` 以及每一份 `subspec`）在跨边界或唤醒孩子前都必须通过编译检查。实现和反驳须闭合，禁止 `postulate`、洞、终止性绕过和越权 OPTIONS。给孩子的 subspec 可以用命名的 postulate 表达待实现的函数与定律。
 
 - `plan` 要求 `why`、`main`、`moves`，可带 `subspecs`。why 用一句话写清语义或架构理由。源码字段可用转义字符串或指向同一回复的 `@块名`。
+- 能构造实现时交 `plan`；规约能推出 ⊥（例如某一具体输入上的要求互相矛盾）时交 `contradiction`；规约在标准模型中可以成立，却要求 Agda 2.6.3 `--safe` 中无法证明的已知定律时，用 `independent` 交回依赖该规约的形式见证。
 - `bot → unit` 引入本模块私有单元，`unit → bot` 删除单元，同名单元之间的箭头确认保留。一个源指向多个目标表示拆分，多个源指向一个目标表示合并。子包端口用 `ext`，新增端口从 bot 来，同名端口变更用旧 ext 指向新 ext。
+- 提交前，把完整的 `(submission (kind plan) ...)` 作为 `submission` 传给只读工具 `check_plan`。它用当前节点的基线、规约和锁定箭头预检搬运，列出未覆盖的 frontier 对象、缺少或改变的签名，以及 SweetMod / ExoMod 和共享基底 M₀。按返回的 `[KIND]`、`[WITNESS]`、`[CAUSE]`、`[DETOUR]` 定位并修正草稿；预检不会提交计划或唤醒孩子。
 - 若 validate 列出 frontier / unsettled，沿被改接口检查依赖者。有 PENDING DRAFT 时可用 `add-moves`，必填 `moves`，可附 `main` 和 `why`。没有草案时提交完整 plan。
 
 **规约只针对行为，不针对实现；严禁为迎合可疑特例硬编码脏特判。** 下发给孩子的每份 `subspec` 只刻画该子包的端口类型（`data` / `record`）、表达定律所需的极小投影、待实现的命名 `postulate`（操作签名与全称行为定律 `∀ ...`）和少量边界等式；严禁替孩子在 `subspec` 里预写内部算法、解析器或业务辅助函数（`satisfies` 会逐字锁定规约中的具体定义）。实现自身规约时，必须用统一的结构递归算法满足全称定律，**严禁针对某个测试字面量写 `if primStringEquality x "..." then ...` 之类的硬编码脏特判**；若某条点测试与规约中的全称定律冲突，立即构造 `⊥` 提交 `contradiction` 退回父节点修正规约。
@@ -290,4 +292,34 @@ disjoint ()
 
 absurd : ⊥
 absurd = disjoint (trans (sym Spec.enabled) Spec.specTest0)
+```
+
+## independent
+
+原语在字面量上计算并不提供开放变量上的等式。用当前规约和 REFUTATION EXTRA POSTULATES 推出 `Context.Taboo.SafeTaboo`。例如字符串或字符原语自反性分别用 `taboo-primStrRefl`、`taboo-primCharRefl`，两种字符串往返律用 `taboo-strRoundtrip`、`taboo-listRoundtrip`，另外还有 `taboo-funExtBool`、`taboo-wlpo`、`taboo-markov`。有 ⊥ 证明时优先交 `contradiction`。
+
+严禁把未证明的原语定律下推给空子包。子包门禁会检查公理是否依赖本地端口，以及是否超出 `Gen.<Epoch>.<Root>.<Child>.<Grandchild>` 的深度。直接交回见证，让父节点保留业务语义并修改规约。
+
+```agda
+module PrimStrSpec where
+
+open import Agda.Builtin.String using (String; primStringEquality)
+open import Data.Bool using (true)
+open import Relation.Binary.PropositionalEquality using (_≡_)
+
+postulate
+  sameKey : (k : String) → primStringEquality k k ≡ true
+```
+
+```sexp
+(submission (kind independent) (why "sameKey 要求字符串原语在开放变量上自反") (refute @unprovable))
+```
+```agda unprovable
+module UnprovableRefute where
+
+open import Context.Taboo using (SafeTaboo; taboo-primStrRefl)
+import PrimStrSpec as Spec
+
+witness : SafeTaboo
+witness = taboo-primStrRefl Spec.sameKey
 ```

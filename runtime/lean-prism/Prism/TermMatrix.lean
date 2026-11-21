@@ -35,11 +35,13 @@ partial def patAllVars : Pat → List String
   | .recP fs     => fs.flatMap (fun (_, p) => patAllVars p)
   | _            => []
 
--- Strict subterm variables of `p`: variables strictly *inside* at least one `conP`.
-def patStrictSubVars : Pat → List String
-  | .conP _ args => args.flatMap (fun a => patAllVars a.thing)
-  | .asP _ p     => patStrictSubVars p
-  | _            => []
+-- Include constructor subpatterns as well as their bound variables. A recursive
+-- call on (z ∷ zs) under (y ∷ (z ∷ zs)) decreases just like a call on a named tail.
+partial def strictSubpatterns : Pat → List Pat
+  | .conP _ args => args.flatMap fun a => a.thing :: strictSubpatterns a.thing
+  | .asP _ p => strictSubpatterns p
+  | .recP fields => fields.flatMap fun (_, p) => p :: strictSubpatterns p
+  | _ => []
 
 -- Flatten nested `Expr.app` into `(headExpr, visibleArgs)` (and record if hidden args precede).
 partial def unrollApps : Expr → Expr × List (Arg Expr)
@@ -48,11 +50,30 @@ partial def unrollApps : Expr → Expr × List (Arg Expr)
       (hd, args ++ [a])
   | e => (e, [])
 
+private partial def matchesSubpattern (e : Expr) : Pat → Bool
+  | .varP x => match e with | .var y => x == y | _ => false
+  | .asP x p => matchesSubpattern e (.varP x) || matchesSubpattern e p
+  | .litP l => match e with | .lit r => l == r | _ => false
+  | .conP q ps =>
+    let (head, args) := unrollApps e
+    match head with
+    | .con c => c.full == q.full && c.canonAlts == q.canonAlts && ps.length == args.length &&
+      (ps.zip args).all fun (p, arg) =>
+        p.hid == arg.hid && p.label == arg.label && matchesSubpattern arg.thing p.thing
+    | _ => false
+  | _ => false
+
+private def withoutShadowed (subterms : List Pat) (bound : List String) : List Pat :=
+  subterms.filter fun p => !(patAllVars p).any bound.contains
+
+private def refersTo (q : QName) (target : List String) : Bool :=
+  q.full == target || q.canonAlts.contains target
+
 -- Check if target `q` appears anywhere in `Expr`.
 mutual
   partial def mentionsQName (target : List String) : Expr → Bool
-    | .def_ q      => q.full == target
-    | .con q       => q.full == target
+    | .def_ q      => refersTo q target
+    | .con q       => refersTo q target
     | .app f a     => mentionsQName target f || mentionsQName target a.thing
     | .lam _ e     => mentionsQName target e
     | .lamT b e    => mentionsBind target b || mentionsQName target e
@@ -93,85 +114,85 @@ mutual
 end
 
 -- Verify that EVERY occurrence of `selfFull` in `e` is a direct visible call whose
--- `visIdx`-th visible argument is `Expr.var v` for some `v ∈ strictVars` (and `v` not shadowed).
+-- `visIdx`-th visible argument is an unshadowed strict subpattern.
 mutual
   partial def allCallsStructural (selfFull : List String) (visIdx : Nat)
-      (strictVars : List String) : Expr → Bool
+      (subterms : List Pat) : Expr → Bool
     | .var _ | .con _ | .lit _ | .set _ | .hole | .meta_ | .absurdLam _ => true
-    | .def_ q => q.full != selfFull   -- unapplied reference to `self` is non-structural!
+    | .def_ q => !refersTo q selfFull   -- unapplied reference to `self` is non-structural!
     | e@(.app _ _) =>
         let (hd, args) := unrollApps e
-        let argsOK := args.all (fun a => allCallsStructural selfFull visIdx strictVars a.thing)
+        let argsOK := args.all (fun a => allCallsStructural selfFull visIdx subterms a.thing)
         match hd with
         | .def_ q =>
-            if q.full == selfFull then
+            if refersTo q selfFull then
               let visArgs := args.filter (fun a => a.hid == .visible)
               match visArgs[visIdx]? with
               | some argK =>
-                  match argK.thing with
-                  | .var v => strictVars.contains v && argsOK
-                  | _      => false
+                  subterms.any (matchesSubpattern argK.thing) && argsOK
               | none => false
             else
-              allCallsStructural selfFull visIdx strictVars hd && argsOK
-        | _ => allCallsStructural selfFull visIdx strictVars hd && argsOK
+              allCallsStructural selfFull visIdx subterms hd && argsOK
+        | _ => allCallsStructural selfFull visIdx subterms hd && argsOK
     | .lam a body =>
-        let sv := strictVars.filter (· != a.thing)
+        let sv := withoutShadowed subterms [a.thing]
         allCallsStructural selfFull visIdx sv body
     | .lamT (.bind _ xs t) body =>
-        let sv := strictVars.filter (fun v => !xs.contains v)
-        allCallsStructural selfFull visIdx strictVars t &&
+        let sv := withoutShadowed subterms xs
+        allCallsStructural selfFull visIdx subterms t &&
         allCallsStructural selfFull visIdx sv body
     | .lamCase _ => false
     | .pi (.bind _ xs t) body =>
-        let sv := strictVars.filter (fun v => !xs.contains v)
-        allCallsStructural selfFull visIdx strictVars t &&
+        let sv := withoutShadowed subterms xs
+        allCallsStructural selfFull visIdx subterms t &&
         allCallsStructural selfFull visIdx sv body
     | .fun_ a body =>
-        allCallsStructural selfFull visIdx strictVars a.thing &&
-        allCallsStructural selfFull visIdx strictVars body
+        allCallsStructural selfFull visIdx subterms a.thing &&
+        allCallsStructural selfFull visIdx subterms body
     | .let_ bs body =>
-        checkLetsStructural selfFull visIdx strictVars bs body
+        checkLetsStructural selfFull visIdx subterms bs body
     | .rec_ fs =>
-        fs.all (fun (_, v) => allCallsStructural selfFull visIdx strictVars v)
+        fs.all (fun (_, v) => allCallsStructural selfFull visIdx subterms v)
     | .recUpd r fs =>
-        allCallsStructural selfFull visIdx strictVars r &&
-        fs.all (fun (_, v) => allCallsStructural selfFull visIdx strictVars v)
-    | .dot e => allCallsStructural selfFull visIdx strictVars e
+        allCallsStructural selfFull visIdx subterms r &&
+        fs.all (fun (_, v) => allCallsStructural selfFull visIdx subterms v)
+    | .dot e => allCallsStructural selfFull visIdx subterms e
 
   partial def checkLetsStructural (selfFull : List String) (visIdx : Nat)
-      (strictVars : List String) (bs : List LetBind) (body : Expr) : Bool :=
+      (subterms : List Pat) (bs : List LetBind) (body : Expr) : Bool :=
     match bs with
-    | [] => allCallsStructural selfFull visIdx strictVars body
+    | [] => allCallsStructural selfFull visIdx subterms body
     | .letBind x t e :: rest =>
-        allCallsStructural selfFull visIdx strictVars t &&
-        allCallsStructural selfFull visIdx strictVars e &&
-        checkLetsStructural selfFull visIdx (strictVars.filter (· != x)) rest body
+        allCallsStructural selfFull visIdx subterms t &&
+        allCallsStructural selfFull visIdx subterms e &&
+        checkLetsStructural selfFull visIdx (withoutShadowed subterms [x]) rest body
     | .letPat p e :: rest =>
         let bound := patAllVars p
-        allCallsStructural selfFull visIdx strictVars e &&
-        checkLetsStructural selfFull visIdx (strictVars.filter (fun v => !bound.contains v)) rest body
+        allCallsStructural selfFull visIdx subterms e &&
+        checkLetsStructural selfFull visIdx (withoutShadowed subterms bound) rest body
 end
 
-def checkClauseAt (selfFull : List String) (visIdx : Nat) : Clause → Bool
+private partial def rhsStructural (self : List String) (index : Nat) (subterms : List Pat) : RHS → Bool
+  | .rhs body => allCallsStructural self index subterms body
+  | .absurdRHS => true
+  | .rewriteRHS eqs r => eqs.all (allCallsStructural self index subterms) && rhsStructural self index subterms r
+  | .withRHS es cs =>
+    es.all (allCallsStructural self index subterms) && cs.all fun
+      | .clause (.with_ _ ps extra) body [] =>
+        let shadow := (ps ++ extra).flatMap (fun p => patAllVars p.thing)
+        rhsStructural self index (withoutShadowed subterms shadow) body
+      | _ => false
+
+def checkCallAt (callee : List String) (callerArg calleeArg : Nat) : Clause → Bool
   | .clause (.head _ pats) rhs ws =>
-      if ws.any (mentionsDecl selfFull) then
-        false
-      else
-        let visPats := pats.filter (fun a => a.hid == .visible)
-        match rhs with
-        | .absurdRHS => true
-        | .rhs body =>
-            if !mentionsQName selfFull body then
-              true
-            else
-              match visPats[visIdx]? with
-              | none => false
-              | some patK =>
-                  let sv := patStrictSubVars patK.thing
-                  !sv.isEmpty && allCallsStructural selfFull visIdx sv body
-        | _ => false
+    !ws.any (mentionsDecl callee) &&
+      let visible := pats.filter (fun a => a.hid == .visible)
+      let smaller := visible[callerArg]?.map (fun p => strictSubpatterns p.thing)
+      rhsStructural callee calleeArg (smaller.getD []) rhs
   | _ => false
+
+def checkClauseAt (selfFull : List String) (visIdx : Nat) : Clause → Bool :=
+  checkCallAt selfFull visIdx visIdx
 
 inductive RecAnalysis : Type where
   | nonRecursive  : RecAnalysis

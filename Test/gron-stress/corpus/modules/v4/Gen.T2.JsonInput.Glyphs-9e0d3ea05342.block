@@ -1,0 +1,30 @@
+module Gen.T2.JsonInput.Glyphs where
+
+open import Agda.Builtin.Char using (primCharEquality; primNatToChar)
+open import Data.Bool using (true; false; _∧_; _∨_)
+open import Data.Char using (Char; toℕ)
+open import Data.List using ([]; _∷_; [_]; any)
+open import Data.Nat using (ℕ; _+_; _<ᵇ_; _≡ᵇ_)
+open import Data.Nat.DivMod using (_/_; _%_)
+open import Data.String using (String; fromList) renaming (_++_ to _++ˢ_)
+open import Relation.Binary.PropositionalEquality using (_≡_)
+
+postulate
+  diagnosticGlyph : Char → String
+  printableAscii : (c : _) → (((31 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 127)) ≡ true) → (primCharEquality c '\'' ≡ false) → (primCharEquality c '\\' ≡ false) → diagnosticGlyph c ≡ fromList ([ c ])
+  apostropheGlyph : diagnosticGlyph '\'' ≡ "\\'"
+  backslashGlyph : diagnosticGlyph '\\' ≡ "\\\\"
+  bellGlyph : diagnosticGlyph (primNatToChar 7) ≡ "\\a"
+  verticalTabGlyph : diagnosticGlyph (primNatToChar 11) ≡ "\\v"
+  backspaceGlyph : diagnosticGlyph (primNatToChar 8) ≡ "\\b"
+  tabGlyph : diagnosticGlyph '	' ≡ "\\t"
+  newlineGlyph : diagnosticGlyph '\n' ≡ "\\n"
+  formfeedGlyph : diagnosticGlyph (primNatToChar 12) ≡ "\\f"
+  returnGlyph : diagnosticGlyph '\r' ≡ "\\r"
+  diagnosticNibble : ℕ → Char
+  decimalNibble : (n : _) → ((n <ᵇ 10) ≡ true) → diagnosticNibble n ≡ primNatToChar (48 + n)
+  alphabeticNibble : (n : _) → (((9 <ᵇ n) ∧ (n <ᵇ 16)) ≡ true) → diagnosticNibble n ≡ primNatToChar (87 + n)
+  hexControlGlyph : (c : _) → (((toℕ c <ᵇ 32) ∨ (toℕ c ≡ᵇ 127)) ≡ true) → (any (primCharEquality c) (primNatToChar 7 ∷ (primNatToChar 8 ∷ ('	' ∷ ('\n' ∷ (primNatToChar 11 ∷ (primNatToChar 12 ∷ ('\r' ∷ []))))))) ≡ false) → diagnosticGlyph c ≡ ("\\x" ++ˢ fromList (diagnosticNibble (toℕ c / 16) ∷ (diagnosticNibble (toℕ c % 16) ∷ [])))
+  glyphTwoBytes : (c : _) → (((127 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 2048)) ≡ true) → diagnosticGlyph c ≡ fromList ([ primNatToChar (192 + (toℕ c / 64)) ])
+  glyphThreeBytes : (c : _) → (((2047 <ᵇ toℕ c) ∧ (toℕ c <ᵇ 65536)) ≡ true) → diagnosticGlyph c ≡ fromList ([ primNatToChar (224 + (toℕ c / 4096)) ])
+  glyphFourBytes : (c : _) → ((65535 <ᵇ toℕ c) ≡ true) → diagnosticGlyph c ≡ fromList ([ primNatToChar (240 + (toℕ c / 262144)) ])

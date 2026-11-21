@@ -11,7 +11,7 @@ open import Agda.Builtin.Char using (primCharEquality)
 open import Data.Unit using (⊤; tt)
 open import IO.Primitive using (IO; return; _>>=_)
 import IO.Primitive.Finite as F
-open import OwnershipIO.FFI using (procResult; currentDirectory; failIO; fileExists; listDirectory)
+open import OwnershipIO.FFI using (procResult; readProcessAt; currentDirectory; failIO; fileExists; listDirectory)
 open import OwnershipIO.MetaFFI using (_>>_; withPrivateTemp)
 open import Code using (_==ˢ_; elemᵇ; eqList; filterᵇ; mkQ; unit; ⊥)
 open import Code.Transport using (_⇝_)
@@ -284,6 +284,14 @@ checkStamp ws = do
   assert "replay stamp digest or format" (stamp ==ˢ (hash ++ˢ "\n" ++ˢ inputs))
   return stamp
 
+-- Compare nanosecond mtimes across two different probes of the same session.
+sessionEnvBuildTimes : String → IO String
+sessionEnvBuildTimes ws = do
+  procResult rc out err ← readProcessAt (ws ++ˢ "/tmp/ghc-script-cache") 10000 "stat"
+    ("-c" ∷ "%y" ∷ "env/SessionEnv.agdai" ∷ "MAlonzo/Code/SessionEnv.o" ∷ []) ""
+  assert ("missing cached SessionEnv compiler products: " ++ˢ err) (rc ≡ᵇ 0)
+  return out
+
 run : String → String → IO ⊤
 run repo ws = do
   let cfg = sessionConfig repo ws "replay gate" (refSpec (local "/bin/cat") [] 30000)
@@ -303,8 +311,11 @@ run repo ws = do
   unstamped cfg "build without replay"
 
   passingScript cfg probeSource "batch probe passed"
+  cached ← sessionEnvBuildTimes ws
   unstamped cfg "a ref-only probe"
   passingScript cfg candProbe "cand only"
+  reused ← sessionEnvBuildTimes ws
+  assert "session probe recompiled unchanged SessionEnv" (cached ==ˢ reused)
   unstamped cfg "separate ref-only and cand-only probes"
   checkFuzz cfg
 

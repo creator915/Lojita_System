@@ -27,7 +27,7 @@ compile() {
   fi
 }
 
-compile ghc -O0 -package Agda -outputdir "$build/ghc" -o "$build/bin/dump" "$repo/dump/Dump.hs"
+compile ghc -O2 -threaded -package Agda -outputdir "$build/ghc" -o "$build/bin/dump" "$repo/dump/Dump.hs"
 for suite in StoreCAS MetaBoundary; do
   echo "Compiling Test/$suite.agda"
   compile agda --no-libraries --compile --ghc-flag=-O0 --compile-dir="$build/bin" \

@@ -206,6 +206,35 @@ prefixRHS s (tl , more) = s ++ˢ tl , more
 joinClause : ℕ → String → String × List String → List String → List String
 joinClause ind lhs (tl , more) wh = indentLine ind (lhs ++ˢ tl) ∷ wh ++ more
 
+-- 把一组行包进块：块名一行，里面多缩进 2
+block : ℕ → String → List String → List String
+block ind kw ls = indentLine ind kw ∷ map ("  " ++ˢ_) ls
+
+-- 终止检查的 pragma 行：紧贴在单元前面（块里面）。拆成签名/定义两半输出时只跟着签名那一半（withTC 由调用者给）
+tcLine : ℕ → Mods → List String
+tcLine ind (mods _ _ _ check)          = []
+tcLine ind (mods _ _ _ nonTerminating) = indentLine ind "{-# NON_TERMINATING #-}" ∷ []
+tcLine ind (mods _ _ _ terminating)    = indentLine ind "{-# TERMINATING #-}" ∷ []
+
+-- The next anonymous signature starts a different obligation.
+hasBody : Name → List Decl → Bool
+hasBody x [] = false
+hasBody x (fun _ y _ ∷ ds) = (x ==ˢ y) ∨ hasBody x ds
+hasBody "_" (sig _ "_" _ ∷ ds) = false
+hasBody x (_ ∷ ds) = hasBody x ds
+
+-- Decorations belong to individual declarations, including declarations in a
+-- nested module or where block. Graph-ordered units already wrap the group.
+decorate : Bool → ℕ → Mods → Bool → Bool → List String → List String
+decorate false ind m withTC stub ls = ls
+decorate true ind m withTC stub ls = wrap (isPrivate m) "private"
+  (wrap (isInstance m) "instance" (wrap (isAbstract m) "abstract"
+    ((if withTC then tcLine ind m else []) ++ wrap stub "postulate" ls)))
+  where
+    wrap : Bool → String → List String → List String
+    wrap true kw ls = block ind kw ls
+    wrap false kw ls = ls
+
 mutual
   renderExpr : ℕ → Expr → String
   renderExpr ind (var x)        = x
@@ -262,7 +291,7 @@ mutual
 
   -- λ 后面的一个绑定：类型是 _ 就只写名字（λ x →），否则写 (x : A)
   renderLamBinder : ℕ → Bind → String
-  renderLamBinder ind (bind h xs meta) = intersperse " " (map (braces h nothing) xs)
+  renderLamBinder ind (bind h (x ∷ []) meta) = braces h nothing x
   renderLamBinder ind b                = renderBind ind b
 
   -- λ x y (z : A) → e：连续的 λ 合并。参数 e 是 λ 的体
@@ -359,8 +388,8 @@ mutual
 
   whereLines : ℕ → List Decl → List String
   whereLines ind []                   = []
-  whereLines ind (module′ m [] ds ∷ []) = indentLine (ind + 2) ("module " ++ˢ m ++ˢ " where") ∷ renderDecls (ind + 4) ds
-  whereLines ind w                    = indentLine (ind + 2) "where" ∷ renderDecls (ind + 4) w
+  whereLines ind (module′ m [] ds ∷ []) = indentLine (ind + 2) ("module " ++ˢ m ++ˢ " where") ∷ renderNestedDecls (ind + 4) ds
+  whereLines ind w                    = indentLine (ind + 2) "where" ∷ renderNestedDecls (ind + 4) w
 
   renderClauses : ℕ → Bool → List Clause → List String
   renderClauses ind showHead []       = []
@@ -369,17 +398,12 @@ mutual
   -- λ where 的子句：每条另起一行，不写头，→ 代替 =
   renderCaseClauses : ℕ → List Clause → String
   renderCaseClauses ind []       = ""
-  renderCaseClauses ind (c ∷ cs) = "\n" ++ˢ intersperse "\n" (fixArrow (renderClause ind false c)) ++ˢ renderCaseClauses ind cs
+  renderCaseClauses ind (c ∷ cs) = "\n" ++ˢ intersperse "\n" (caseLines c) ++ˢ renderCaseClauses ind cs
     where
-      -- 第一行里的 " = " 换成 " → "：子句渲染出来是 "pats = e"，λ where 里要写 "pats → e"
-      fixArrow : List String → List String
-      fixArrow []       = []
-      fixArrow (l ∷ ls) = replaceEq (toList l) ∷ ls
-        where
-          replaceEq : List Char → String
-          replaceEq (' ' ∷ '=' ∷ ' ' ∷ cs) = fromList (' ' ∷ '→' ∷ ' ' ∷ cs)
-          replaceEq (c ∷ cs)               = fromList (c ∷ []) ++ˢ replaceEq cs
-          replaceEq []                     = ""
+      caseLines : Clause → List String
+      caseLines (clause l (rhs e) w) = joinClause ind (renderLHS ind false l)
+        (" → " ++ˢ renderExpr ind e , []) (whereLines ind w)
+      caseLines other = renderClause ind false other
 
   ----------------------------------------------------------------------
   -- 声明
@@ -430,7 +454,8 @@ mutual
   renderDecl ind (recSig _ x bs e)    = indentLine ind ("record " ++ˢ x ++ˢ renderBinds ind bs ++ˢ " : " ++ˢ renderExpr ind e) ∷ []
   renderDecl ind (recDef _ x ps d fs) = indentLine ind ("record " ++ˢ intersperse " " (x ∷ ps) ++ˢ " where") ∷ renderRecBody ind d fs
   renderDecl ind (variable′ vs)       = indentLine ind "variable" ∷ renderSigs (ind + 2) vs
-  renderDecl ind (module′ x bs ds)    = indentLine ind ("module " ++ˢ x ++ˢ renderBinds ind bs ++ˢ " where") ∷ renderDecls (ind + 2) ds
+  renderDecl ind (module′ x bs ds)    = indentLine ind ("module " ++ˢ x ++ˢ renderBinds ind bs ++ˢ " where") ∷ renderNestedDecls (ind + 2) ds
+  renderDecl ind (patSyn n xs p) = indentLine ind ("pattern " ++ˢ intersperse " " (n ∷ xs) ++ˢ " = " ++ˢ renderPat ind p) ∷ []
   renderDecl ind (unsupported s)      = indentLine ind ("-- [unsupported] " ++ˢ s) ∷ []
 
   renderRecBody : ℕ → RecDir → List (Name × Expr) → List String
@@ -448,22 +473,36 @@ mutual
 
   -- data 的签名和定义相邻时合成一条：data D (A : Set) : Set where …
   renderDecls : ℕ → List Decl → List String
-  renderDecls ind [] = []
-  renderDecls ind (dataSig m x bs e ∷ rest@(dataDef m′ x′ ps cs ∷ ds)) =
-    if x ==ˢ x′
-    then indentLine ind ("data " ++ˢ x ++ˢ renderBinds ind bs ++ˢ " : " ++ˢ renderExpr ind e ++ˢ " where") ∷ renderSigs (ind + 2) cs ++ renderDecls ind ds
-    else renderDecl ind (dataSig m x bs e) ++ renderDecls ind rest
-  renderDecls ind (recSig m x bs e ∷ rest@(recDef m′ x′ ps d fs ∷ ds)) =
-    if x ==ˢ x′
-    then indentLine ind ("record " ++ˢ x ++ˢ renderBinds ind bs ++ˢ " : " ++ˢ renderExpr ind e ++ˢ " where") ∷ renderRecBody ind d fs ++ renderDecls ind ds
-    else renderDecl ind (recSig m x bs e) ++ renderDecls ind rest
-  renderDecls ind (variable′ vs ∷ ds) = indentLine ind "variable" ∷ renderSigs (ind + 2) vs ++ moreVars ds
+  renderDecls ind ds = renderDeclsWith ind false ds
+
+  renderNestedDecls : ℕ → List Decl → List String
+  renderNestedDecls ind ds = renderDeclsWith ind true ds
+
+  renderDeclsWith : ℕ → Bool → List Decl → List String
+  renderDeclsWith ind scoped [] = []
+  renderDeclsWith ind scoped (s@(dataSig m x bs e) ∷ rest@(dataDef m′ x′ ps cs ∷ ds)) =
+    if x ==ˢ x′ then decorate scoped ind m true false
+      (indentLine ind ("data " ++ˢ x ++ˢ renderBinds ind bs ++ˢ " : " ++ˢ renderExpr ind e ++ˢ " where") ∷ renderSigs (ind + 2) cs)
+      ++ renderDeclsWith ind scoped ds
+    else decorate scoped ind m true false (renderDecl ind s) ++ renderDeclsWith ind scoped rest
+  renderDeclsWith ind scoped (s@(recSig m x bs e) ∷ rest@(recDef m′ x′ ps d fs ∷ ds)) =
+    if x ==ˢ x′ then decorate scoped ind m true false
+      (indentLine ind ("record " ++ˢ x ++ˢ renderBinds ind bs ++ˢ " : " ++ˢ renderExpr ind e ++ˢ " where") ∷ renderRecBody ind d fs)
+      ++ renderDeclsWith ind scoped ds
+    else decorate scoped ind m true false (renderDecl ind s) ++ renderDeclsWith ind scoped rest
+  renderDeclsWith ind scoped (variable′ vs ∷ ds) = indentLine ind "variable" ∷ renderSigs (ind + 2) vs ++ moreVars ds
     where
-      -- 紧跟着的 variable 块并进来（Dump 会把每个 variable 单独包一层）
       moreVars : List Decl → List String
       moreVars (variable′ ws ∷ ds′) = renderSigs (ind + 2) ws ++ moreVars ds′
-      moreVars ds′                  = renderDecls ind ds′
-  renderDecls ind (d ∷ ds) = renderDecl ind d ++ renderDecls ind ds
+      moreVars ds′                  = renderDeclsWith ind scoped ds′
+  renderDeclsWith ind scoped (s@(sig m n _) ∷ rest@(f@(fun m′ n′ _) ∷ ds)) =
+    if n ==ˢ n′ ∧ eqMods m m′ then decorate scoped ind m true false (renderDecl ind s ++ renderDecl ind f) ++ renderDeclsWith ind scoped ds
+    else decorate scoped ind m true (not (hasBody n rest)) (renderDecl ind s) ++ renderDeclsWith ind scoped rest
+  renderDeclsWith ind scoped (d@(sig m n _) ∷ ds) =
+    decorate scoped ind m true (not (hasBody n ds)) (renderDecl ind d) ++ renderDeclsWith ind scoped ds
+  renderDeclsWith ind scoped (d@(fun m n _) ∷ ds) =
+    decorate scoped ind m false false (renderDecl ind d) ++ renderDeclsWith ind scoped ds
+  renderDeclsWith ind scoped (d ∷ ds) = renderDecl ind d ++ renderDeclsWith ind scoped ds
 
 ------------------------------------------------------------------------
 -- §2  块：private / instance / abstract / postulate
@@ -480,11 +519,6 @@ modsOf (dataDef m _ _ _ ∷ _)    = m
 modsOf (recDef m _ _ _ _ ∷ _)   = m
 modsOf (_ ∷ ds)                 = modsOf ds
 
--- 只有 sig 没有 fun/dataDef/recDef：是 postulate
--- 把一组行包进块：块名一行，里面多缩进 2
-block : ℕ → String → List String → List String
-block ind kw ls = indentLine ind kw ∷ map ("  " ++ˢ_) ls
-
 -- 块里只放有名字的声明；挂在单元后面的无名声明（pragma、open、fixity …）留在块外面
 splitTrailing : List Decl → List Decl × List Decl
 splitTrailing [] = [] , []
@@ -494,32 +528,11 @@ splitTrailing (d ∷ ds) with declName d | splitTrailing ds
 ...   | variable′ vs = (d ∷ named) , rest
 ...   | _            = named , (d ∷ rest)
 
--- 终止检查的 pragma 行：紧贴在单元前面（块里面）。拆成签名/定义两半输出时只跟着签名那一半（withTC 由调用者给）
-tcLine : ℕ → Mods → List String
-tcLine ind (mods _ _ _ check)          = []
-tcLine ind (mods _ _ _ nonTerminating) = indentLine ind "{-# NON_TERMINATING #-}" ∷ []
-tcLine ind (mods _ _ _ terminating)    = indentLine ind "{-# TERMINATING #-}" ∷ []
-
 -- isPost：这个单元整体是不是 postulate（只有签名）。拆成签名/定义两半输出时，由调用者按整个单元判断
 -- withTC：这一半要不要带终止检查的 pragma（整块 / 签名那一半：要；定义那一半：不要，签名那边已经带了）
 renderUnitDecls : ℕ → Bool → Bool → List Decl → List String
 renderUnitDecls ind isPost withTC ds₀ with splitTrailing ds₀
-... | ds , trailing = wrapPost (wrapMods (modsOf ds)) ++ renderDecls ind trailing
-  where
-    inner : ℕ → List String
-    inner i = (if withTC then tcLine i (modsOf ds) else []) ++ renderDecls i ds
-    -- 层层包：abstract > instance > private（顺序无所谓，Agda 都接受）
-    wrapMods : Mods → List String
-    wrapMods (mods p i a _) =
-      let l₀ = if a then block ind "abstract" (inner (ind + 2)) else inner ind
-          l₁ = if i then block ind "instance" (shift l₀) else l₀
-          l₂ = if p then block ind "private"  (shift l₁) else l₁
-      in l₂
-      where
-        shift : List String → List String
-        shift = map (λ s → s)   -- block 自己会加缩进
-    wrapPost : List String → List String
-    wrapPost ls = if isPost then block ind "postulate" ls else ls
+... | ds , trailing = decorate true ind (modsOf ds) withTC isPost (renderDecls ind ds) ++ renderDecls ind trailing
 
 ------------------------------------------------------------------------
 -- §3  顺序：按依赖把声明分块、排序
@@ -563,13 +576,21 @@ chunksOf path ds = reverse (go ds [])
     attach d []       = chunk [] (d ∷ []) ∷ []
     attach d (c ∷ cs) = chunk (cnames c) (cdecls c ++ (d ∷ [])) ∷ cs
 
-    -- 同名的块已经有了（可能在前面很远：先签名、隔了几个、再定义）就并进去
+    -- A module and an opaque value may share their spelling. The module
+    -- contributes namespaced projections and cannot implement the signature.
+    sameValue : QName → Chunk → Bool
+    sameValue q k = anyᵇ (λ n → n ==ᴺ q) (cnames k) ∧ not (anyᵇ isModule (cdecls k))
+      where
+        isModule : Decl → Bool
+        isModule (module′ _ _ _) = true
+        isModule _ = false
+
     hasUnit : QName → List Chunk → Bool
-    hasUnit q = anyᵇ (λ k → anyᵇ (λ n → n ==ᴺ q) (cnames k))
+    hasUnit q = anyᵇ (sameValue q)
 
     mergeInto : QName → Decl → List Chunk → List Chunk
     mergeInto q d []       = chunk (q ∷ []) (d ∷ []) ∷ []
-    mergeInto q d (k ∷ ks) = if anyᵇ (λ n → n ==ᴺ q) (cnames k) then chunk (cnames k) (cdecls k ++ (d ∷ [])) ∷ ks
+    mergeInto q d (k ∷ ks) = if sameValue q k then chunk (cnames k) (cdecls k ++ (d ∷ [])) ∷ ks
                              else k ∷ mergeInto q d ks
 
     -- 匿名定义：_ 的 fun 挂到最近的（也就是最后一块）匿名签名上，_ 的 sig 总是新开一块
@@ -579,6 +600,7 @@ chunksOf path ds = reverse (go ds [])
 
     go : List Decl → List Chunk → List Chunk
     go [] acc = acc
+    go (d@(module′ n _ _) ∷ ds) acc = go ds (chunk [ nameOf n ] [ d ] ∷ acc)
     go (d ∷ ds) acc with declName d
     ... | nothing with d
     ...   | variable′ vs = go ds (chunk (map (λ v → nameOf (proj₁ v)) vs) (d ∷ []) ∷ acc)
@@ -677,6 +699,7 @@ defPart = filterᵇ isDefD
     isDefD (dataDef _ _ _ _)  = true
     isDefD (recDef _ _ _ _ _) = true
     isDefD (open′ _ _)        = true
+    isDefD (patSyn _ _ _) = true
     isDefD (unsupported _)    = true
     isDefD _                  = false
 
@@ -693,9 +716,30 @@ lookupDeps (_ ∷ rest) (suc n) = lookupDeps rest n
 -- Pass computed tables as arguments. Agda's GHC backend lifts where bindings
 -- to functions; recomputing chunks/graphs at every edge made large self-hosting
 -- round trips unnecessarily expensive.
+-- Preserve the lexical order of a well-scoped module. In particular a mutual
+-- group may interleave signatures independently of the order of its bodies.
+-- Transports can append a new dependency after its caller, so check references
+-- before choosing the order and retain the graph scheduler for those edits.
+inScopeOrder : (QName → Maybe Obj) → List Name → List QName → List Decl → Bool
+inScopeOrder resolve path available [] = true
+inScopeOrder resolve path available (d ∷ ds) =
+  allᵇ ready (refsDecl d) ∧ inScopeOrder resolve path available′ ds
+  where
+    names : Decl → List Name
+    names (variable′ vs) = map proj₁ vs
+    names d with declName d
+    ... | just n = [ n ]
+    ... | nothing = []
+    available′ = map (λ n → mkQ (path ++ [ n ])) (names d) ++ available
+    known : Maybe Obj → Bool
+    known (just (unit u)) = elemᵇ _==ᴺ_ u available′
+    known _ = true
+    ready : QName → Bool
+    ready q = if isPrefix path (full q) then known (resolve q) else true
+
 renderBody : (QName → Maybe Obj) → ℕ → List Name → List Decl → List String
-renderBody res ind path ds = renderDecls ind (filterᵇ isHeader ds) ++
-  arrange (chunksOf path (filterᵇ (λ d → not (isHeader d)) ds))
+renderBody res ind path ds = if inScopeOrder res path [] ds then renderNestedDecls ind ds
+  else renderDecls ind (filterᵇ isHeader ds) ++ arrange (chunksOf path (filterᵇ (λ d → not (isHeader d)) ds))
   where
     mutual
       arrange : List Chunk → List String

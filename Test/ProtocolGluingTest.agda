@@ -197,12 +197,12 @@ private
     ∷ "open import Data.Bool using (Bool; true; false)"
     ∷ "open import Data.List using ([]; _∷_)"
     ∷ "open import Data.Nat using (ℕ; _≤ᵇ_)"
-    ∷ "open import Data.Product using (_×_; _,_; proj₁)"
+    ∷ "open import Data.Product using (_×_; _,_)"
     ∷ "open import Data.String using (String)"
     ∷ "open import Data.Unit using (⊤; tt)"
     ∷ "open import Relation.Binary.PropositionalEquality using (_≡_)"
     ∷ "open import Context.Terminal using (Bytes)"
-    ∷ "open import Context.World using (clockCap; SimClock; monoMs; autoTicks; readMonoMs; opNowMono; here; ExitCode)"
+    ∷ "open import Context.World using (clockCap; opNowMono; here; ExitCode)"
     ∷ "open import Context.Protocol using (pEnd; pSend; pSelect; Endpoint; epDone; epStep; epSend; epSelectL; epSelectR)"
     ∷ "postulate"
     ∷ "  authBranchAt : String → ℕ → ℕ → Bytes → Endpoint (clockCap ∷ []) (λ (_ : ⊤) → String × Bytes) (pSelect (pSend tt pEnd) pEnd) ExitCode"
@@ -225,15 +225,12 @@ private
     ∷ "  auth-expired-law : ∀ (t expiry : ℕ) (payload : Bytes) →"
     ∷ "    (t ≤ᵇ expiry) ≡ false →"
     ∷ "    authBranch t expiry payload ≡ epSelectR (epDone 145)"
-    ∷ "  readMono-idle-val : ∀ (c : SimClock) → autoTicks c ≡ [] → proj₁ (readMonoMs c) ≡ monoMs c"
-    ∷ "  expired-mono-preserved : ∀ (expiry : ℕ) (c : SimClock) → (monoMs c ≤ᵇ expiry) ≡ false → (proj₁ (readMonoMs c) ≤ᵇ expiry) ≡ false"
     ∷ [] )
 
   -- Child B specification (`Gen.M0.Root.Store`: ONLY `[fsCap]`)
   storeSpec : String
   storeSpec = unlines
     ( "module Gen.M0.Root.Store where"
-    ∷ "open import Data.Bool using (Bool; true)"
     ∷ "open import Data.List using ([]; _∷_)"
     ∷ "open import Data.Product using (_×_; proj₁; proj₂)"
     ∷ "open import Data.String using (String)"
@@ -241,9 +238,7 @@ private
     ∷ "open import Data.Unit using (⊤; tt)"
     ∷ "open import Relation.Binary.PropositionalEquality using (_≡_)"
     ∷ "open import Context.Terminal using (Bytes)"
-    ∷ "open import Context.Tools.FsSandbox using (VirtualFs; virtualFs)"
-    ∷ "open import Context.Tools.FsLaws using (ValidFlatFile; CanWriteReg)"
-    ∷ "open import Context.World using (fsCap; FsError; opWriteFile; here; readVirtualFile; writeVirtualFile)"
+    ∷ "open import Context.World using (fsCap; FsError; opWriteFile; here)"
     ∷ "open import Context.Protocol using (pEnd; pSend; pRecv; pSelect; dual; Endpoint; epDone; epStep; epRecv; epOffer)"
     ∷ "postulate"
     ∷ "  storeWriteBranch : Endpoint (fsCap ∷ []) (λ (_ : ⊤) → String × Bytes) (pRecv tt pEnd) (FsError ⊎ ⊤)"
@@ -252,9 +247,6 @@ private
     ∷ "  store-offer-law : storeEndpoint ≡ epOffer storeWriteBranch storeRejectBranch"
     ∷ "  store-write-law : storeWriteBranch ≡ epRecv (λ cred → epStep here (opWriteFile (proj₁ cred) (proj₂ cred)) epDone)"
     ∷ "  store-reject-law : storeRejectBranch ≡ epDone (inj₂ tt)"
-    ∷ "  store-vault-empty-ok : ∀ (payload : Bytes) → proj₁ (writeVirtualFile \"vault/record.txt\" payload (virtualFs [])) ≡ inj₂ tt"
-    ∷ "  store-vault-empty-put-get : ∀ (payload : Bytes) → readVirtualFile \"vault/record.txt\" (proj₂ (writeVirtualFile \"vault/record.txt\" payload (virtualFs []))) ≡ inj₂ payload"
-    ∷ "  store-flat-put-get : ∀ (path : String) (payload : Bytes) (v : VirtualFs) → ValidFlatFile path ≡ true → CanWriteReg path v ≡ true → readVirtualFile path (proj₂ (writeVirtualFile path payload v)) ≡ inj₂ payload"
     ∷ [] )
 
   -- Child A implementation (`Gen.M0.Root.Auth`)
@@ -263,14 +255,13 @@ private
     ( "module Gen.M0.Root.Auth where"
     ∷ "open import Data.Bool using (Bool; true; false)"
     ∷ "open import Data.List using (List; []; _∷_)"
-    ∷ "open import Data.Nat using (ℕ; zero; suc; _+_; _≤ᵇ_)"
-    ∷ "open import Data.Product using (_×_; _,_; proj₁)"
+    ∷ "open import Data.Nat using (ℕ; _≤ᵇ_)"
+    ∷ "open import Data.Product using (_×_; _,_)"
     ∷ "open import Data.String using (String)"
     ∷ "open import Data.Unit using (⊤; tt)"
     ∷ "open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)"
     ∷ "open import Context.Terminal using (Bytes)"
-    ∷ "open import Context.Tools.Clock using (popTick)"
-    ∷ "open import Context.World using (Cap; clockCap; SimClock; monoMs; autoTicks; readMonoMs; Op; opNowMono; _∈_; here; nowMonoW; ExitCode)"
+    ∷ "open import Context.World using (Cap; clockCap; Op; opNowMono; _∈_; here; nowMonoW; ExitCode)"
     ∷ "open import Context.Protocol using (Proto; pEnd; pSend; pSelect; Endpoint; epDone; epStep; epSend; epSelectL; epSelectR; liftProgToEndpoint)"
     ∷ ""
     ∷ "authChoice : String → Bytes → Bool → Endpoint (clockCap ∷ []) (λ (_ : ⊤) → String × Bytes) (pSelect (pSend tt pEnd) pEnd) ExitCode"
@@ -316,38 +307,19 @@ private
     ∷ "  (t ≤ᵇ expiry) ≡ false →"
     ∷ "  authBranch t expiry payload ≡ epSelectR (epDone 145)"
     ∷ "auth-expired-law = authAt-expired-law \"vault/record.txt\""
-    ∷ ""
-    ∷ "readMono-idle-val : ∀ (c : SimClock) → autoTicks c ≡ [] → proj₁ (readMonoMs c) ≡ monoMs c"
-    ∷ "readMono-idle-val c ticksEq = cong (λ ts → proj₁ (popTick ts) + monoMs c) ticksEq"
-    ∷ ""
-    ∷ "expired-step : ∀ (m e : ℕ) → (m ≤ᵇ e) ≡ false → (suc m ≤ᵇ e) ≡ false"
-    ∷ "expired-step zero          _       ()"
-    ∷ "expired-step (suc _)       zero    _  = refl"
-    ∷ "expired-step (suc zero)    (suc _) ()"
-    ∷ "expired-step (suc (suc m)) (suc e) eq = expired-step (suc m) e eq"
-    ∷ ""
-    ∷ "expired-add : ∀ (d m e : ℕ) → (m ≤ᵇ e) ≡ false → ((d + m) ≤ᵇ e) ≡ false"
-    ∷ "expired-add zero    _ _ eq = eq"
-    ∷ "expired-add (suc d) m e eq = expired-step (d + m) e (expired-add d m e eq)"
-    ∷ ""
-    ∷ "expired-mono-preserved : ∀ (expiry : ℕ) (c : SimClock) → (monoMs c ≤ᵇ expiry) ≡ false → (proj₁ (readMonoMs c) ≤ᵇ expiry) ≡ false"
-    ∷ "expired-mono-preserved expiry c hExp = expired-add (proj₁ (popTick (autoTicks c))) (monoMs c) expiry hExp"
     ∷ [] )
 
   authPlan : String
-  authPlan = submission "implement [clockCap]-only Auth session endpoint and monotonic expiry laws"
+  authPlan = submission "implement [clockCap]-only Auth endpoint and its branch laws"
     authImpl
     []
     ( (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Auth" ∷ "authChoice" ∷ []))
-    ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Auth" ∷ "expired-step" ∷ []))
-    ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Auth" ∷ "expired-add" ∷ []))
     ∷ [] )
 
   -- Child B implementation (`Gen.M0.Root.Store`)
   storeImpl : String
   storeImpl = unlines
     ( "module Gen.M0.Root.Store where"
-    ∷ "open import Data.Bool using (Bool; true)"
     ∷ "open import Data.List using ([]; _∷_)"
     ∷ "open import Data.Product using (_×_; proj₁; proj₂)"
     ∷ "open import Data.String using (String)"
@@ -355,9 +327,7 @@ private
     ∷ "open import Data.Unit using (⊤; tt)"
     ∷ "open import Relation.Binary.PropositionalEquality using (_≡_; refl)"
     ∷ "open import Context.Terminal using (Bytes)"
-    ∷ "open import Context.Tools.FsSandbox using (VirtualFs; virtualFs)"
-    ∷ "open import Context.Tools.FsLaws using (ValidFlatFile; CanWriteReg; read-after-write-same)"
-    ∷ "open import Context.World using (fsCap; FsError; opWriteFile; here; writeFileW; readVirtualFile; writeVirtualFile)"
+    ∷ "open import Context.World using (fsCap; FsError; opWriteFile; here; writeFileW)"
     ∷ "open import Context.Protocol using (pEnd; pSend; pRecv; pSelect; dual; Endpoint; epDone; epStep; epRecv; epOffer; liftProgToEndpoint)"
     ∷ ""
     ∷ "storeWriteBranch : Endpoint (fsCap ∷ []) (λ (_ : ⊤) → String × Bytes) (pRecv tt pEnd) (FsError ⊎ ⊤)"
@@ -377,19 +347,10 @@ private
     ∷ ""
     ∷ "store-reject-law : storeRejectBranch ≡ epDone (inj₂ tt)"
     ∷ "store-reject-law = refl"
-    ∷ ""
-    ∷ "store-vault-empty-ok : ∀ (payload : Bytes) → proj₁ (writeVirtualFile \"vault/record.txt\" payload (virtualFs [])) ≡ inj₂ tt"
-    ∷ "store-vault-empty-ok _ = refl"
-    ∷ ""
-    ∷ "store-vault-empty-put-get : ∀ (payload : Bytes) → readVirtualFile \"vault/record.txt\" (proj₂ (writeVirtualFile \"vault/record.txt\" payload (virtualFs []))) ≡ inj₂ payload"
-    ∷ "store-vault-empty-put-get _ = refl"
-    ∷ ""
-    ∷ "store-flat-put-get : ∀ (path : String) (payload : Bytes) (v : VirtualFs) → ValidFlatFile path ≡ true → CanWriteReg path v ≡ true → readVirtualFile path (proj₂ (writeVirtualFile path payload v)) ≡ inj₂ payload"
-    ∷ "store-flat-put-get = read-after-write-same"
     ∷ [] )
 
   storePlan : String
-  storePlan = submission "implement [fsCap]-only Store dual session endpoint and VirtualFs lens laws"
+  storePlan = submission "implement [fsCap]-only Store endpoint and its branch laws"
     storeImpl
     []
     []
@@ -409,11 +370,38 @@ private
     ∷ "open import Relation.Binary.PropositionalEquality using (_≡_; refl; trans; cong)"
     ∷ "open import Context.Terminal using (Bytes; bytes)"
     ∷ "open import Context.Tools.FsSandbox using (VirtualFs; virtualFs)"
-    ∷ "open import Context.Tools.FsLaws using (ValidFlatFile; CanWriteReg)"
-    ∷ "open import Context.World using (clockCap; fsCap; CliCaps; clock∈Cli; env∈Cli; fs∈Cli; _⊆_; ⊆-cons; ⊆-nil; FsError; SimWorld; clock; fs; monoMs; autoTicks; readMonoMs; _>>=w_; _>>w_; mapWorld; nowMonoW; sleepW; getArgsW; ExitCode; CliApp; readVirtualFile; writeVirtualFile; runWorldPure; runCliPure)"
+    ∷ "open import Context.Tools.FsLaws using (ValidFlatFile; CanWriteReg; read-after-write-same)"
+    ∷ "open import Context.Tools.Clock using (popTick)"
+    ∷ "open import Context.World using (clockCap; fsCap; CliCaps; clock∈Cli; env∈Cli; fs∈Cli; SimClock; _⊆_; ⊆-cons; ⊆-nil; FsError; SimWorld; clock; fs; monoMs; autoTicks; readMonoMs; _>>=w_; _>>w_; mapWorld; nowMonoW; sleepW; getArgsW; ExitCode; CliApp; readVirtualFile; writeVirtualFile; runWorldPure; runCliPure)"
     ∷ "open import Context.Protocol using (pEnd; pSend; pSelect; dual; Endpoint; epDone; epSend; epOffer; liftEndpoint; coupleEndpoints)"
     ∷ "import Gen.M0.Root.Auth as Auth"
     ∷ "import Gen.M0.Root.Store as Store"
+    ∷ ""
+    ∷ "-- These clock and filesystem facts use only the trusted Context operations."
+    ∷ "readMono-idle-val : ∀ (c : SimClock) → autoTicks c ≡ [] → proj₁ (readMonoMs c) ≡ monoMs c"
+    ∷ "readMono-idle-val c ticksEq = cong (λ ts → proj₁ (popTick ts) + monoMs c) ticksEq"
+    ∷ ""
+    ∷ "expired-step : ∀ (m e : ℕ) → (m ≤ᵇ e) ≡ false → (suc m ≤ᵇ e) ≡ false"
+    ∷ "expired-step zero          _       ()"
+    ∷ "expired-step (suc _)       zero    _  = refl"
+    ∷ "expired-step (suc zero)    (suc _) ()"
+    ∷ "expired-step (suc (suc m)) (suc e) eq = expired-step (suc m) e eq"
+    ∷ ""
+    ∷ "expired-add : ∀ (d m e : ℕ) → (m ≤ᵇ e) ≡ false → ((d + m) ≤ᵇ e) ≡ false"
+    ∷ "expired-add zero    _ _ eq = eq"
+    ∷ "expired-add (suc d) m e eq = expired-step (d + m) e (expired-add d m e eq)"
+    ∷ ""
+    ∷ "expired-mono-preserved : ∀ (expiry : ℕ) (c : SimClock) → (monoMs c ≤ᵇ expiry) ≡ false → (proj₁ (readMonoMs c) ≤ᵇ expiry) ≡ false"
+    ∷ "expired-mono-preserved expiry c hExp = expired-add (proj₁ (popTick (autoTicks c))) (monoMs c) expiry hExp"
+    ∷ ""
+    ∷ "store-vault-empty-ok : ∀ (payload : Bytes) → proj₁ (writeVirtualFile \"vault/record.txt\" payload (virtualFs [])) ≡ inj₂ tt"
+    ∷ "store-vault-empty-ok _ = refl"
+    ∷ ""
+    ∷ "store-vault-empty-put-get : ∀ (payload : Bytes) → readVirtualFile \"vault/record.txt\" (proj₂ (writeVirtualFile \"vault/record.txt\" payload (virtualFs []))) ≡ inj₂ payload"
+    ∷ "store-vault-empty-put-get _ = refl"
+    ∷ ""
+    ∷ "store-flat-put-get : ∀ (path : String) (payload : Bytes) (v : VirtualFs) → ValidFlatFile path ≡ true → CanWriteReg path v ≡ true → readVirtualFile path (proj₂ (writeVirtualFile path payload v)) ≡ inj₂ payload"
+    ∷ "store-flat-put-get = read-after-write-same"
     ∷ ""
     ∷ "auth⊆Cli : (clockCap ∷ []) ⊆ CliCaps"
     ∷ "auth⊆Cli = ⊆-cons clock∈Cli ⊆-nil"
@@ -489,7 +477,7 @@ private
     ∷ "vault-valid-eval expiry payload w ticksIdle monoValid ="
     ∷ "  let t = proj₁ (readMonoMs (clock w))"
     ∷ "      tValid : (t ≤ᵇ expiry) ≡ true"
-    ∷ "      tValid = trans (cong (λ m → m ≤ᵇ expiry) (Auth.readMono-idle-val (clock w) ticksIdle)) monoValid"
+    ∷ "      tValid = trans (cong (λ m → m ≤ᵇ expiry) (readMono-idle-val (clock w) ticksIdle)) monoValid"
     ∷ "  in trans (vault-step-unfold expiry payload w)"
     ∷ "       (trans"
     ∷ "         (cong (λ b → runWorldPure"
@@ -513,7 +501,7 @@ private
     ∷ "vaultAt-valid-eval path expiry payload w ticksIdle monoValid ="
     ∷ "  let t = proj₁ (readMonoMs (clock w))"
     ∷ "      tValid : (t ≤ᵇ expiry) ≡ true"
-    ∷ "      tValid = trans (cong (λ m → m ≤ᵇ expiry) (Auth.readMono-idle-val (clock w) ticksIdle)) monoValid"
+    ∷ "      tValid = trans (cong (λ m → m ≤ᵇ expiry) (readMono-idle-val (clock w) ticksIdle)) monoValid"
     ∷ "  in trans (vaultAt-step-unfold path expiry payload w)"
     ∷ "       (trans"
     ∷ "         (cong (λ b → runWorldPure"
@@ -537,7 +525,7 @@ private
     ∷ "  trans (cong proj₁ (vault-valid-eval expiry payload w ticksIdle monoValid))"
     ∷ "    (trans"
     ∷ "      (cong (λ v → finalizeVault 0 (proj₁ (writeVirtualFile \"vault/record.txt\" payload v))) fsEmpty)"
-    ∷ "      (cong (finalizeVault 0) (Store.store-vault-empty-ok payload)))"
+    ∷ "      (cong (finalizeVault 0) (store-vault-empty-ok payload)))"
     ∷ ""
     ∷ "vault-authorized-put-get : ∀ (expiry : ℕ) (payload : Bytes) (w : SimWorld) →"
     ∷ "  autoTicks (clock w) ≡ [] →"
@@ -550,7 +538,7 @@ private
     ∷ "          (vault-valid-eval expiry payload w ticksIdle monoValid))"
     ∷ "    (trans"
     ∷ "      (cong (λ v → readVirtualFile \"vault/record.txt\" (proj₂ (writeVirtualFile \"vault/record.txt\" payload v))) fsEmpty)"
-    ∷ "      (Store.store-vault-empty-put-get payload))"
+    ∷ "      (store-vault-empty-put-get payload))"
     ∷ ""
     ∷ "vaultAt-authorized-put-get : ∀ (path : String) (expiry : ℕ) (payload : Bytes) (w : SimWorld) →"
     ∷ "  autoTicks (clock w) ≡ [] →"
@@ -562,7 +550,7 @@ private
     ∷ "  trans"
     ∷ "    (cong (λ r → readVirtualFile path (fs (proj₂ r)))"
     ∷ "          (vaultAt-valid-eval path expiry payload w ticksIdle monoValid))"
-    ∷ "    (Store.store-flat-put-get path payload (fs w) flatOk canOk)"
+    ∷ "    (store-flat-put-get path payload (fs w) flatOk canOk)"
     ∷ ""
     ∷ "vault-expired-eval : ∀ (expiry : ℕ) (payload : Bytes) (w : SimWorld) →"
     ∷ "  (monoMs (clock w) ≤ᵇ expiry) ≡ false →"
@@ -570,7 +558,7 @@ private
     ∷ "vault-expired-eval expiry payload w monoExp ="
     ∷ "  let t = proj₁ (readMonoMs (clock w))"
     ∷ "      tExp : (t ≤ᵇ expiry) ≡ false"
-    ∷ "      tExp = Auth.expired-mono-preserved expiry (clock w) monoExp"
+    ∷ "      tExp = expired-mono-preserved expiry (clock w) monoExp"
     ∷ "  in trans (vault-step-unfold expiry payload w)"
     ∷ "       (trans"
     ∷ "         (cong (λ b → runWorldPure"
@@ -623,6 +611,13 @@ private
     ( -- Local helper units in Gen.M0.Root
       (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "auth⊆Cli" ∷ []))
     ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "store⊆Cli" ∷ []))
+    ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "readMono-idle-val" ∷ []))
+    ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "expired-step" ∷ []))
+    ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "expired-add" ∷ []))
+    ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "expired-mono-preserved" ∷ []))
+    ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "store-vault-empty-ok" ∷ []))
+    ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "store-vault-empty-put-get" ∷ []))
+    ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "store-flat-put-get" ∷ []))
     ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "finalizeVault" ∷ []))
     ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "tickWorldClock" ∷ []))
     ∷ (Code.⊥ ⇝ unitQ ("Gen" ∷ "M0" ∷ "Root" ∷ "setWorldFs" ∷ []))
@@ -645,8 +640,6 @@ private
     ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Auth" ∷ "auth-step-law" ∷ []))
     ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Auth" ∷ "auth-valid-law" ∷ []))
     ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Auth" ∷ "auth-expired-law" ∷ []))
-    ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Auth" ∷ "readMono-idle-val" ∷ []))
-    ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Auth" ∷ "expired-mono-preserved" ∷ []))
       -- Child B (`Gen.M0.Root.Store`) interface units
     ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Store" ∷ "storeWriteBranch" ∷ []))
     ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Store" ∷ "storeRejectBranch" ∷ []))
@@ -654,9 +647,6 @@ private
     ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Store" ∷ "store-offer-law" ∷ []))
     ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Store" ∷ "store-write-law" ∷ []))
     ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Store" ∷ "store-reject-law" ∷ []))
-    ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Store" ∷ "store-vault-empty-ok" ∷ []))
-    ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Store" ∷ "store-vault-empty-put-get" ∷ []))
-    ∷ (Code.⊥ ⇝ extQ ("Gen" ∷ "M0" ∷ "Root" ∷ "Store" ∷ "store-flat-put-get" ∷ []))
     ∷ [] )
 
   -- `fsbox` runtime probe verifying BOTH:
@@ -689,7 +679,7 @@ private
 main : IO ⊤
 main = do
   repo ← currentDirectory
-  withPrivateTemp "/tmp" λ tmp → do
+  withPrivateTemp (repo / "tmp/protocol-gluing") λ tmp → do
     let ws = tmp / "ws-protocol"
         ref = refSpec (local "/bin/cat") [] 30000
         mkProtocolAI : IO (RunningIO AIReq AIReply (⊤ × ⊤))
@@ -700,7 +690,8 @@ main = do
                 (bindNode n _) → OwnershipIO.FFI.writeIORef slotRef n >> return (aiReply "bound" n)
                 (forkNode n)   → return (aiReply "" n)
                 (accept _)     → return (aiReply "accepted" "")
-                (propose _ _)  → OwnershipIO.FFI.readIORef slotRef >>= λ s →
+                (propose prompt true _) → failIO ("fixed protocol plan was rejected:\n" ++ˢ prompt)
+                (propose _ false _) → OwnershipIO.FFI.readIORef slotRef >>= λ s →
                   if s ==ˢ "Gen.M0.Root" then return (aiReply rootPlan s)
                   else if s ==ˢ "Gen.M0.Root.Auth" then return (aiReply authPlan s)
                   else if s ==ˢ "Gen.M0.Root.Store" then return (aiReply storePlan s)

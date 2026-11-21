@@ -1,0 +1,65 @@
+(submission (kind plan)
+  (why "用标准库可判定相等性推导四条锁定定律，并由子包证明两种原语结果与相应判定的布尔投影一致。")
+  (main @main)
+  (subspecs ("Gen.T2.JsonInput.Comparison.Primitive" @primitive))
+  (moves
+    (move bot (unit "Gen.T2.JsonInput.Comparison.decTrue"))
+    (move bot (unit "Gen.T2.JsonInput.Comparison.decSound"))
+    (move bot (ext "Gen.T2.JsonInput.Comparison.Primitive.charAgreement"))
+    (move bot (ext "Gen.T2.JsonInput.Comparison.Primitive.stringAgreement"))))
+```agda main
+module Gen.T2.JsonInput.Comparison where
+
+open import Agda.Builtin.Char using (primCharEquality)
+open import Agda.Builtin.String using (primStringEquality)
+open import Data.Bool using (true)
+open import Data.Char using (Char)
+open import Data.String using (String)
+open import Data.Empty using (⊥-elim)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans)
+open import Relation.Nullary using (Dec; does; yes; no)
+import Data.Char.Properties as Char
+import Data.String.Properties as String
+
+import Gen.T2.JsonInput.Comparison.Primitive as Primitive
+
+private
+  decTrue : {P : Set} → (d : Dec P) → P → does d ≡ true
+  decTrue (yes _) _ = refl
+  decTrue (no notP) p = ⊥-elim (notP p)
+
+  decSound : {P : Set} → (d : Dec P) → (does d ≡ true) → P
+  decSound (yes p) _ = p
+  decSound (no _) ()
+
+charReflexive : (c : Char) → primCharEquality c c ≡ true
+charReflexive c = trans (Primitive.charAgreement c c) (decTrue (Char._≟_ c c) refl)
+
+charSound : (c d : Char) → (primCharEquality c d ≡ true) → c ≡ d
+charSound c d eq = decSound (Char._≟_ c d) (trans (sym (Primitive.charAgreement c d)) eq)
+
+stringReflexive : (s : String) → primStringEquality s s ≡ true
+stringReflexive s = trans (Primitive.stringAgreement s s) (decTrue (String._≟_ s s) refl)
+
+stringSound : (s t : String) → (primStringEquality s t ≡ true) → s ≡ t
+stringSound s t eq = decSound (String._≟_ s t) (trans (sym (Primitive.stringAgreement s t)) eq)
+
+```
+
+```agda primitive
+module Gen.T2.JsonInput.Comparison.Primitive where
+
+open import Agda.Builtin.Char using (primCharEquality)
+open import Agda.Builtin.String using (primStringEquality)
+open import Data.Char using (Char)
+open import Data.String using (String)
+open import Relation.Binary.PropositionalEquality using (_≡_)
+open import Relation.Nullary using (does)
+import Data.Char.Properties as Char
+import Data.String.Properties as String
+
+postulate
+  charAgreement : (c d : Char) → primCharEquality c d ≡ does (Char._≟_ c d)
+  stringAgreement : (s t : String) → primStringEquality s t ≡ does (String._≟_ s t)
+
+```

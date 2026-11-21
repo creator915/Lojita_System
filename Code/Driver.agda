@@ -134,46 +134,43 @@ dumpTool : String → String → List String → RunningIO DumpReq DumpResult (�
 dumpTool bin scratch incs = record
   { onCall = λ req → freshDirectory scratch >>= λ dir →
       writeCodes dir (codeDeps req) >> writeSources dir (sourceDeps req) >> writeSource dir (source req) >>= λ file →
-      dumpAt dir file >>= λ result → removeAll dir >> return result
+      dumpAt (requireComplete req) dir file >>= λ result → removeAll dir >> return result
   ; onStop = return (tt , tt) }
   where
     decoded : Maybe Code → DumpResult
     decoded nothing = dumpFailed "dump: unsupported S-expression output"
     decoded (just c) = dumped c
-    dumpAt : String → Maybe String → Prim.IO DumpResult
-    dumpAt dir nothing = return (dumpFailed "source: missing or unsafe module name")
-    dumpAt dir (just f) = readProcessAt dir 120000 bin
-      (concatMap (λ i → "-i" ∷ i ∷ []) ("." ∷ incs) ++ (f ∷ [])) "" >>= λ where
+    dumpAt : Bool → String → Maybe String → Prim.IO DumpResult
+    dumpAt _ dir nothing = return (dumpFailed "source: missing or unsafe module name")
+    dumpAt complete dir (just f) = readProcessAt dir 120000 bin
+      ((if complete then "--require-complete" ∷ [] else []) ++ concatMap (λ i → "-i" ∷ i ∷ []) ("." ∷ incs) ++ (f ∷ [])) "" >>= λ where
         (procResult zero out _) → return (decoded (parse out))
         (procResult (suc _) out err) → return (dumpFailed (out ++ˢ err))
 
 -- The recursive registry is tied only at the IO boundary. Opening each ai slot
 -- allocates its own service; a child never receives its parent's tool handles.
-nodeEnvironmentWith : Prim.IO (RunningIO AIReq AIReply (⊤ × ⊤)) →
-                      (DumpReq → Prim.IO DumpResult) → (AgdaCheckReq → Prim.IO CheckResult) → Prim.IO (EnvIO NodeΨ)
-nodeEnvironmentWith ai dump check = fixIO λ env → return
-  ((λ _ _ → ai)
-   ∷ (λ _ _ → return (record { onCall = dump ; onStop = return (tt , tt) }))
-   ∷ (λ _ _ → return (record { onCall = check ; onStop = return (tt , tt) }))
-   ∷ (λ sh home → provideIO env (nodeAgent sh) home) ∷ [])
-
--- Concurrent IO realization of `NodeΨ`: waking a child spawns a background worker
--- thread immediately (`onCall` is non-blocking; `onStop` cancels & harvests cleanly).
-asyncNodeEnvironmentWith : Prim.IO (RunningIO AIReq AIReply (⊤ × ⊤)) →
-                           (DumpReq → Prim.IO DumpResult) → (AgdaCheckReq → Prim.IO CheckResult) → Prim.IO (EnvIO NodeΨ)
-asyncNodeEnvironmentWith ai dump check = fixIO λ env → return
+-- Refresh presentations when a sleeping child reopens its saved home.
+nodeEnvironmentWithTasks : Bool → (NodeTask → Prim.IO NodeTask) →
+  Prim.IO (RunningIO AIReq AIReply (⊤ × ⊤)) →
+  (DumpReq → Prim.IO DumpResult) → (AgdaCheckReq → Prim.IO CheckResult) → Prim.IO (EnvIO NodeΨ)
+nodeEnvironmentWithTasks concurrent prepare ai dump check = fixIO λ env → return
   ((λ _ _ → ai)
    ∷ (λ _ _ → return (record { onCall = dump ; onStop = return (tt , tt) }))
    ∷ (λ _ _ → return (record { onCall = check ; onStop = return (tt , tt) }))
    ∷ (λ sh home → provideIO env (nodeAgent sh) home >>= λ receive →
-        return (λ task → receive task >>= λ innerSrv →
-          spawnAsyncChild (onCall innerSrv tt) (onStop innerSrv) >>= λ h →
-          return (record { onCall = pollAsyncChild h ; onStop = stopAsyncChild h }))) ∷ [])
+        return (λ task → prepare task >>= receive >>= λ innerSrv →
+          if concurrent then (spawnAsyncChild (onCall innerSrv tt) (onStop innerSrv) >>= λ h →
+            return (record { onCall = pollAsyncChild h ; onStop = stopAsyncChild h }))
+          else return innerSrv)) ∷ [])
 
 nodeEnvironmentForBackend : Bool → Prim.IO (RunningIO AIReq AIReply (⊤ × ⊤)) →
                             (DumpReq → Prim.IO DumpResult) → (AgdaCheckReq → Prim.IO CheckResult) → Prim.IO (EnvIO NodeΨ)
-nodeEnvironmentForBackend true  = asyncNodeEnvironmentWith
-nodeEnvironmentForBackend false = nodeEnvironmentWith
+nodeEnvironmentForBackend concurrent = nodeEnvironmentWithTasks concurrent return
+
+nodeEnvironmentWith asyncNodeEnvironmentWith : Prim.IO (RunningIO AIReq AIReply (⊤ × ⊤)) →
+  (DumpReq → Prim.IO DumpResult) → (AgdaCheckReq → Prim.IO CheckResult) → Prim.IO (EnvIO NodeΨ)
+nodeEnvironmentWith = nodeEnvironmentForBackend false
+asyncNodeEnvironmentWith = nodeEnvironmentForBackend true
 
 nodeEnvironmentUsing : Prim.IO (RunningIO AIReq AIReply (⊤ × ⊤)) → String → String → List String → Prim.IO (EnvIO NodeΨ)
 nodeEnvironmentUsing ai dumpBin scratch includes = nodeEnvironmentWith ai

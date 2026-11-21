@@ -89,11 +89,15 @@ Name = String
 --   shown ：源码里怎么写它（"A.suc"、"ℕ"、"_+_"）。只给 Render 用，不参与相等，
 --           规范化哈希时剥掉——它是"这个文件此刻的作用域"留下的痕迹，不是结构。
 record QName : Set where
-  constructor qn
+  constructor scopedQName
   field
     full  : List Name
     shown : Name
+    alternatives : List Name  -- Other canonical paths in the scoped overload set.
 open QName public
+
+qn : List Name → Name → QName
+qn path spelling = scopedQName path spelling []
 
 infix 8 _==ᴺ_
 _==ᴺ_ : QName → QName → Bool
@@ -292,6 +296,7 @@ mutual
     recDef    : Mods → Name → List Name → RecDir → List (Name × Expr) → Decl  -- record R A where field f : …
     variable′ : List (Name × Expr) → Decl                            -- variable A B : Set
     module′   : Name → List Bind → List Decl → Decl                  -- module M (x : A) where …
+    patSyn : Name → List Name → Pat → Decl
     unsupported : String → Decl                                      -- 这版还不认识的声明，原样记一笔（render 成注释）
 
 -- 顶层：一个文件 = 一个模块
@@ -420,6 +425,7 @@ mutual
   eqDecl (recDef m x ps d fs)  (recDef m′ x′ ps′ d′ fs′) = eqMods m m′ ∧ (x ==ˢ x′) ∧ eqList _==ˢ_ ps ps′ ∧ eqRecDir d d′ ∧ eqFields fs fs′
   eqDecl (variable′ vs)        (variable′ vs′)           = eqFields vs vs′
   eqDecl (module′ x bs ds)     (module′ x′ bs′ ds′)      = (x ==ˢ x′) ∧ eqBinds bs bs′ ∧ eqDecls ds ds′
+  eqDecl (patSyn n xs p) (patSyn m ys q) = n ==ˢ m ∧ eqList _==ˢ_ xs ys ∧ eqPat p q
   eqDecl (unsupported s)       (unsupported t)           = s ==ˢ t
   eqDecl _                     _                         = false
 
@@ -430,6 +436,28 @@ mutual
 
 eqCode : Code → Code → Bool
 eqCode (code m ps ds) (code m′ ps′ ds′) = m ==ᴺ m′ ∧ eqBinds ps ps′ ∧ eqDecls ds ds′
+
+-- Parent-supplied child interfaces live only on top-level import edges.
+-- The official frontend leaves those edges empty when it scopes a surface.
+surfaceCode : Code → Code
+surfaceCode (code m ps ds) = code m ps (map scopeDecl ds)
+  where
+    scopeDecl : Decl → Decl
+    scopeDecl (import′ q o d a) = import′ q o d []
+    scopeDecl d = d
+
+authoredPoint : List (Code × String) → Code → Maybe (Code × String)
+authoredPoint views c = lookup views (surfaceCode c)
+  where
+    lookup : List (Code × String) → Code → Maybe (Code × String)
+    lookup [] scoped = nothing
+    lookup ((ir , src) ∷ rest) scoped = if eqCode ir scoped then just (ir , src) else lookup rest scoped
+
+authoredSurface : List (Code × String) → Code → Maybe String
+authoredSurface views c with authoredPoint views c
+... | just (ir , src) = just src
+... | nothing = nothing
+
 
 ------------------------------------------------------------------------
 -- §2.2  重命名：把树上每个 QName 过一遍函数。搬运里"把 old 名字换成 new 名字"用它。
@@ -533,6 +561,7 @@ mutual
   renameDecl ρ (recDef m x ps d fs) = recDef m x ps d (renameFields ρ fs)
   renameDecl ρ (variable′ vs)       = variable′ (renameFields ρ vs)
   renameDecl ρ (module′ x bs ds)    = module′ x (renameBinds ρ bs) (renameDecls ρ ds)
+  renameDecl ρ (patSyn n xs p) = patSyn n xs (renamePat ρ p)
   renameDecl ρ (unsupported s)      = unsupported s
 
   renameDecls : (QName → QName) → List Decl → List Decl
@@ -642,6 +671,7 @@ mutual
   refsDecl (recDef m x ps d fs) = refsFields fs
   refsDecl (variable′ vs)       = refsFields vs
   refsDecl (module′ x bs ds)    = refsBinds bs ++ refsDecls ds
+  refsDecl (patSyn n xs p) = refsPat p
   refsDecl (unsupported s)      = []
 
   refsDecls : List Decl → List QName
@@ -705,6 +735,7 @@ declName (recSig _ x _ _)      = just x
 declName (recDef _ x _ _ _)    = just x
 declName (variable′ _)         = nothing
 declName (module′ x _ _)       = just x
+declName (patSyn n _ _) = just n
 declName (unsupported _)       = nothing
 
 -- 匿名定义（_ : T ; _ = refl，测试常这么写）每一对各成一个单元，内部编号 _#0 _#1 …；
@@ -779,26 +810,9 @@ flagsOf : Code → List String
 flagsOf c = concatMap optionsOf (decls c)
   where
     optionsOf : Decl → List String
-    optionsOf (pragma s) = if isPrefix ("OPTIONS" ∷ []) (words s) then dropFirst (words s) else []
-      where
-        -- 按空格切词
-        words : String → List String
-        words s = go (Data.String.toList s) [] []
-          where
-            open import Data.String using (toList; fromList)
-            go : List Char → List Char → List String → List String
-            go []       []  acc = reverse acc
-            go []       cur acc = reverse (fromList (reverse cur) ∷ acc)
-            go (c ∷ cs) cur acc = if primCharEquality c ' '
-                                  then (if null cur then go cs [] acc else go cs [] (fromList (reverse cur) ∷ acc))
-                                  else go cs (c ∷ cur) acc
-              where
-                null : List Char → Bool
-                null [] = true
-                null _  = false
-        dropFirst : List String → List String
-        dropFirst []       = []
-        dropFirst (_ ∷ xs) = xs
+    optionsOf (pragma s) with Data.String.words s
+    ... | "OPTIONS" ∷ fs = fs
+    ... | _ = []
     optionsOf _ = []
 
 -- 把一个引用解析成对象：
@@ -1093,6 +1107,7 @@ mutual
   holesDecl (recDef m x ps d fs) = holesFields fs
   holesDecl (variable′ vs)       = holesFields vs
   holesDecl (module′ x bs ds)    = holesBinds bs ∨ holesDecls ds
+  holesDecl (patSyn _ _ p) = holesPat p
   holesDecl (unsupported s)      = false
 
   holesDecls : List Decl → Bool
@@ -1114,6 +1129,36 @@ hasWord word txt = elemᵇ _==ˢ_ word (Data.String.words txt)
 bypassMods : Mods → Bool
 bypassMods m = not (eqTermCheck (termCheck m) check)
 
+safeQName : QName → Bool
+safeQName q = not (elemᵇ _==ˢ_ "TrustMe" (full q)) ∧ not (elemᵇ _==ˢ_ "Unsafe" (full q))
+
+-- Agda's option parser accepts unique abbreviated long options. Check their
+-- prefixes as well, since conditional spec stubs prevent passing --safe
+-- directly to the ordinary compiler process.
+setsOption : String → String → Bool
+setsOption spelling option = prefix (Data.String.toList spelling) (Data.String.toList option)
+  where
+    prefix : List Char → List Char → Bool
+    prefix [] _ = true
+    prefix (_ ∷ _) [] = false
+    prefix (x ∷ xs) (y ∷ ys) = primCharEquality x y ∧ prefix xs ys
+
+unsafeOptions : List String → Bool
+unsafeOptions options = anyᵇ enabled forbidden ∨ (cubical ∧ enabled "--with-K")
+  ∨ ((enabled "--without-K" ∨ cubical) ∧ enabled "--flat-split")
+  where
+    enabled : String → Bool
+    enabled o = anyᵇ (λ s → setsOption s o) options
+    cubical = enabled "--cubical" ∨ enabled "--erased-cubical" ∨ enabled "--cubical-compatible"
+    forbidden = "--allow-unsolved-metas" ∷ "--allow-incomplete-matches" ∷ "--no-positivity-check"
+      ∷ "--no-termination-check" ∷ "--type-in-type" ∷ "--omega-in-omega" ∷ "--cumulativity"
+      ∷ "--sized-types" ∷ "--injective-type-constructors" ∷ "--irrelevant-projections"
+      ∷ "--experimental-irrelevance" ∷ "--rewriting" ∷ "--no-load-primitives" ∷ "--allow-exec"
+      ∷ "--no-universe-check" ∷ "--no-coverage-check" ∷ []
+
+unsafeNames : List QName → List ImplProblem
+unsafeNames qs = map unsafePrimitive (filterᵇ (λ q → not (safeQName q)) qs)
+
 mutual
   implementationBlock : List Name → List Decl → List ImplProblem
   implementationBlock path ds = concatMap checkUnit (unitsIn path (filterᵇ local ds)) ++ implementationDecls path ds
@@ -1130,14 +1175,15 @@ mutual
   implementationDecls path (d ∷ ds) = implementationDecl path d ++ implementationDecls path ds
 
   implementationDecl : List Name → Decl → List ImplProblem
-  implementationDecl path (import′ q _ _ _) = if elemᵇ _==ˢ_ "TrustMe" (full q) then unsafePrimitive q ∷ [] else []
+  implementationDecl path (import′ q _ _ _) = unsafeNames (q ∷ [])
+  implementationDecl path (open′ q _) = unsafeNames (q ∷ [])
   implementationDecl path (module′ n bs ds) = implementationBlock (path ++ (n ∷ [])) ds
   implementationDecl path (unsupported _) = containsUnsupported ∷ []
   implementationDecl path (pragma s) =
-    if hasWord "NON_TERMINATING" s ∨ hasWord "TERMINATING" s ∨ hasWord "--no-termination-check" s
-       ∨ hasWord "--allow-unsolved-metas" s ∨ hasWord "--type-in-type" s ∨ hasWord "--no-positivity-check" s
-       ∨ hasWord "--no-universe-check" s ∨ hasWord "--no-coverage-check" s
-       ∨ hasWord "COMPILE" s ∨ hasWord "FOREIGN" s
+    if anyᵇ (λ w → hasWord w s)
+        ("NON_TERMINATING" ∷ "TERMINATING" ∷ "NO_TERMINATION_CHECK" ∷ "NON_COVERING"
+         ∷ "NO_POSITIVITY_CHECK" ∷ "NO_UNIVERSE_CHECK" ∷ "INJECTIVE" ∷ "ETA" ∷ "POLARITY"
+         ∷ "COMPILE" ∷ "FOREIGN" ∷ "BUILTIN" ∷ "REWRITE" ∷ [])
     then forbiddenTerminationBypass ∷ [] else []
   implementationDecl path (fun m n cs) = modsProblem m ++ clausesProblem (path ++ (n ∷ [])) cs
   implementationDecl path d =
@@ -1246,6 +1292,7 @@ mutual
   nestedDecl path (recDef m x ps d fs) = nestedFields path fs
   nestedDecl path (variable′ vs)       = nestedFields path vs
   nestedDecl path (module′ x bs ds)    = nestedBinds path bs ++ nestedDecls path ds
+  nestedDecl path (patSyn _ _ p) = nestedPat path p
   nestedDecl path (unsupported s)      = []
 
   nestedDecls : List Name → List Decl → List ImplProblem
@@ -1269,16 +1316,18 @@ mutual
 
 closedImplOK : List String → Code → List ImplProblem
 closedImplOK allowed c = implementationBlock (full (modName c)) (decls c)
+  ++ unsafeNames (modName c ∷ refsBinds (params c) ++ refsDecls (decls c))
   ++ (if holesBinds (params c) then containsHole (modName c) ∷ [] else [])
+  ++ (if unsafeOptions (flagsOf c) then forbiddenTerminationBypass ∷ [] else [])
   ++ (if flagsOK allowed (flagsOf c) then [] else flagEnvelopeViolation ∷ [])
 
 data RefuteProblem : Set where
   invalidImplementation : ImplProblem → RefuteProblem
   unauthorizedImport : QName → RefuteProblem
-  missingBottomProof : RefuteProblem
+  missingBottomProof missingTabooProof : RefuteProblem
 
 contextModule : QName → Bool
-contextModule q = not (elemᵇ _==ˢ_ "TrustMe" (full q)) ∧ anyᵇ (λ p → isPrefix p (full q))
+contextModule q = safeQName q ∧ anyᵇ (λ p → isPrefix p (full q))
   (("Agda" ∷ "Builtin" ∷ []) ∷ ("Data" ∷ []) ∷ ("Relation" ∷ [])
    ∷ ("Function" ∷ []) ∷ ("Level" ∷ []) ∷ ("Context" ∷ []) ∷ [])
 
@@ -1287,11 +1336,15 @@ bottomExpr (def q) = eqList _==ˢ_ (full q) ("Data" ∷ "Empty" ∷ "⊥" ∷ []
                   ∨ eqList _==ˢ_ (full q) ("Agda" ∷ "Builtin" ∷ "Empty" ∷ "⊥" ∷ [])
 bottomExpr _ = false
 
-validRefutation : QName → List String → Code → List RefuteProblem
-validRefutation specMod allowed c = map invalidImplementation (closedImplOK allowed c)
+tabooExpr : Expr → Bool
+tabooExpr e@(def q) = bottomExpr e ∨ eqList _==ˢ_ (full q) ("Context" ∷ "Taboo" ∷ "SafeTaboo" ∷ [])
+tabooExpr _ = false
+
+checkWitness : (Expr → Bool) → RefuteProblem → QName → List String → Code → List RefuteProblem
+checkWitness target missingProof specMod allowed c = map invalidImplementation (closedImplOK allowed c)
   ++ checkImports (decls c)
   ++ concatMap checkReference (refsDecls (decls c))
-  ++ (if nullParams (params c) ∧ anyᵇ provesBottom (unitsIn (full (modName c)) (filterᵇ topLevel (decls c))) then [] else missingBottomProof ∷ [])
+  ++ (if nullParams (params c) ∧ anyᵇ provesTarget (unitsIn (full (modName c)) (filterᵇ topLevel (decls c))) then [] else missingProof ∷ [])
   where
     -- Scope checking canonicalizes aliases. This also catches unauthorized
     -- dependencies introduced inside a where block or an extended lambda.
@@ -1310,8 +1363,27 @@ validRefutation specMod allowed c = map invalidImplementation (closedImplOK allo
       (if q ==ᴺ specMod ∨ contextModule q then [] else unauthorizedImport q ∷ []) ++ checkImports ds
     checkImports (module′ _ _ inner ∷ ds) = checkImports inner ++ checkImports ds
     checkImports (_ ∷ ds) = checkImports ds
-    bottomSig : Decl → Bool
-    bottomSig (sig m _ e) = not (isPrivate m) ∧ bottomExpr e
-    bottomSig _ = false
-    provesBottom : Unit → Bool
-    provesBottom u = anyᵇ bottomSig (udecls u) ∧ not (isPostulate (udecls u))
+    targetSig : Decl → Bool
+    targetSig (sig m _ e) = not (isPrivate m) ∧ target e
+    targetSig _ = false
+    provesTarget : Unit → Bool
+    provesTarget u = anyᵇ targetSig (udecls u) ∧ not (isPostulate (udecls u))
+
+validRefutation : QName → List String → Code → List RefuteProblem
+validRefutation = checkWitness bottomExpr missingBottomProof
+
+witnessNamespaceProblems : QName → Code → List RefuteProblem
+witnessNamespaceProblems specMod c = (if modName c ==ᴺ specMod then unauthorizedImport specMod ∷ [] else [])
+  ++ shadow (modName c) ++ shadow specMod
+  where
+    -- A module named Context could define its own nested Taboo.SafeTaboo.
+    -- Neither side of the witness may own the trusted goal's name.
+    shadow : QName → List RefuteProblem
+    shadow q = if anyᵇ (isPrefix (full q))
+      (("Context" ∷ "Taboo" ∷ "SafeTaboo" ∷ []) ∷ ("Data" ∷ "Empty" ∷ "⊥" ∷ [])
+       ∷ ("Agda" ∷ "Builtin" ∷ "Empty" ∷ "⊥" ∷ []) ∷ [])
+      then unauthorizedImport q ∷ [] else []
+
+validIndependence : QName → List String → Code → List RefuteProblem
+validIndependence specMod allowed c = witnessNamespaceProblems specMod c
+  ++ checkWitness tabooExpr missingTabooProof specMod allowed c

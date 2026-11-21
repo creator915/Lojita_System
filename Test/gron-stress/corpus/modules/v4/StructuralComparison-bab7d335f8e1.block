@@ -1,0 +1,21 @@
+module StructuralComparison where
+
+open import Data.Bool using (Bool)
+open import Data.Char using (Char)
+open import Data.String using (String)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Nullary using (does)
+import Data.Char.Properties as Char
+import Data.String.Properties as String
+
+charEqual : Char → Char → Bool
+charEqual c d = does (c Char.≟ d)
+
+stringEqual : String → String → Bool
+stringEqual s t = does (s String.≟ t)
+
+charAgreement : (c d : Char) → charEqual c d ≡ does (c Char.≟ d)
+charAgreement c d = refl
+
+stringAgreement : (s t : String) → stringEqual s t ≡ does (s String.≟ t)
+stringAgreement s t = refl

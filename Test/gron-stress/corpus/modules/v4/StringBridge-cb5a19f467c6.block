@@ -1,0 +1,12 @@
+module StringBridge where
+open import Agda.Builtin.String using (String; primStringEquality)
+import Data.String.Unsafe as Fast
+open import Data.String.Unsafe using (_==_; _≈?_; _≟_; _<?_; _≤?_; ≟; _≟ₛ_; _≟ᵇ_; _≡ᵇ_; _<ᵇ_; _==?_; _==ₛ_; _==ᵇ_; primStringEquality; primStringEqualityRefl; _==ᵇ?_; _≈ᵇ_; _≈_; unsafeEq; unsafe≟)
+open import Agda.Builtin.String.Properties using (primStringToListInjective; primStringFromListInjective; primStringEqualityRefl; primStringEqualityCorrect; primStringEqualityReflexive; primStringEqualityInjective)
+open import Relation.Nullary using (does)
+open import Data.Bool using (false; true)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+checked : (c d : String) → does (c Fast.≟ d) ≡ primStringEquality c d
+checked c d with true
+... | true = refl
+... | false = refl

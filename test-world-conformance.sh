@@ -15,16 +15,17 @@ echo "  [PASS] Legacy bare OwnershipIO/CLIHost.agda removed; OwnershipIO/WorldRu
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/test-world-conf.XXXXXXXX")
 trap 'rm -rf -- "$WORK"' EXIT
 
-mkdir -p "$WORK/repo/runtime/tools" "$WORK/agda_cfg"
+export AGDA_DIR="$WORK/agda_cfg"
+mkdir -p "$WORK/repo/runtime/tools" "$AGDA_DIR"
 cp -R "$REPO"/{Backend,Code,Context,Meta,OwnershipIO,Store,Test} "$WORK/repo/"
 cp "$REPO"/Code.agda "$REPO"/Ownership.agda "$REPO"/OwnershipIO.agda "$REPO"/check.sh "$WORK/repo/"
 cp "$REPO"/runtime/*.hs "$REPO"/runtime/*.c "$REPO"/runtime/*.h "$WORK/repo/runtime/"
 cp "$REPO"/runtime/tools/*.hs "$REPO"/runtime/tools/*.c "$WORK/repo/runtime/tools/"
 
 echo "=== [Step 3.2] Verify --safe Target Modules (Agda + Pure Lean 4 Fast Path) ==="
-(cd "$WORK/repo" && AGDA_DIR="$WORK/agda_cfg" ./check.sh Test/WorldFuzzTarget.agda)
-(cd "$WORK/repo" && AGDA_DIR="$WORK/agda_cfg" ./check.sh Test/WorldReactiveTarget.agda)
-(cd "$WORK/repo" && AGDA_DIR="$WORK/agda_cfg" ./check.sh OwnershipIO/WorldRunner.agda)
+(cd "$WORK/repo" && ./check.sh Test/WorldFuzzTarget.agda)
+(cd "$WORK/repo" && ./check.sh Test/WorldReactiveTarget.agda)
+(cd "$WORK/repo" && ./check.sh OwnershipIO/WorldRunner.agda)
 
 PRISM_BIN="$REPO/runtime/lean-prism/.lake/build/bin/agda2lean"
 PRISM_LIB="$REPO/runtime/lean-prism/.lake/build/lib/lean"

@@ -149,30 +149,64 @@ private
   displayFormat homeK = objectFormat homeK
   displayFormat commitK = objectFormat commitK
 
-  mutual
-    storeNode : Formats → String → (sh : HomeShape) → ModelIO (HomeSt sh) → IO Hash
-    storeNode fmt dir (node ks) model = storeKids fmt dir ks model >>= putObject dir homeK
+  -- Presentation leaves may carry the exact source bytes accepted by the
+  -- frontend. The commit pins this pair, so simultaneous spellings of the
+  -- same semantic Code never overwrite each other. Old bare-Code leaves
+  -- remain readable.
+  putDisplay : String → List (Code × String) → Code → IO Hash
+  putDisplay dir views c with Code.authoredPoint views c
+  ... | nothing = putWith dir codeK (displayFormat codeK) c
+  ... | just (ir , src) = do
+    let bytes = showSExpr (list (sym "surface" ∷ E.encodeCode c ∷ E.encodeCode ir ∷ str src ∷ []))
+    key ← sha256 bytes
+    publish (kindDir dir codeK) (objectPath dir codeK key) bytes key
+    return key
 
-    storeKids : Formats → String → (ks : List (Name × HomeShape)) →
+  Display = Code × Maybe (Code × String)
+
+  readDisplay : String → Hash → IO (Maybe Display)
+  readDisplay dir key = if validHash key then
+    (readVerifiedUTF8 (objectPath dir codeK key) key >>=? λ bytes → return (unpack bytes (parseSExpr bytes)))
+    else return nothing
+    where
+      unpack : String → Maybe SExpr → Maybe Display
+      unpack bytes (just (list (sym "surface" ∷ term ∷ scoped ∷ str src ∷ []))) =
+        P.decodeCode term M.>>= λ c → P.decodeCode scoped M.>>= λ ir →
+          let encoded = showSExpr (list (sym "surface" ∷ E.encodeCode c ∷ E.encodeCode ir ∷ str src ∷ []))
+          in M.when ((bytes ==ˢ encoded) ∧ eqCode (Code.surfaceCode c) ir) (c , just (ir , src))
+      unpack bytes (just (list (sym "surface" ∷ term ∷ str src ∷ []))) = P.decodeCode term M.>>= λ c →
+        let encoded = showSExpr (list (sym "surface" ∷ E.encodeCode c ∷ str src ∷ []))
+        in M.when (bytes ==ˢ encoded) (c , just (c , src))
+      unpack bytes _ = M.map (_, nothing) (decode (displayFormat codeK) bytes)
+
+  mutual
+    storeNode : Formats → (Code → IO Hash) → String → (sh : HomeShape) → ModelIO (HomeSt sh) → IO Hash
+    storeNode fmt saveCode dir (node ks) model = storeKids fmt saveCode dir ks model >>= putObject dir homeK
+
+    storeKids : Formats → (Code → IO Hash) → String → (ks : List (Name × HomeShape)) →
                 ModelsIO (KidsCtx ks ++ Leaves) → IO HomeNodeObj
-    storeKids fmt dir [] (c , m , i , _) = do
-      ch ← putWith dir codeK (fmt codeK) c
+    storeKids fmt saveCode dir [] (c , m , i , _) = do
+      ch ← saveCode c
       ih ← putWith dir ifaceK (fmt ifaceK) i
       mh ← putWith dir memK (fmt memK) m
       return (homeNode ch ih mh [])
-    storeKids fmt dir ((n , sh) ∷ ks) (child , rest) = do
-      key ← storeNode fmt dir sh child
-      h ← storeKids fmt dir ks rest
+    storeKids fmt saveCode dir ((n , sh) ∷ ks) (child , rest) = do
+      key ← storeNode fmt saveCode dir sh child
+      h ← storeKids fmt saveCode dir ks rest
       return (record h { kids = (n , key) ∷ kids h })
 
 storeHomeCAS : String → HomeValue → IO Hash
-storeHomeCAS dir (sh , model) = storeNode objectFormat dir sh model
+storeHomeCAS dir (sh , model) = storeNode objectFormat (putObject dir codeK) dir sh model
+
+storeTreeWithSurfaces : List (Code × String) → String → List Hash → String → String → HomeValue → IO Hash
+storeTreeWithSurfaces sources dir ps e reason h@(sh , model) = do
+  root ← storeHomeCAS dir h
+  let views = dir / "presentation"
+  view ← storeNode displayFormat (putDisplay views sources) views sh model
+  putCommit dir (commitWithView ps root e reason (just view))
 
 storeTreeCommit : String → List Hash → String → String → HomeValue → IO Hash
-storeTreeCommit dir ps e reason h@(sh , model) = do
-  root ← storeHomeCAS dir h
-  view ← storeNode displayFormat (dir / "presentation") sh model
-  putCommit dir (commitWithView ps root e reason (just view))
+storeTreeCommit = storeTreeWithSurfaces []
 
 -- A fresh traversal takes its depth bound from the number of objects on disk.
 -- Each successful address is memoized across siblings and merge parents. A
@@ -216,15 +250,15 @@ private
   loadKids read ((n , h) ∷ ks) = read h >>=? λ child →
     loadKids read ks >>=? λ cs → return (just ((n , child) ∷ cs))
 
-  loadNode : Formats → String → Reader HomeValue → Reader HomeValue
-  loadNode fmt dir read key = getHomeNode dir key >>=? λ h →
-    getWith dir codeK (fmt codeK) (codeHash h) >>=? λ c →
+  loadNode : Formats → Reader Code → String → Reader HomeValue → Reader HomeValue
+  loadNode fmt readCode dir read key = getHomeNode dir key >>=? λ h →
+    readCode (codeHash h) >>=? λ c →
     getWith dir ifaceK (fmt ifaceK) (specHash h) >>=? λ i →
     getWith dir memK (fmt memK) (memHash h) >>=? λ m →
     loadKids read (kids h) >>=? λ cs → return (just (assemble cs (c , m , i , tt)))
 
 newHomeReader : String → IO (Reader HomeValue)
-newHomeReader dir = newDAGReader dir homeK (loadNode objectFormat dir)
+newHomeReader dir = newDAGReader dir homeK (loadNode objectFormat (getObject dir codeK) dir)
 
 loadHomeCAS : String → Hash → IO (Maybe HomeValue)
 loadHomeCAS dir key = newHomeReader dir >>= λ read → read key
@@ -247,9 +281,26 @@ newCommitHomeReader : String → IO (CommitObj → IO (Maybe HomeValue))
 newCommitHomeReader dir = do
   semantic ← newHomeReader dir
   let views = dir / "presentation"
-  display ← newDAGReader views homeK (loadNode displayFormat views)
+  display ← newDAGReader views homeK (loadNode displayFormat (λ key → readDisplay views key >>= λ v → return (M.map Data.Product.proj₁ v)) views)
   return λ c → semantic (rootHome c) >>=? λ h → selectView display (presentation c) h
   where
     selectView : Reader HomeValue → Maybe Hash → HomeValue → IO (Maybe HomeValue)
     selectView _ nothing h = return (just h)
     selectView read (just key) (sh , m) = read key >>=? λ { shown@(sh′ , m′) → return (M.when (sameTree sh sh′ m m′) shown) }
+
+-- The caller opens a verified commit. Source associations are pinned by
+-- its presentation root and addressed by their own SHA-256 leaves.
+commitSurfaces : String → Hash → IO (Maybe (List (Code × String)))
+commitSurfaces dir tip = getCommit dir tip >>=? λ c → fromView (presentation c)
+  where
+    views = dir / "presentation"
+    kidsOf : Reader (List (Code × String)) → List Kid → IO (Maybe (List (Code × String)))
+    kidsOf read [] = return (just [])
+    kidsOf read ((_ , key) ∷ ks) = read key >>=? λ first → kidsOf read ks >>=? λ rest → return (just (first ++ rest))
+    step : Reader (List (Code × String)) → Reader (List (Code × String))
+    step read key = getHomeNode views key >>=? λ h → readDisplay views (codeHash h) >>=? λ where
+      (c , nothing) → kidsOf read (kids h)
+      (c , just point) → kidsOf read (kids h) >>=? λ more → return (just (point ∷ more))
+    fromView : Maybe Hash → IO (Maybe (List (Code × String)))
+    fromView nothing = return (just [])
+    fromView (just key) = newDAGReader views homeK step >>= λ read → read key

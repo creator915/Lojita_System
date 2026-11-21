@@ -1,5 +1,7 @@
 import AgdaMirror.Core
 
+-- Sparse pattern compilation uses Nat.hasNotBit, which depends on propext.
+set_option backward.match.sparseCases false
 set_option autoImplicit false
 set_option relaxedAutoImplicit false
 
@@ -604,5 +606,17 @@ def inputPort : PortLift Signal Input :=
   PortLift.portLift classify
 
 end Filter
+
+inductive SafeTaboo : Type where
+  | bottom : AgdaBot → SafeTaboo
+  | primStrRefl : ((s : String) → AgdaId (agdaStrEq s s) true) → SafeTaboo
+  | primCharRefl : ((c : Char) → AgdaId (agdaCharEq c c) true) → SafeTaboo
+  | strRoundtrip : ((s : String) → AgdaId (agdaFromList (agdaToList s)) s) → SafeTaboo
+  | listRoundtrip : ((cs : List Char) → AgdaId (agdaToList (agdaFromList cs)) cs) → SafeTaboo
+  | funExtBool : ((f g : Nat → Bool) → ((n : Nat) → AgdaId (f n) (g n)) → AgdaId f g) → SafeTaboo
+  | wlpo : ((f : Nat → Bool) → AgdaSum ((n : Nat) → AgdaId (f n) false)
+      (AgdaSigma Nat (fun n => AgdaId (f n) true))) → SafeTaboo
+  | markov : ((f : Nat → Bool) → (((n : Nat) → AgdaId (f n) false) → AgdaBot) →
+      AgdaSigma Nat (fun n => AgdaId (f n) true)) → SafeTaboo
 
 end AgdaMirror.Context

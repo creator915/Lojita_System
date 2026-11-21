@@ -35,7 +35,8 @@ echo "  [PASS] AgdaMirror.Protocol & agda2lean built cleanly with zero axioms."
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/test-step4-proto.XXXXXXXX")
 trap 'rm -rf -- "$WORK"' EXIT
 
-mkdir -p "$WORK/repo/runtime/tools" "$WORK/agda_cfg"
+export AGDA_DIR="$WORK/agda_cfg"
+mkdir -p "$WORK/repo/runtime/tools" "$AGDA_DIR"
 cp -R "$REPO"/{Backend,Code,Context,Meta,OwnershipIO,Store,Test} "$WORK/repo/"
 cp "$REPO"/Code.agda "$REPO"/Ownership.agda "$REPO"/OwnershipIO.agda "$REPO"/check.sh "$WORK/repo/"
 cp "$REPO"/runtime/*.hs "$REPO"/runtime/*.c "$REPO"/runtime/*.h "$WORK/repo/runtime/"
@@ -46,8 +47,8 @@ if [ -d "$REPO/dump" ]; then
 fi
 
 echo "=== [Step 4.3] Verify Context/Protocol.agda & Test/ProtocolGluingTest.agda in Agda ==="
-(cd "$WORK/repo" && AGDA_DIR="$WORK/agda_cfg" ./check.sh Context/Protocol.agda)
-(cd "$WORK/repo" && AGDA_DIR="$WORK/agda_cfg" ./check.sh Test/ProtocolGluingTest.agda)
+(cd "$WORK/repo" && ./check.sh Context/Protocol.agda)
+(cd "$WORK/repo" && ./check.sh Test/ProtocolGluingTest.agda)
 echo "  [PASS] Context/Protocol.agda & Test/ProtocolGluingTest.agda verified cleanly in Agda."
 
 echo "=== [Step 4.4] Verify Pure Lean 4 Fast-Path Check & Negative Gate on Context.Protocol (0 Agda Calls!) ==="
@@ -187,7 +188,7 @@ CLI_HOST_C="$WORK/repo/runtime/cli_host.c"
 mkdir -p "$WORK/tool-build"
 (
   cd "$WORK/repo"
-  AGDA_DIR="$WORK/agda_cfg" agda --compile \
+  agda --compile \
     --ghc-flag=-O0 --ghc-flag=-threaded \
     --ghc-flag=-iruntime --ghc-flag=-iruntime/tools \
     "--ghc-flag=$CLI_HOST_C" \

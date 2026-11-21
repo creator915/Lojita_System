@@ -1,6 +1,8 @@
 import AgdaMirror.Core
 import AgdaMirror.Context
 
+-- Sparse pattern compilation uses Nat.hasNotBit, which depends on propext.
+set_option backward.match.sparseCases false
 set_option autoImplicit false
 set_option relaxedAutoImplicit false
 set_option maxRecDepth 100000
@@ -15,6 +17,12 @@ with 100% definitional alignment (`refl` cross-tool Frame Laws) and zero axioms.
 -/
 
 namespace AgdaMirror
+
+-- Core simp includes eq_self (p = p ↔ True), whose conversion of propositions
+-- uses propext. Close reflexive equalities directly in audited law proofs.
+local macro "simp_rfl" "[" args:Lean.Parser.Tactic.simpArg,* "]" : tactic => do
+  let lemmas : Lean.Syntax.TSepArray [``Lean.Parser.Tactic.simpStar, ``Lean.Parser.Tactic.simpErase, ``Lean.Parser.Tactic.simpLemma] "," := ⟨args.elemsAndSeps⟩
+  `(tactic| (simp only [-eq_self, $lemmas,*] <;> try rfl))
 
 open AgdaMirror.Context
 
@@ -140,7 +148,7 @@ def advanceClockAdd (a b : Nat) (c : SimClock) :
     AgdaId (advanceClock (agdaAdd a b) c) (advanceClock a (advanceClock b c)) :=
   agdaEqToId (by
     cases c
-    simp only [advanceClock, agdaAdd_assoc])
+    simp_rfl [advanceClock, agdaAdd_assoc])
 
 def advanceClockComm (a b : Nat) (c : SimClock) :
     AgdaId (advanceClock a (advanceClock b c)) (advanceClock b (advanceClock a c)) :=
@@ -239,14 +247,14 @@ def appendObsEmptyLeft : (o : RawTermObs) → AgdaId (appendObs emptyObs o) o
 
 def appendObsEmptyRight : (o : RawTermObs) → AgdaId (appendObs o emptyObs) o
   | .rawObs t so se ex =>
-      agdaEqToId (by simp only [appendObs, emptyObs, latest, agdaAppend_nil_r])
+      agdaEqToId (by simp_rfl [appendObs, emptyObs, latest, agdaAppend_nil_r])
 
 def appendObsAssoc : (a b c : RawTermObs) →
     AgdaId (appendObs (appendObs a b) c) (appendObs a (appendObs b c))
   | .rawObs t₁ o₁ e₁ x₁, .rawObs t₂ o₂ e₂ x₂, .rawObs t₃ o₃ e₃ x₃ =>
       agdaEqToId (by
         have hLat := agdaIdToEq (latestAssoc x₁ x₂ x₃)
-        simp only [appendObs, agdaAppend_assoc, hLat])
+        simp_rfl [appendObs, agdaAppend_assoc, hLat])
 
 def advanceZero {S E : Type} (h : Handler S E) (m : TimedMachine S E) :
     AgdaId (advance 0 h m) m := .refl
@@ -1719,10 +1727,10 @@ private theorem machinePrefix {A : Type} :
   | .decorLine _ _ _, _, .just _, _, _  => rfl
   | .occludeRect c r, _, .nothing, _, _ => rfl
   | .occludeRect c r, k, .just q, st, old => by
-      simp only [emit, run, putColour, atFrame, paint, colourInk]
+      simp_rfl [emit, run, putColour, atFrame, paint, colourInk]
   | .hitRect a c r, _, .nothing, _, _   => rfl
   | .hitRect a c r, k, .just q, st, old => by
-      simp only [emit, run, putColour, atFrame, paint, colourInk]
+      simp_rfl [emit, run, putColour, atFrame, paint, colourInk]
   | .transform t s, k, .nothing, st, old =>
       machinePrefix s (.cmdRestore :: k) .nothing (.nothing :: st) old
   | .transform t s, k, .just q, st, old =>
@@ -1730,12 +1738,12 @@ private theorem machinePrefix {A : Type} :
   | .clip r s, k, .nothing, st, old =>
       machinePrefix s (.cmdRestore :: k) .nothing (.nothing :: st) old
   | .clip r s, k, .just q, st, old => by
-      simp only [emit, run, mask, atFrame, paint]
+      simp_rfl [emit, run, mask, atFrame, paint]
       cases inRectQ q r with
       | false => exact machinePrefix s (.cmdRestore :: k) .nothing (.just q :: st) old
       | true  => exact machinePrefix s (.cmdRestore :: k) (.just q) (.just q :: st) old
   | .over f b, k, fr, st, old => by
-      simp only [emit]
+      simp_rfl [emit]
       rw [machinePrefix b (emit .surfaces f k) fr st old,
           machinePrefix f k fr st (atFrame b fr old)]
       cases fr <;> rfl
@@ -1869,7 +1877,7 @@ def decodeUtf8Chars : List Nat → AgdaMaybe (List Char)
             agdaIte (agdaAnd (isUtf8Cont b₂) (agdaAnd (isUtf8Cont b₃) (agdaAnd (agdaNatLe 2048 cp) (agdaNot surrogate))))
               (mapMaybeChars (agdaCharFromNat cp) (decodeUtf8Chars rs))
               .nothing
-        | _ => .nothing
+        | [] | [_] => .nothing
       else if agdaAnd (agdaNatLe 240 b₁) (agdaNatLt b₁ 245) then
         match rest with
         | b₂ :: b₃ :: b₄ :: rs =>
@@ -1880,9 +1888,9 @@ def decodeUtf8Chars : List Nat → AgdaMaybe (List Char)
                       (agdaAnd (agdaNatLe 65536 cp) (agdaNatLt cp 1114112)))))
               (mapMaybeChars (agdaCharFromNat cp) (decodeUtf8Chars rs))
               .nothing
-        | _ => .nothing
+        | [] | [_] | [_, _] => .nothing
       else .nothing
-termination_by xs => xs.length
+termination_by structural xs => xs
 
 def decodeUtf8 (bs : Bytes) : AgdaMaybe String :=
   match decodeUtf8Chars (agdaMap agdaFinToNat bs) with
@@ -1892,6 +1900,7 @@ def decodeUtf8 (bs : Bytes) : AgdaMaybe String :=
 def decodeUtf8LossyChars : List Nat → List Char
   | []         => []
   | b₁ :: rest =>
+      let replacement := fun _ : Unit => agdaCharFromNat 65533 :: decodeUtf8LossyChars rest
       if agdaNatLt b₁ 128 then
         agdaCharFromNat b₁ :: decodeUtf8LossyChars rest
       else if agdaAnd (agdaNatLe 194 b₁) (agdaNatLt b₁ 224) then
@@ -1901,23 +1910,23 @@ def decodeUtf8LossyChars : List Nat → List Char
             if isUtf8Cont b₂ then
               agdaCharFromNat (agdaAdd (agdaMul (agdaSub b₁ 192) 64) (agdaSub b₂ 128)) :: decodeUtf8LossyChars rs
             else
-              agdaCharFromNat 65533 :: decodeUtf8LossyChars (b₂ :: rs)
+              replacement ()
       else if agdaAnd (agdaNatLe 224 b₁) (agdaNatLt b₁ 240) then
         match rest with
         | []        => [agdaCharFromNat 65533]
-        | [b₂]      => agdaCharFromNat 65533 :: decodeUtf8LossyChars [b₂]
+        | [_]       => replacement ()
         | b₂ :: b₃ :: rs =>
             let cp := agdaAdd (agdaMul (agdaSub b₁ 224) 4096) (agdaAdd (agdaMul (agdaSub b₂ 128) 64) (agdaSub b₃ 128))
             let surrogate := agdaAnd (agdaNatLe 55296 cp) (agdaNatLt cp 57344)
             if agdaAnd (isUtf8Cont b₂) (agdaAnd (isUtf8Cont b₃) (agdaAnd (agdaNatLe 2048 cp) (agdaNot surrogate))) then
               agdaCharFromNat cp :: decodeUtf8LossyChars rs
             else
-              agdaCharFromNat 65533 :: decodeUtf8LossyChars (b₂ :: b₃ :: rs)
+              replacement ()
       else if agdaAnd (agdaNatLe 240 b₁) (agdaNatLt b₁ 245) then
         match rest with
         | []             => [agdaCharFromNat 65533]
-        | [b₂]           => agdaCharFromNat 65533 :: decodeUtf8LossyChars [b₂]
-        | [b₂, b₃]       => agdaCharFromNat 65533 :: decodeUtf8LossyChars [b₂, b₃]
+        | [_]            => replacement ()
+        | [_, _]         => replacement ()
         | b₂ :: b₃ :: b₄ :: rs =>
             let cp := agdaAdd (agdaMul (agdaSub b₁ 240) 262144)
                         (agdaAdd (agdaMul (agdaSub b₂ 128) 4096)
@@ -1926,10 +1935,10 @@ def decodeUtf8LossyChars : List Nat → List Char
                  (agdaAnd (agdaNatLe 65536 cp) (agdaNatLt cp 1114112)))) then
               agdaCharFromNat cp :: decodeUtf8LossyChars rs
             else
-              agdaCharFromNat 65533 :: decodeUtf8LossyChars (b₂ :: b₃ :: b₄ :: rs)
+              replacement ()
       else
-        agdaCharFromNat 65533 :: decodeUtf8LossyChars rest
-termination_by xs => xs.length
+        replacement ()
+termination_by structural xs => xs
 
 def decodeUtf8Lossy (bs : Bytes) : String :=
   agdaFromList (decodeUtf8LossyChars (agdaMap agdaFinToNat bs))
@@ -2253,7 +2262,7 @@ def stripDotSlashChars : List Char → List Char
       else
         c₁ :: c₂ :: cs
   | cs => cs
-termination_by cs => cs.length
+termination_by structural cs => cs
 
 def normalizeRelPath (p : String) : String :=
   agdaIte (hasDotSlashPrefix (agdaToList p))
@@ -2574,7 +2583,7 @@ private theorem finToNat_inj : ∀ {k : Nat} (a b : AgdaFin k), agdaFinToNat a =
 
 theorem eqBytes_refl_eq : ∀ (bs : Bytes), eqBytes bs bs = true
   | []      => rfl
-  | b :: bs => by simp only [eqBytes, natEqB_refl, agdaAnd, eqBytes_refl_eq bs]
+  | b :: bs => by simp_rfl [eqBytes, natEqB_refl, agdaAnd, eqBytes_refl_eq bs]
 
 private theorem list_cons_congr {α : Type} {x y : α} {xs ys : List α} (hx : x = y) (hxs : xs = ys) :
     x :: xs = y :: ys := hx ▸ hxs ▸ rfl
@@ -2599,7 +2608,7 @@ def eqBytesToId (xs ys : Bytes) (h : AgdaId (eqBytes xs ys) true) : AgdaId xs ys
 
 theorem eqChars_refl_eq : ∀ (cs : List Char), eqChars cs cs = true
   | []      => rfl
-  | c :: cs => by simp only [eqChars, natEqB_refl, agdaAnd, eqChars_refl_eq cs]
+  | c :: cs => by simp_rfl [eqChars, natEqB_refl, agdaAnd, eqChars_refl_eq cs]
 
 private theorem charToNat_inj (x y : Char) (h : agdaCharToNat x = agdaCharToNat y) : x = y := by
   have h1 : Char.ofNat x.toNat = Char.ofNat y.toNat := congrArg Char.ofNat h
@@ -2661,16 +2670,16 @@ def eqStrSym (a b : String) : AgdaId (eqStr a b) (eqStr b a) :=
 
 theorem lookup_insert_same_eq (e : FsEntryObs) :
     ∀ (es : List FsEntryObs), lookupEntry e.entryPath (insertEntry e es) = .just e
-  | []      => by simp only [insertEntry, lookupEntry, eqStr_refl_eq, agdaIte]
+  | []      => by simp_rfl [insertEntry, lookupEntry, eqStr_refl_eq, agdaIte]
   | x :: xs => by
-      simp only [insertEntry]
+      simp_rfl [insertEntry]
       cases hex : eqStr e.entryPath x.entryPath with
-      | true  => simp only [agdaIte, lookupEntry, eqStr_refl_eq]
+      | true  => simp_rfl [agdaIte, lookupEntry, eqStr_refl_eq]
       | false =>
-          simp only [agdaIte]
+          simp_rfl [agdaIte]
           cases ltBytes (bytes e.entryPath) (bytes x.entryPath) with
-          | true  => simp only [agdaIte, lookupEntry, eqStr_refl_eq]
-          | false => simp only [agdaIte, lookupEntry, hex, lookup_insert_same_eq e xs]
+          | true  => simp_rfl [agdaIte, lookupEntry, eqStr_refl_eq]
+          | false => simp_rfl [agdaIte, lookupEntry, hex, lookup_insert_same_eq e xs]
 
 def lookupInsertSame (e : FsEntryObs) (es : List FsEntryObs) :
     AgdaId (lookupEntry e.entryPath (insertEntry e es)) (.just e) :=
@@ -2679,7 +2688,7 @@ def lookupInsertSame (e : FsEntryObs) (es : List FsEntryObs) :
 theorem lookup_insert_other_eq (q : String) (e : FsEntryObs) (neq : q ≠ e.entryPath) :
     ∀ (es : List FsEntryObs), lookupEntry q (insertEntry e es) = lookupEntry q es
   | [] => by
-      simp only [insertEntry, lookupEntry]
+      simp_rfl [insertEntry, lookupEntry]
       cases hqe : eqStr q e.entryPath with
       | false => rfl
       | true  => exact absurd (eqStr_to_eq q e.entryPath hqe) neq
@@ -2688,17 +2697,17 @@ theorem lookup_insert_other_eq (q : String) (e : FsEntryObs) (neq : q ≠ e.entr
         cases h : eqStr q e.entryPath with
         | false => rfl
         | true  => exact absurd (eqStr_to_eq q e.entryPath h) neq
-      simp only [insertEntry]
+      simp_rfl [insertEntry]
       cases hex : eqStr e.entryPath x.entryPath with
       | true =>
           have ex := eqStr_to_eq e.entryPath x.entryPath hex
-          simp only [agdaIte, lookupEntry, hqeFalse, ← ex]
+          simp_rfl [agdaIte, lookupEntry, hqeFalse, ← ex]
       | false =>
-          simp only [agdaIte]
+          simp_rfl [agdaIte]
           cases ltBytes (bytes e.entryPath) (bytes x.entryPath) with
-          | true  => simp only [agdaIte, lookupEntry, hqeFalse]
+          | true  => simp_rfl [agdaIte, lookupEntry, hqeFalse]
           | false =>
-              simp only [agdaIte, lookupEntry]
+              simp_rfl [agdaIte, lookupEntry]
               cases eqStr q x.entryPath with
               | true  => rfl
               | false => exact lookup_insert_other_eq q e neq xs
@@ -2715,16 +2724,16 @@ def insertInsertSame (e₁ e₂ : FsEntryObs) (es : List FsEntryObs)
     have hp := agdaIdToEq pEq
     induction es with
     | nil =>
-        simp only [insertEntry, ← hp, eqStr_refl_eq, agdaIte]
+        simp_rfl [insertEntry, ← hp, eqStr_refl_eq, agdaIte]
     | cons x xs ih =>
-        simp only [insertEntry, ← hp]
+        simp_rfl [insertEntry, ← hp]
         cases h1x : eqStr e₁.entryPath x.entryPath with
-        | true  => simp only [agdaIte, insertEntry, ← hp, eqStr_refl_eq]
+        | true  => simp_rfl [agdaIte, insertEntry, ← hp, eqStr_refl_eq]
         | false =>
-            simp only [agdaIte]
+            simp_rfl [agdaIte]
             cases hlt : ltBytes (bytes e₁.entryPath) (bytes x.entryPath) with
-            | true  => simp only [agdaIte, insertEntry, ← hp, eqStr_refl_eq]
-            | false => simp only [agdaIte, insertEntry, ← hp, h1x, hlt, ih])
+            | true  => simp_rfl [agdaIte, insertEntry, ← hp, eqStr_refl_eq]
+            | false => simp_rfl [agdaIte, insertEntry, ← hp, h1x, hlt, ih])
 
 def noSlashOrNull : List Char → Bool
   | []      => true
@@ -2765,7 +2774,7 @@ private theorem agdaReverse_cons {A : Type} (x : A) (acc : List A) :
 
 private theorem noSlash_split : ∀ (acc cs : List Char),
     noSlashOrNull cs = true → splitSegmentChars acc cs = [agdaAppend (agdaReverse acc) cs]
-  | acc, [], _ => by simp only [splitSegmentChars, TermLaws.agdaAppend_nil_r]
+  | acc, [], _ => by simp_rfl [splitSegmentChars, TermLaws.agdaAppend_nil_r]
   | acc, c :: cs, ok => by
       simp only [noSlashOrNull, agdaAnd, agdaNot] at ok
       cases h47 : agdaNatEq (agdaCharToNat c) 47 with
@@ -2776,7 +2785,7 @@ private theorem noSlash_split : ∀ (acc cs : List Char),
           | true  => rw [h0] at ok; nomatch ok
           | false =>
               rw [h0] at ok
-              simp only [splitSegmentChars, h47, agdaIte]
+              simp_rfl [splitSegmentChars, h47, agdaIte]
               rw [noSlash_split (c :: acc) cs ok, agdaReverse_cons c acc,
                   TermLaws.agdaAppend_assoc (agdaReverse acc) [c] cs]
               rfl
@@ -2796,7 +2805,7 @@ private theorem noSlash_noNull : ∀ (cs : List Char),
   | c :: cs, ok => by
       have h0 : agdaNot (agdaNatEq (agdaCharToNat c) 0) = true := and_left (and_right ok)
       have hcs : noSlashOrNull cs = true := and_right (and_right ok)
-      simp only [FsSandbox.all, h0, noSlash_noNull cs hcs, agdaAnd]
+      simp_rfl [FsSandbox.all, h0, noSlash_noNull cs hcs, agdaAnd]
 
 private theorem noSlash_noDotSlash : ∀ (cs : List Char),
     noSlashOrNull cs = true → hasDotSlashPrefix cs = false
@@ -2813,16 +2822,16 @@ private theorem flat_props (p : String) (ok : ValidFlatFile p = true) :
   have hseg : validSegChars (agdaToList p) = true := and_left ok
   have hns  : noSlashOrNull (agdaToList p) = true := and_right ok
   have hnorm : normalizeRelPath p = p := by
-    simp only [normalizeRelPath, noSlash_noDotSlash (agdaToList p) hns, agdaIte]
+    simp_rfl [normalizeRelPath, noSlash_noDotSlash (agdaToList p) hns, agdaIte]
   have hdot : eqStr p "." = false := by
     have hd : agdaNot (eqChars (agdaToList p) ['.']) = true := and_left (and_right hseg)
     have hdotList : agdaToList "." = ['.'] := rfl
     simpa [eqStr, hdotList] using not_true_eq_false hd
   have hrel : validRelPath p = true := by
-    simp only [validRelPath, noSlash_split [] (agdaToList p) hns, agdaReverse, agdaFoldl, agdaAppend,
+    simp_rfl [validRelPath, noSlash_split [] (agdaToList p) hns, agdaReverse, agdaFoldl, agdaAppend,
                FsSandbox.all, hseg, noSlash_noNull (agdaToList p) hns, agdaAnd]
   have hpar : parentPaths p = [] := by
-    simp only [parentPaths, segments, noSlash_split [] (agdaToList p) hns, agdaMap, parentsFrom]
+    simp_rfl [parentPaths, segments, noSlash_split [] (agdaToList p) hns, agdaMap, parentsFrom]
   exact ⟨hnorm, hdot, hrel, hpar⟩
 
 def readAfterWriteSame (p : String) (bs : Bytes) (v : VirtualFs)
@@ -2833,17 +2842,18 @@ def readAfterWriteSame (p : String) (bs : Bytes) (v : VirtualFs)
     obtain ⟨hnorm, hdot, hrel, hpar⟩ := flat_props p (agdaIdToEq flatOk)
     have hcan := agdaIdToEq canOk
     simp only [CanWriteReg] at hcan
-    simp only [writeVirtualFile, writeVirtualFileFuel, hnorm, hdot, hrel, hpar, agdaNot, agdaIte, ensureParents]
+    rw [writeVirtualFile, writeVirtualFileFuel, hnorm]
+    simp only [hdot, hrel, hpar, agdaNot, agdaIte, ensureParents]
     cases hl : lookupEntry p v.fsEntries with
     | nothing =>
-        simp only [readVirtualFile, readVirtualFileFuel, hnorm, hdot, hrel, agdaNot, agdaIte,
+        simp_rfl [readVirtualFile, readVirtualFileFuel, hnorm, hdot, hrel, agdaNot, agdaIte,
                    putEntry, lookup_insert_same_eq (FsEntryObs.fsEntry p .regularNode 420 bs) v.fsEntries, eqKind]
     | just e =>
         rw [hl] at hcan
         simp only [isWritableEntry] at hcan
         cases hk : e.entryKind with
         | regularNode =>
-            simp only [hk, eqKind, agdaIte, readVirtualFile, readVirtualFileFuel, hnorm, hdot, hrel, agdaNot,
+            simp_rfl [hk, eqKind, agdaIte, readVirtualFile, readVirtualFileFuel, hnorm, hdot, hrel, agdaNot,
                        putEntry, lookup_insert_same_eq (FsEntryObs.fsEntry p .regularNode e.entryMode bs) v.fsEntries]
         | dirNode     => rw [hk] at hcan; nomatch hcan
         | symlinkNode => rw [hk] at hcan; nomatch hcan)
@@ -2863,38 +2873,35 @@ def readAfterWriteOther (p q : String) (bs : Bytes) (v : VirtualFs)
     have hns  := agdaIdToEq noSymQ
     simp only [CanWriteReg] at hcan
     simp only [NotSymlink] at hns
-    simp only [writeVirtualFile, writeVirtualFileFuel, hnormP, hdotP, hrelP, hparP, agdaNot, agdaIte, ensureParents]
+    have readPut (mode : Nat) :
+        readVirtualFile q (putEntry (FsEntryObs.fsEntry p .regularNode mode bs) v) =
+        readVirtualFile q v := by
+      unfold readVirtualFile
+      conv => lhs; rw [readVirtualFileFuel, hnormQ, hdotQ, hrelQ]
+      conv => rhs; rw [readVirtualFileFuel, hnormQ, hdotQ, hrelQ]
+      dsimp only [agdaNot, agdaIte, putEntry]
+      rw [lookup_insert_other_eq q (FsEntryObs.fsEntry p .regularNode mode bs) hneq v.fsEntries]
+      cases hlq : lookupEntry q v.fsEntries with
+      | nothing => rfl
+      | just e =>
+          rw [hlq] at hns
+          dsimp only
+          cases hk : e.entryKind with
+          | regularNode => rfl
+          | dirNode => rfl
+          | symlinkNode => simp only [isNotSymlinkEntry, hk] at hns; nomatch hns
+    rw [writeVirtualFile, writeVirtualFileFuel, hnormP]
+    simp only [hdotP, hrelP, hparP, agdaNot, agdaIte, ensureParents]
     cases hlp : lookupEntry p v.fsEntries with
-    | nothing =>
-        simp only [readVirtualFile, readVirtualFileFuel, hnormQ, hdotQ, hrelQ, agdaNot, agdaIte,
-                   putEntry, lookup_insert_other_eq q (FsEntryObs.fsEntry p .regularNode 420 bs) hneq v.fsEntries]
-        cases hlq : lookupEntry q v.fsEntries with
-        | nothing => rfl
-        | just eqE =>
-            rw [hlq] at hns
-            simp only [isNotSymlinkEntry] at hns
-            cases hkq : eqE.entryKind with
-            | regularNode => simp only [hkq]; rfl
-            | dirNode     => simp only [hkq]; rfl
-            | symlinkNode => rw [hkq] at hns; nomatch hns
+    | nothing => exact readPut 420
     | just ep =>
         rw [hlp] at hcan
         simp only [isWritableEntry] at hcan
-        cases hkp : ep.entryKind with
-        | regularNode =>
-            simp only [hkp, eqKind, agdaIte, readVirtualFile, readVirtualFileFuel, hnormQ, hdotQ, hrelQ, agdaNot,
-                       putEntry, lookup_insert_other_eq q (FsEntryObs.fsEntry p .regularNode ep.entryMode bs) hneq v.fsEntries]
-            cases hlq : lookupEntry q v.fsEntries with
-            | nothing => rfl
-            | just eqE =>
-                rw [hlq] at hns
-                simp only [isNotSymlinkEntry] at hns
-                cases hkq : eqE.entryKind with
-                | regularNode => simp only [hkq]
-                | dirNode     => simp only [hkq]
-                | symlinkNode => rw [hkq] at hns; nomatch hns
-        | dirNode     => rw [hkp] at hcan; nomatch hcan
-        | symlinkNode => rw [hkp] at hcan; nomatch hcan)
+        dsimp only
+        cases hk : ep.entryKind with
+        | regularNode => exact readPut ep.entryMode
+        | dirNode     => rw [hk] at hcan; nomatch hcan
+        | symlinkNode => rw [hk] at hcan; nomatch hcan)
 
 end FsLaws
 
@@ -2907,12 +2914,12 @@ def lookupNamePutNameSame {A : Type} (p : String) (v : A) (m : List (AgdaPair St
     AgdaId (lookupName p (putName p v m)) (.just v) :=
   agdaEqToId (by
     induction m with
-    | nil => simp only [putName, lookupName, FsLaws.eqStr_refl_eq, agdaIte]
+    | nil => simp_rfl [putName, lookupName, FsLaws.eqStr_refl_eq, agdaIte]
     | cons qy xs ih =>
-        simp only [putName]
+        simp_rfl [putName]
         cases hpq : FsSandbox.eqStr p qy.proj₁ with
-        | true  => simp only [agdaIte, lookupName, FsLaws.eqStr_refl_eq]
-        | false => simp only [agdaIte, lookupName, hpq, ih])
+        | true  => simp_rfl [agdaIte, lookupName, FsLaws.eqStr_refl_eq]
+        | false => simp_rfl [agdaIte, lookupName, hpq, ih])
 
 def lookupNamePutNameOther {A : Type} (p q : String) (v : A) (m : List (AgdaPair String A))
     (pNeqQ : AgdaId p q → AgdaBot) :
@@ -2924,15 +2931,15 @@ def lookupNamePutNameOther {A : Type} (p q : String) (v : A) (m : List (AgdaPair
       | false => rfl
       | true  => exact absurd (FsLaws.eqStr_to_eq p q h) hneq
     induction m with
-    | nil => simp only [putName, lookupName, hpqF, agdaIte]
+    | nil => simp_rfl [putName, lookupName, hpqF, agdaIte]
     | cons ky xs ih =>
-        simp only [putName]
+        simp_rfl [putName]
         cases hqk : FsSandbox.eqStr q ky.proj₁ with
         | true =>
             have qk := FsLaws.eqStr_to_eq q ky.proj₁ hqk
-            simp only [agdaIte, lookupName, hpqF, ← qk]
+            simp_rfl [agdaIte, lookupName, hpqF, ← qk]
         | false =>
-            simp only [agdaIte, lookupName]
+            simp_rfl [agdaIte, lookupName]
             cases FsSandbox.eqStr p ky.proj₁ with
             | true  => rfl
             | false => exact ih)
@@ -2957,7 +2964,7 @@ def choosePathsAllFalse (f : String → Bool) :
       agdaEqToId (by
         have hp := agdaIdToEq (h p)
         have ih := agdaIdToEq (choosePathsAllFalse f ps h)
-        simp only [choosePaths, hp, agdaIte, ih])
+        simp_rfl [choosePaths, hp, agdaIte, ih])
 
 def stepPureGitStageAllModifiedEmpty (r : PureGitRepo) :
     AgdaId (projectSummary (stepPureGit .gitStageAll r).proj₁).modifiedPaths [] :=
@@ -3044,13 +3051,13 @@ private theorem decCharsFuel_allToken : ∀ (fuel n : Nat) (acc : List Char),
     FsSandbox.all TokenByte (agdaMap (fun c => byte (agdaCharToNat c)) (decCharsFuel fuel n acc)) = true
   | 0, _, _, okAcc => okAcc
   | Nat.succ f, n, acc, okAcc => by
-      simp only [decCharsFuel]
+      simp_rfl [decCharsFuel]
       cases agdaNatLt n 10 with
-      | true  => simp only [agdaIte, agdaMap, FsSandbox.all, digitChar_token, agdaAnd, okAcc]
+      | true  => simp_rfl [agdaIte, agdaMap, FsSandbox.all, digitChar_token, agdaAnd, okAcc]
       | false =>
-          simp only [agdaIte]
+          simp_rfl [agdaIte]
           apply decCharsFuel_allToken f (agdaDiv n 10) (digitChar (agdaModNat n 10) :: acc)
-          simp only [agdaMap, FsSandbox.all, digitChar_token, agdaAnd, okAcc]
+          simp_rfl [agdaMap, FsSandbox.all, digitChar_token, agdaAnd, okAcc]
 
 private theorem decCharsFuel_nonEmpty_acc : ∀ (fuel n : Nat) (c : Char) (cs : List Char),
     NonEmptyBytes (agdaMap (fun ch => byte (agdaCharToNat ch)) (decCharsFuel fuel n (c :: cs))) = true
@@ -3069,7 +3076,7 @@ private theorem decBytes_validToken (n : Nat) : ValidTokenBytes (decBytes n) = t
     | false => exact decCharsFuel_nonEmpty_acc n (agdaDiv n 10) (digitChar (agdaModNat n 10)) []
   have hat : FsSandbox.all TokenByte (decBytes n) = true :=
     decCharsFuel_allToken (Nat.succ n) n [] rfl
-  simp only [ValidTokenBytes, hne, hat, agdaAnd]
+  simp_rfl [ValidTokenBytes, hne, hat, agdaAnd]
 
 private theorem decBytes_noCR (n : Nat) : NoCR (decBytes n) = true :=
   allToken_noCR (decBytes n) (decCharsFuel_allToken (Nat.succ n) n [] rfl)
@@ -3079,9 +3086,9 @@ private theorem split_crlf_go : ∀ (acc pre rest : Bytes),
     splitMarkGo (bytes "\r\n") acc (agdaAppend pre (agdaAppend (bytes "\r\n") rest)) =
     .just (AgdaPair.mk (agdaAppend (agdaReverse acc) pre) rest)
   | acc, [], rest, _ => by
-      simp only [agdaAppend]
+      simp_rfl [agdaAppend]
       rw [show bytes "\r\n" = [byte 13, byte 10] from rfl]
-      simp only [agdaAppend, splitMarkGo, prefixBytes, FsSandbox.prefixBytes,
+      simp_rfl [agdaAppend, splitMarkGo, prefixBytes, FsSandbox.prefixBytes,
                  agdaFinToNat, byte, agdaFinFromNatMod, agdaFinOfBounded, agdaNatEq, agdaAnd, agdaIte,
                  agdaLength, agdaDrop, TermLaws.agdaAppend_nil_r]
   | acc, b :: bs, rest, ok => by
@@ -3090,8 +3097,8 @@ private theorem split_crlf_go : ∀ (acc pre rest : Bytes),
       have hpfx : prefixBytes (bytes "\r\n") (b :: agdaAppend bs (agdaAppend (bytes "\r\n") rest)) = false := by
         rw [show bytes "\r\n" = [byte 13, byte 10] from rfl]
         have h13' : agdaNatEq (agdaFinToNat (byte 13)) (agdaFinToNat b) = false := h13
-        simp only [prefixBytes, FsSandbox.prefixBytes, h13', agdaAnd]
-      simp only [agdaAppend, splitMarkGo, hpfx, agdaIte]
+        simp_rfl [prefixBytes, FsSandbox.prefixBytes, h13', agdaAnd]
+      simp_rfl [agdaAppend, splitMarkGo, hpfx, agdaIte]
       rw [split_crlf_go (b :: acc) bs rest hbs, FsLaws.agdaReverse_cons b acc,
           TermLaws.agdaAppend_assoc (agdaReverse acc) [b] bs]
       rfl
@@ -3107,8 +3114,8 @@ private theorem skip_crlf2_simple : ∀ (acc pre tailB : Bytes),
       have hpfx : prefixBytes (bytes "\r\n\r\n") (b :: agdaAppend bs tailB) = false := by
         rw [show bytes "\r\n\r\n" = [byte 13, byte 10, byte 13, byte 10] from rfl]
         have h13' : agdaNatEq (agdaFinToNat (byte 13)) (agdaFinToNat b) = false := h13
-        simp only [prefixBytes, FsSandbox.prefixBytes, h13', agdaAnd]
-      simp only [agdaAppend, splitMarkGo, hpfx, agdaIte, agdaFoldl]
+        simp_rfl [prefixBytes, FsSandbox.prefixBytes, h13', agdaAnd]
+      simp_rfl [agdaAppend, splitMarkGo, hpfx, agdaIte, agdaFoldl]
       exact skip_crlf2_simple (b :: acc) bs tailB hbs
 
 private theorem words_token_step : ∀ (acc tok rest : Bytes),
@@ -3130,7 +3137,7 @@ private theorem agdaReverse_involutive {A : Type} (xs : List A) : agdaReverse (a
       have hApp : ∀ (as bs : List A), agdaReverse (agdaAppend as bs) = agdaAppend (agdaReverse bs) (agdaReverse as) := by
         intro as
         induction as with
-        | nil => intro bs; simp only [agdaAppend, agdaReverse, agdaFoldl, TermLaws.agdaAppend_nil_r]
+        | nil => intro bs; simp_rfl [agdaAppend, agdaReverse, agdaFoldl, TermLaws.agdaAppend_nil_r]
         | cons a as iha =>
             intro bs
             simp only [agdaAppend]
@@ -3147,7 +3154,7 @@ private theorem nonEmptyFold : ∀ (x : Byte) (a xs : Bytes),
 private theorem words_nonempty_token (tok rest : Bytes) (ok : ValidTokenBytes tok = true) :
     wordsBytesGo [] (agdaAppend tok (byte 32 :: rest)) = tok :: wordsBytesGo [] rest := by
   cases tok with
-  | nil => simp [ValidTokenBytes, NonEmptyBytes, agdaAnd] at ok
+  | nil => cases ok
   | cons b bs =>
       have hall : FsSandbox.all TokenByte (b :: bs) = true := FsLaws.and_right ok
       have hsp  : isAsciiSpaceByte b = false := FsLaws.not_true_eq_false (FsLaws.and_left (FsLaws.and_left hall))
@@ -3183,8 +3190,7 @@ def parseHttpReqEncodeRoundtrip (method path : String) (body : Bytes)
           (noCR_append (bytes path) (bytes " HTTP/1.1") (allToken_noCR _ hpTok) rfl))
     have reassoc : encodeHttpReq method path [] body = agdaAppend line hdrTail := by
       simp only [encodeHttpReq, autoHeaderBytes, hasHeader, agdaIte, headerBytes, line, hdrTail]
-      simp only [TermLaws.agdaAppend_assoc]
-      rfl
+      simp_rfl [TermLaws.agdaAppend_assoc]
     have s1 : splitMark (bytes "\r\n") (encodeHttpReq method path [] body) =
         .just (AgdaPair.mk line (agdaAppend (bytes "Host: 127.0.0.1\r\nConnection: close\r\nContent-Length: ")
                                   (agdaAppend (decBytes (agdaLength body)) (agdaAppend (bytes "\r\n\r\n") body)))) := by
@@ -3193,7 +3199,7 @@ def parseHttpReqEncodeRoundtrip (method path : String) (body : Bytes)
     have s2 : ∃ hdr, splitMark (bytes "\r\n\r\n") (encodeHttpReq method path [] body) =
         .just (AgdaPair.mk hdr body) := by
       rw [reassoc]
-      simp only [splitMark]
+      simp_rfl [splitMark]
       rw [skip_crlf2_simple [] line hdrTail noCrLine]
       have stepLit : ∀ (a : Bytes),
           splitMarkGo (bytes "\r\n\r\n") a hdrTail =
@@ -3204,7 +3210,7 @@ def parseHttpReqEncodeRoundtrip (method path : String) (body : Bytes)
       exact ⟨_, rfl⟩
     obtain ⟨hdr, hs2⟩ := s2
     have wLine : wordsBytes line = [bytes method, bytes path, bytes "HTTP/1.1"] := by
-      simp only [wordsBytes, line]
+      simp_rfl [wordsBytes, line]
       have hsp1 : agdaAppend (bytes " ") (agdaAppend (bytes path) (bytes " HTTP/1.1")) =
           byte 32 :: agdaAppend (bytes path) (bytes " HTTP/1.1") := rfl
       have hspH : bytes " HTTP/1.1" = byte 32 :: bytes "HTTP/1.1" := rfl
@@ -3212,7 +3218,7 @@ def parseHttpReqEncodeRoundtrip (method path : String) (body : Bytes)
       rw [hspH, words_nonempty_token (bytes path) (bytes "HTTP/1.1") hp]
       rfl
     have hv : httpVersionBytes (bytes "HTTP/1.1") = true := rfl
-    simp only [parseHttpReq, s1, hs2, wLine, requestLineBytes, hv, agdaIte])
+    simp_rfl [parseHttpReq, s1, hs2, wLine, requestLineBytes, hv, agdaIte])
 
 def parseHttpReqBodyRoundtrip (method path : String) (body : Bytes)
     (okM : AgdaId (ValidHttpToken method) true)
@@ -3237,8 +3243,7 @@ def parseHttpRespEncodeRoundtrip (status : Nat) (reason : String) (body : Bytes)
           (noCR_append (bytes " ") (bytes reason) rfl hr))
     have reassoc : encodeHttpResp status reason [] body = agdaAppend line hdrTail := by
       simp only [encodeHttpResp, autoHeaderBytes, hasHeader, agdaIte, headerBytes, line, hdrTail]
-      simp only [TermLaws.agdaAppend_assoc]
-      rfl
+      simp_rfl [TermLaws.agdaAppend_assoc]
     have s1 : splitMark (bytes "\r\n") (encodeHttpResp status reason [] body) =
         .just (AgdaPair.mk line (agdaAppend (bytes "Content-Length: ")
                                   (agdaAppend (decBytes (agdaLength body)) (agdaAppend (bytes "\r\nConnection: close\r\n\r\n") body)))) := by
@@ -3247,7 +3252,7 @@ def parseHttpRespEncodeRoundtrip (status : Nat) (reason : String) (body : Bytes)
     have s2 : ∃ hdr, splitMark (bytes "\r\n\r\n") (encodeHttpResp status reason [] body) =
         .just (AgdaPair.mk hdr body) := by
       rw [reassoc]
-      simp only [splitMark]
+      simp_rfl [splitMark]
       rw [skip_crlf2_simple [] line hdrTail noCrLine]
       have stepPre : ∀ (a : Bytes),
           splitMarkGo (bytes "\r\n\r\n") a hdrTail =
@@ -3261,14 +3266,14 @@ def parseHttpRespEncodeRoundtrip (status : Nat) (reason : String) (body : Bytes)
       exact ⟨_, rfl⟩
     obtain ⟨hdr, hs2⟩ := s2
     have wLine : wordsBytes line = bytes "HTTP/1.1" :: decBytes status :: wordsBytes (bytes reason) := by
-      simp only [wordsBytes, line]
+      simp_rfl [wordsBytes, line]
       have hpfx : ∀ (rest : Bytes),
           wordsBytesGo [] (agdaAppend (bytes "HTTP/1.1 ") rest) = bytes "HTTP/1.1" :: wordsBytesGo [] rest := fun _ => rfl
       rw [hpfx]
       have hsp : agdaAppend (bytes " ") (bytes reason) = byte 32 :: bytes reason := rfl
       rw [hsp, words_nonempty_token (decBytes status) (bytes reason) (decBytes_validToken status)]
     have hv : httpVersionBytes (bytes "HTTP/1.1") = true := rfl
-    simp only [parseHttpResp, s1, hs2, wLine, responseLineBytes, hv, agdaIte, hs, statusView])
+    simp_rfl [parseHttpResp, s1, hs2, wLine, responseLineBytes, hv, agdaIte, hs, statusView])
 
 def evalStubExchangeReqs (mode : NetTopology) (reqs : List Bytes) :
     AgdaId (evalStubExchange mode reqs).proj₁ reqs := .refl
@@ -3822,18 +3827,33 @@ private partial def reactiveLoop {Δ : List Cap} {S : Type}
             ctLeanExitCode (UInt32.ofNat (code % 256))
             pure .tt
 
-def runWorldIO {Δ : List Cap} {A : Type} (prog : WorldProg Δ A) : AgdaIO A := do
+private def runWorldIOImpl {Δ : List Cap} {A : Type} (prog : WorldProg Δ A) : AgdaIO A := do
   let (a, _, _) ← runWorldState defaultGitRepo emptyCanvasDOM prog
   pure a
 
-def runCliIO {Δ : List Cap} (app : CliApp Δ) : AgdaIO AgdaTop := do
-  let code ← runWorldIO app
+private def runCliIOImpl {Δ : List Cap} (app : CliApp Δ) : AgdaIO AgdaTop := do
+  let code ← runWorldIOImpl app
   ctLeanExitCode (UInt32.ofNat (code % 256))
   pure .tt
 
-def runReactiveIO {Δ : List Cap} {S : Type} (app : ReactiveApp Δ S) : AgdaIO AgdaTop := do
+private def runReactiveIOImpl {Δ : List Cap} {S : Type} (app : ReactiveApp Δ S) : AgdaIO AgdaTop := do
   let (s₀, g₀, w₀) ← runWorldState defaultGitRepo emptyCanvasDOM app.init
   reactiveLoop app g₀ w₀ s₀
+
+-- Host effects form opaque ports in the kernel. Their signatures still check
+-- the complete capability-indexed program. Only the executable projection
+-- enters the platform interpreter; all three logical bodies are axiom-free.
+@[implemented_by runWorldIOImpl]
+opaque runWorldIO {Δ : List Cap} {A : Type} (_prog : WorldProg Δ A) : AgdaIO A :=
+  throw (IO.userError "WorldRunner requires the native interpreter")
+
+@[implemented_by runCliIOImpl]
+opaque runCliIO {Δ : List Cap} (_app : CliApp Δ) : AgdaIO AgdaTop :=
+  throw (IO.userError "WorldRunner requires the native interpreter")
+
+@[implemented_by runReactiveIOImpl]
+opaque runReactiveIO {Δ : List Cap} {S : Type} (_app : ReactiveApp Δ S) : AgdaIO AgdaTop :=
+  throw (IO.userError "WorldRunner requires the native interpreter")
 
 end WorldRunner
 

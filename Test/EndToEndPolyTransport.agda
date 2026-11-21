@@ -10,10 +10,10 @@ open import Data.String using (String; unlines; lines; toList) renaming (_++_ to
 open import Data.Unit using (⊤; tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import IO.Primitive using (IO; return; _>>=_)
-open import IO.Primitive.Finite using (putStrLn)
+open import IO.Primitive.Finite using (putStrLn; readFile; writeFile)
 open import OwnershipIO using (RunningIO)
 open import OwnershipIO.FFI
-open import OwnershipIO.MetaFFI using (_>>_; withPrivateTemp)
+open import OwnershipIO.MetaFFI using (_>>_; withPrivateTemp; catchIO)
 open import Code using (QName; mkQ; _==ˢ_; eqList; elemᵇ; allᵇ; anyᵇ; filterᵇ; unit; ⊥)
 open import Code.Transport using (Proarrow; _⇝_)
 open import Code.Protocol
@@ -23,6 +23,7 @@ open import Code.Lift using (liftSpec; liftSpecTree; mkChildLift; endpointLift)
 open import Code.Encode using (encodeLift)
 open import Code.SExpr
 open import Code.SessionProtocol
+open import Code.SessionWorkspace using (withOpenIncludes)
 open import Code.SessionRunner using (SessionConfig; sessionConfig; ActionResult; accepted; rejected; finished; executeAction)
 open import Code.AI using (ServiceBackend; ScriptedBackend)
 open import Test.HarnessPure using (submission)
@@ -263,7 +264,7 @@ service s calls = do
     request slot repaired (forkNode n) = assert ("unexpected fork " ++ˢ n) (allowed n) >>
       note ("fork " ++ˢ n) >> return (aiReply "" n)
     request slot repaired (accept _) = return (aiReply "accepted" "")
-    request slot repaired (propose prompt retry) = do
+    request slot repaired (propose prompt retry _) = do
       n ← readIORef slot
       note ("propose " ++ˢ n)
       let diagnostic = unlines (reverse (take 16 (reverse (lines prompt))))
@@ -385,6 +386,12 @@ run repo ws = do
   compareBranches (ws ++ˢ "/store") B1 b₀ b₁ [ b₀ ]
   u₁ ← runStage repo ws U1
   compareBranches (ws ++ˢ "/store") U1 u₀ u₁ (u₀ ∷ b₁ ∷ [])
+  let shared = ws ++ˢ "/generated/B1/Gen/B0/Root/Engine.agda"
+  original ← readFile shared
+  writeFile shared (original ++ˢ "\n-- present in neither sealed source\n")
+  refused ← catchIO (withOpenIncludes repo ws (λ _ → return false)) (λ _ → return true)
+  writeFile shared original
+  assert "accepted a modified shared export" refused
   unused ← newIORef []
   let cfg = config repo ws U1 unused
   executeAction cfg (build-exe "compile concrete filter" entry) >>= λ where

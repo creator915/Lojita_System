@@ -33,7 +33,7 @@ quiet() {
   fi
 }
 echo "Building the protocol checker, dump and sandbox relays"
-quiet ghc -O0 -package Agda -outputdir "$scratch/ghc" dump/Dump.hs -o "$scratch/dump"
+quiet ghc -O2 -threaded -package Agda -outputdir "$scratch/ghc" dump/Dump.hs -o "$scratch/dump"
 quiet cc -std=c11 -O2 -Wall -Wextra -Werror -static runtime/term-relay.c -o "$scratch/term-relay"
 quiet cc -std=c11 -O2 -Wall -Wextra -Werror -static runtime/tools/fs-relay.c -o "$scratch/fs-relay"
 quiet cc -std=c11 -O2 -Wall -Wextra -Werror -static runtime/tools/net-relay.c -o "$scratch/net-relay"
@@ -130,7 +130,7 @@ for prompt, symbol, kind in [
             key = remember(text, where)
             sources[key] = where
             # These standalone blocks show interfaces supplied by the harness.
-            if tag == 'agda' and key[0] in ('SwitchSpec', 'Gen.U0.Root'):
+            if tag == 'agda' and key[0] in ('SwitchSpec', 'PrimStrSpec', 'Gen.U0.Root'):
                 roles[key] = 'spec'
             continue
 
@@ -202,7 +202,8 @@ for name, base in [('Gen.T0.Base', 'Gen.T0.Base'), ('Gen.T1.Emph', 'Gen.T0.Base'
     spec, = [v for v in by_module[name] if v in actions and roles[v] == 'spec']
     run([checker, 'squares', actions[spec], dumps[defaults[base]], dumps[defaults[name]], dumps[spec]])
 run([checker, 'refutation', dumps[defaults['SwitchSpec']], dumps[defaults['Refute']]])
-print("Specifications, refutation, LiftSpec and one-to-many PolyTransport squares passed", flush=True)
+run([checker, 'independence', dumps[defaults['PrimStrSpec']], dumps[defaults['UnprovableRefute']]])
+print("Specifications, refutation, independence, LiftSpec and one-to-many PolyTransport squares passed", flush=True)
 
 if '(entry "Gen.T1.Emph.app")' not in (root / "prompts/session-open-world.md").read_text():
     sys.exit("session-open-world.md: expected (entry \"Gen.T1.Emph.app\") build-exe example")

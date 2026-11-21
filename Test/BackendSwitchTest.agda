@@ -15,7 +15,8 @@ open import IO using (Main; run; lift; pure; _>>_)
 import IO.Primitive.Finite as PF
 
 open import OwnershipIO using (onCall)
-open import OwnershipIO.FFI using (currentDirectory; mkdirP; removeAll; readProcessAt; ProcResult; procResult; exitFailure; failIO)
+open import OwnershipIO.FFI using (currentDirectory; mkdirP; readProcessAt; ProcResult; procResult; exitFailure; failIO)
+open import OwnershipIO.MetaFFI using (withPrivateTemp)
 open import Code using (Code; _==ˢ_; renameCode)
 open import Code.Encode using (encodeCanonical)
 open import Code.Protocol using (dumpReq; DumpResult; dumped; dumpFailed; agdaCheck)
@@ -207,10 +208,8 @@ private
   runSuite : Prim.IO Unit.⊤
   runSuite =
     currentDirectory >>=ᵢ λ repo →
-    let scratch = repo ++ˢ "/tmp/backend-switch-test"
-        dumpBin = repo ++ˢ "/dump/dump"
-    in
-    removeAll scratch >>ᵢ mkdirP scratch >>ᵢ
+    withPrivateTemp (repo ++ˢ "/tmp") λ scratch →
+    let dumpBin = repo ++ˢ "/dump/dump" in
     PF.putStrLn "== [1/6] Testing Sweet-Spot Seamless Switching (legacyAgda / leanPrism / shadowAudit) ==" >>ᵢ
     (switchDump leanPrism dumpBin repo scratch [] (dumpReq depSrc [] []) >>=ᵢ expectDumped "leanPrism dump depSrc") >>=ᵢ λ depC →
     (switchDump legacyAgda dumpBin repo scratch [] (dumpReq depSrc [] []) >>=ᵢ expectDumped "legacyAgda dump depSrc") >>=ᵢ λ depCLeg →
@@ -224,6 +223,16 @@ private
     (switchDump leanPrism dumpBin repo scratch [] (dumpReq withoutKSrc [] []) >>=ᵢ expectDumped "leanPrism ⊥-fallback dump withoutKSrc") >>=ᵢ λ wkC →
     (switchCheck leanPrism repo scratch [] (agdaCheck wkC []) >>=ᵢ expectPass "leanPrism ⊥-fallback check withoutKSrc") >>ᵢ
     (switchCheck shadowAudit repo scratch [] (agdaCheck wkC []) >>=ᵢ expectPass "shadowAudit ⊥-fallback check withoutKSrc") >>ᵢ
+
+    let invalidWithoutK = withoutKSrc ++ˢ "\n" ++ˢ unlines
+          ("open import Relation.Binary.PropositionalEquality using (_≡_; refl)"
+           ∷ "impossible : 0 ≡ 1"
+           ∷ "impossible = refl" ∷ [])
+    in
+    (switchDump leanPrism dumpBin repo scratch [] (dumpReq invalidWithoutK [] [])
+      >>=ᵢ expectDumped "scope the invalid --without-K proof") >>=ᵢ λ invalidWkC →
+    (switchCheck leanPrism repo scratch [] (agdaCheck invalidWkC [])
+      >>=ᵢ expectFail "--safe Agda rejects the invalid --without-K proof") >>ᵢ
 
     PF.putStrLn "== [3/6] Testing v2 Unit-SCC Optic Lens & Unified Thunk C Linker ==" >>ᵢ
     (switchDump shadowAudit dumpBin repo scratch [] (dumpReq hybridCoindSrc [] []) >>=ᵢ expectDumped "shadowAudit dump hybridCoindSrc (canonical Code match!)") >>=ᵢ λ rawHybC →
@@ -307,18 +316,28 @@ private
     (switchCheck shadowAudit repo scratch (ancDir ∷ []) (agdaCheck upperC []) >>=ᵢ expectPass "shadowAudit check with non-empty ancestors") >>ᵢ
 
     PF.putStrLn "== [8/8] Testing Native Lean 4 Arbitrary ℕ (39 / 8232) & String Literal Patterns ==" >>ᵢ
+    let largePattern = unlines
+          ("{-# OPTIONS --safe #-}" ∷ "module Gen.E1.LargePattern where"
+           ∷ "open import Data.Nat using (ℕ)"
+           ∷ "f : ℕ → ℕ" ∷ "f 39 = 1" ∷ "f _ = 0" ∷ [])
+    in
+    (switchDump leanPrism dumpBin repo scratch [] (dumpReq largePattern [] [])
+      >>=ᵢ expectDumped "scope the large Nat pattern") >>=ᵢ λ patternC →
+    (switchCheck leanPrism repo scratch [] (agdaCheck patternC [])
+      >>=ᵢ expectFail "Prism rejects the out-of-range Nat pattern") >>ᵢ
+    (switchCheck legacyAgda repo scratch [] (agdaCheck patternC [])
+      >>=ᵢ expectFail "Agda rejects the same out-of-range Nat pattern") >>ᵢ
     let bigNatSrc = unlines
           ( "{-# OPTIONS --guardedness #-}"
           ∷ "module Gen.E1.BigNatLit where"
-          ∷ "open import Data.Nat using (ℕ)"
+          ∷ "open import Data.Bool using (if_then_else_)"
+          ∷ "open import Data.Nat using (ℕ; _≡ᵇ_)"
           ∷ "open import Data.String using (String) renaming (_++_ to _++ˢ_)"
           ∷ "open import Data.Unit.Polymorphic using (⊤)"
           ∷ "open import Relation.Binary.PropositionalEquality using (_≡_; refl)"
           ∷ "open import IO using (Main; run; putStrLn)"
           ∷ "escapeTag : ℕ → String"
-          ∷ "escapeTag 39 = \"apos\""
-          ∷ "escapeTag 8232 = \"u2028\""
-          ∷ "escapeTag _ = \"other\""
+          ∷ "escapeTag n = if n ≡ᵇ 39 then \"apos\" else (if n ≡ᵇ 8232 then \"u2028\" else \"other\")"
           ∷ "kwTag : String → String"
           ∷ "kwTag \"json\" = \"ok\""
           ∷ "kwTag _ = \"no\""
@@ -331,15 +350,18 @@ private
           ∷ [] )
     in
     (switchDump leanPrism dumpBin repo scratch [] (dumpReq bigNatSrc [] []) >>=ᵢ expectDumped "leanPrism dump 39 / 8232 / String patterns") >>=ᵢ λ rawBigC →
-    (switchCheck leanPrism repo scratch [] (agdaCheck rawBigC []) >>=ᵢ expectPass "leanPrism FastFocus check 39 / 8232 / String patterns (fixes old Agda suc-chain bug)") >>ᵢ
+    (switchCheck leanPrism repo scratch [] (agdaCheck rawBigC []) >>=ᵢ expectPass "leanPrism checks 39 / 8232 as Nat values and String patterns") >>ᵢ
     let bigMainC = renameCode (requalify (Code.modName rawBigC) mainQ) (record rawBigC { modName = mainQ })
         bigBin = scratch ++ˢ "/big-nat-prism"
+        bigLegacyBin = scratch ++ˢ "/big-nat-legacy"
     in
     (switchCompileExe leanPrism repo scratch bigBin bigMainC [] >>=ᵢ expectPass "leanPrism native C build with 39 / 8232 / String patterns") >>ᵢ
+    (switchCompileExe legacyAgda repo scratch bigLegacyBin bigMainC [] >>=ᵢ expectPass "Agda builds the same Nat comparisons and String pattern") >>ᵢ
     (readProcessAt scratch 30000 bigBin [] "" >>=ᵢ λ { (procResult bCode bOut _) →
-     assertTrue "native binary outputs 'apos:u2028:ok\\n'" ((bCode ≡ᵇ 0) ∧ (bOut ==ˢ "apos:u2028:ok\n")) }) >>ᵢ
+     readProcessAt scratch 30000 bigLegacyBin [] "" >>=ᵢ λ { (procResult aCode aOut _) →
+     assertTrue "both executables print the expected Nat and String branches"
+       ((bCode ≡ᵇ 0) ∧ (aCode ≡ᵇ 0) ∧ (bOut ==ˢ "apos:u2028:ok\n") ∧ (aOut ==ˢ bOut)) }}) >>ᵢ
 
-    removeAll scratch >>ᵢ
     PF.putStrLn "== ALL BACKEND SWITCH TESTS PASSED =="
 
 main : Main

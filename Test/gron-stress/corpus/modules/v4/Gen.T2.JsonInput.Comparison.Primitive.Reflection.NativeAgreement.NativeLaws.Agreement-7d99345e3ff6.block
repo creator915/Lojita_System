@@ -1,0 +1,35 @@
+module Gen.T2.JsonInput.Comparison.Primitive.Reflection.NativeAgreement.NativeLaws.Agreement where
+
+open import Agda.Builtin.Char using (primCharEquality)
+open import Agda.Builtin.String using (primStringEquality)
+open import Data.Bool using (Bool; true; false)
+open import Data.Empty using (⊥; ⊥-elim)
+open import Data.Char using (Char)
+open import Data.String using (String)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Nullary using (Dec; does; yes; no)
+import Data.Char.Properties as CharProps
+import Data.String.Properties as StringProps
+import Gen.T2.JsonInput.Comparison.Primitive.Reflection.NativeAgreement.NativeLaws.Agreement.NativeChar as NativeChar
+import Gen.T2.JsonInput.Comparison.Primitive.Reflection.NativeAgreement.NativeLaws.Agreement.NativeString as NativeString
+
+private
+  false≢true : false ≡ true → ⊥
+  false≢true ()
+
+  agreement : {P : Set} (b : Bool) (p? : Dec P) →
+              (b ≡ true → P) → (P → b ≡ true) → b ≡ does p?
+  agreement true  (yes p)   sound complete = refl
+  agreement true  (no  notp) sound complete = ⊥-elim (notp (sound refl))
+  agreement false (yes p)   sound complete = ⊥-elim (false≢true (complete p))
+  agreement false (no  notp) sound complete = refl
+
+char-agrees : (c d : Char) → primCharEquality c d ≡ does (c CharProps.≟ d)
+char-agrees c d =
+  agreement (primCharEquality c d) (c CharProps.≟ d)
+    (NativeChar.char-sound c d) (NativeChar.char-complete c d)
+
+string-agrees : (s t : String) → primStringEquality s t ≡ does (s StringProps.≟ t)
+string-agrees s t =
+  agreement (primStringEquality s t) (s StringProps.≟ t)
+    (NativeString.string-sound s t) (NativeString.string-complete s t)

@@ -1,0 +1,294 @@
+module Gen.T1.Render where
+
+open import Agda.Builtin.Nat using (div-helper; mod-helper)
+open import Agda.Builtin.String using (primShowNat)
+open import Data.Bool using (Bool; false; true)
+open import Data.Char using (Char; fromℕ; toℕ)
+open import Data.List using (List; []; _∷_; [_]; _++_; any; map)
+open import Data.Maybe using (Maybe)
+open import Data.Nat using (ℕ; zero; suc; _+_; _≤_; _<_)
+open import Data.Product using (_×_; _,_; proj₁; proj₂)
+open import Data.String using (String; fromList; toList)
+open import Data.String.Properties using (_≟_)
+open import Data.Sum using (_⊎_)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_)
+open import Relation.Nullary.Decidable using (isYes)
+import Gen.T0.Gron as Base
+
+data Style : Set where
+  plain ansi : Style
+
+styleBit : Style → Bool
+styleBit plain = false
+styleBit ansi = true
+
+data Tone : Set where
+  violet red yellow cyan blueBold bold green : Tone
+
+data Quoting : Set where
+  forwardQuote reverseQuote : Quoting
+
+data KeyForm : Set where
+  dotted bracketed : KeyForm
+
+data Comparison : Set where
+  before equal after : Comparison
+
+data Permutation {A : Set} : List A → List A → Set where
+  permutation-refl : ∀ {xs} → Permutation xs xs
+  permutation-keep : ∀ {x xs ys} → Permutation xs ys → Permutation (x ∷ xs) (x ∷ ys)
+  permutation-swap : ∀ {x y xs} → Permutation (x ∷ y ∷ xs) (y ∷ x ∷ xs)
+  permutation-trans : ∀ {xs ys zs} → Permutation xs ys → Permutation ys zs → Permutation xs zs
+
+data Ordered {A : Set} (compare : A → A → Comparison) : List A → Set where
+  ordered-empty : Ordered compare []
+  ordered-single : ∀ x → Ordered compare (x ∷ [])
+  ordered-next : ∀ {x y ys} → compare x y ≢ after → Ordered compare (y ∷ ys) → Ordered compare (x ∷ y ∷ ys)
+
+data RowFormat : Set where
+  assignments jsonRows : RowFormat
+
+postulate
+  resolveStyle : Bool → Bool → Bool → Style
+  style-square : ∀ tty forced mono → styleBit (resolveStyle tty forced mono) ≡ Base.useColor tty forced mono
+
+  paint : Style → Tone → List Char → List Char
+  paint-plain : ∀ tone body → paint plain tone body ≡ body
+  paint-violet : ∀ body → paint ansi violet body ≡ (fromℕ 27 ∷ toList "[35m") ++ body ++ (fromℕ 27 ∷ toList "[0m")
+  paint-red : ∀ body → paint ansi red body ≡ (fromℕ 27 ∷ toList "[31m") ++ body ++ (fromℕ 27 ∷ toList "[0m")
+  paint-yellow : ∀ body → paint ansi yellow body ≡ (fromℕ 27 ∷ toList "[33m") ++ body ++ (fromℕ 27 ∷ toList "[0m")
+  paint-cyan : ∀ body → paint ansi cyan body ≡ (fromℕ 27 ∷ toList "[36m") ++ body ++ (fromℕ 27 ∷ toList "[0m")
+  paint-blue : ∀ body → paint ansi blueBold body ≡ (fromℕ 27 ∷ toList "[34;1m") ++ body ++ (fromℕ 27 ∷ toList "[0;22m")
+  paint-bold : ∀ body → paint ansi bold body ≡ (fromℕ 27 ∷ toList "[1m") ++ body ++ (fromℕ 27 ∷ toList "[22m")
+  paint-green : ∀ body → paint ansi green body ≡ (fromℕ 27 ∷ toList "[32m") ++ body ++ (fromℕ 27 ∷ toList "[0m")
+
+postulate
+  hexDigit : Quoting → ℕ → Char
+  escapeCode : Quoting → ℕ → List Char
+  escapeChar : Quoting → Char → List Char
+  escapeBody : Quoting → List Char → List Char
+  quoted : Quoting → List Char → List Char
+
+  digit-decimal : ∀ q n → n < 10 → toℕ (hexDigit q n) ≡ n + 48
+  digit-uppercase : ∀ n → 10 ≤ n → n < 16 → toℕ (hexDigit forwardQuote n) ≡ n + 55
+  digit-lowercase : ∀ n → 10 ≤ n → n < 16 → toℕ (hexDigit reverseQuote n) ≡ n + 87
+  unicode-escape : ∀ q n → n < 65536 → escapeCode q n ≡
+    ('\\' ∷ 'u' ∷ hexDigit q (div-helper 0 4095 n 4095) ∷
+     hexDigit q (mod-helper 0 15 (div-helper 0 255 n 255) 15) ∷
+     hexDigit q (mod-helper 0 15 (div-helper 0 15 n 15) 15) ∷ hexDigit q (mod-helper 0 15 n 15) ∷ [])
+  escape-quote : ∀ q → escapeChar q '"' ≡ toList "\\\""
+  escape-backslash : ∀ q → escapeChar q '\\' ≡ toList "\\\\"
+  escape-backspace : ∀ q → escapeChar q (fromℕ 8) ≡ toList "\\b"
+  escape-tab : ∀ q → escapeChar q (fromℕ 9) ≡ toList "\\t"
+  escape-newline : ∀ q → escapeChar q '\n' ≡ toList "\\n"
+  escape-formfeed : ∀ q → escapeChar q (fromℕ 12) ≡ toList "\\f"
+  escape-return : ∀ q → escapeChar q (fromℕ 13) ≡ toList "\\r"
+  escape-c0 : ∀ q c → toℕ c < 32 →
+    toℕ c ≢ 8 → toℕ c ≢ 9 → toℕ c ≢ 10 → toℕ c ≢ 12 → toℕ c ≢ 13 →
+    escapeChar q c ≡ escapeCode q (toℕ c)
+  escape-forward-c1 : ∀ c → 127 ≤ toℕ c → toℕ c < 160 → escapeChar forwardQuote c ≡ escapeCode forwardQuote (toℕ c)
+  escape-line-separator : ∀ q c → toℕ c ≡ 8232 → escapeChar q c ≡ escapeCode q (toℕ c)
+  escape-paragraph-separator : ∀ q c → toℕ c ≡ 8233 → escapeChar q c ≡ escapeCode q (toℕ c)
+  escape-forward-ascii : ∀ c → 32 ≤ toℕ c → toℕ c < 127 → toℕ c ≢ 34 → toℕ c ≢ 92 →
+    escapeChar forwardQuote c ≡ [ c ]
+  escape-forward-unicode : ∀ c → 160 ≤ toℕ c → toℕ c ≢ 8232 → toℕ c ≢ 8233 →
+    escapeChar forwardQuote c ≡ [ c ]
+  escape-reverse-literal : ∀ c → 32 ≤ toℕ c → toℕ c ≢ 34 → toℕ c ≢ 92 → toℕ c ≢ 8232 → toℕ c ≢ 8233 →
+    escapeChar reverseQuote c ≡ [ c ]
+  escape-empty : ∀ q → escapeBody q [] ≡ []
+  escape-cons : ∀ q c cs → escapeBody q (c ∷ cs) ≡ escapeChar q c ++ escapeBody q cs
+  quote-body : ∀ q cs → quoted q cs ≡ '"' ∷ (escapeBody q cs ++ [ '"' ])
+
+postulate
+  identifierStart : Char → Bool
+  identifierRest : Char → Bool
+  identifierTail : List Char → Bool
+  identifier : List Char → Bool
+  reserved : String → Bool
+  keyForm : String → KeyForm
+
+  start-dollar : identifierStart '$' ≡ true
+  start-underscore : identifierStart '_' ≡ true
+  start-uppercase : ∀ c → 65 ≤ toℕ c → toℕ c < 91 → identifierStart c ≡ true
+  start-lowercase : ∀ c → 97 ≤ toℕ c → toℕ c < 123 → identifierStart c ≡ true
+  start-ascii-other : ∀ c → toℕ c < 128 →
+    (toℕ c < 65 ⊎ 90 < toℕ c) → (toℕ c < 97 ⊎ 122 < toℕ c) →
+    toℕ c ≢ 36 → toℕ c ≢ 95 → identifierStart c ≡ false
+  rest-start : ∀ c → identifierStart c ≡ true → identifierRest c ≡ true
+  rest-digit : ∀ c → 48 ≤ toℕ c → toℕ c < 58 → identifierRest c ≡ true
+  rest-ascii-other : ∀ c → toℕ c < 128 → identifierStart c ≡ false →
+    (toℕ c < 48 ⊎ 57 < toℕ c) → identifierRest c ≡ false
+  tail-empty : identifierTail [] ≡ true
+  tail-reject : ∀ c cs → identifierRest c ≡ false → identifierTail (c ∷ cs) ≡ false
+  tail-accept : ∀ c cs → identifierRest c ≡ true → identifierTail (c ∷ cs) ≡ identifierTail cs
+  identifier-empty : identifier [] ≡ false
+  identifier-reject : ∀ c cs → identifierStart c ≡ false → identifier (c ∷ cs) ≡ false
+  identifier-accept : ∀ c cs → identifierStart c ≡ true → identifier (c ∷ cs) ≡ identifierTail cs
+  reserved-words : ∀ s → reserved s ≡ any (λ word → isYes (s ≟ word))
+    ("break" ∷ "case" ∷ "catch" ∷ "class" ∷ "const" ∷ "continue" ∷ "debugger" ∷ "default" ∷ "delete" ∷ "do" ∷ "else" ∷ "export" ∷ "extends" ∷ "false" ∷ "finally" ∷ "for" ∷ "function" ∷ "if" ∷ "import" ∷ "in" ∷ "instanceof" ∷ "new" ∷ "null" ∷ "return" ∷ "super" ∷ "switch" ∷ "this" ∷ "throw" ∷ "true" ∷ "try" ∷ "typeof" ∷ "var" ∷ "void" ∷ "while" ∷ "with" ∷ "yield" ∷ [])
+  dotted-key : ∀ k → identifier (toList k) ≡ true → reserved k ≡ false → keyForm k ≡ dotted
+  invalid-key : ∀ k → identifier (toList k) ≡ false → keyForm k ≡ bracketed
+  reserved-key : ∀ k → reserved k ≡ true → keyForm k ≡ bracketed
+
+  observed-non-ascii-letters : map keyForm ("α" ∷ "漢" ∷ "𐐀" ∷ "Ⅷ" ∷ []) ≡ (dotted ∷ dotted ∷ dotted ∷ dotted ∷ [])
+  observed-non-ascii-tail : map keyForm ("á" ∷ "a٢" ∷ "a‿" ∷ "aⅧ" ∷ []) ≡ (dotted ∷ dotted ∷ dotted ∷ dotted ∷ [])
+  observed-non-ascii-exclusions : map keyForm ("a²" ∷ "a·" ∷ "a‌" ∷ "a‍" ∷ "℘" ∷ "℮" ∷ "゛" ∷ "٢a" ∷ "😀" ∷ []) ≡
+    (bracketed ∷ bracketed ∷ bracketed ∷ bracketed ∷ bracketed ∷ bracketed ∷ bracketed ∷ bracketed ∷ bracketed ∷ [])
+
+postulate
+  compareText : List Char → List Char → Comparison
+  compareSegment : Base.Segment → Base.Segment → Comparison
+  comparePath : List Base.Segment → List Base.Segment → Comparison
+
+  text-empty : compareText [] [] ≡ equal
+  text-prefix : ∀ c cs → compareText [] (c ∷ cs) ≡ before
+  text-extension : ∀ c cs → compareText (c ∷ cs) [] ≡ after
+  text-before : ∀ c d cs ds → toℕ c < toℕ d → compareText (c ∷ cs) (d ∷ ds) ≡ before
+  text-after : ∀ c d cs ds → toℕ d < toℕ c → compareText (c ∷ cs) (d ∷ ds) ≡ after
+  text-equal-head : ∀ c d cs ds → toℕ c ≡ toℕ d → compareText (c ∷ cs) (d ∷ ds) ≡ compareText cs ds
+
+  segment-index-before : ∀ i j → i < j → compareSegment (Base.index i) (Base.index j) ≡ before
+  segment-index-after : ∀ i j → j < i → compareSegment (Base.index i) (Base.index j) ≡ after
+  segment-index-equal : ∀ i → compareSegment (Base.index i) (Base.index i) ≡ equal
+  segment-dotted-before : ∀ k l → keyForm k ≡ dotted → keyForm l ≡ bracketed →
+    compareSegment (Base.key k) (Base.key l) ≡ before
+  segment-dotted-after : ∀ k l → keyForm k ≡ bracketed → keyForm l ≡ dotted →
+    compareSegment (Base.key k) (Base.key l) ≡ after
+  segment-dotted-pair : ∀ k l → keyForm k ≡ dotted → keyForm l ≡ dotted →
+    compareSegment (Base.key k) (Base.key l) ≡ compareText (toList k) (toList l)
+  segment-bracket-pair : ∀ k l → keyForm k ≡ bracketed → keyForm l ≡ bracketed →
+    compareSegment (Base.key k) (Base.key l) ≡ compareText (quoted forwardQuote (toList k)) (quoted forwardQuote (toList l))
+
+  path-empty : comparePath [] [] ≡ equal
+  path-prefix : ∀ seg path → comparePath [] (seg ∷ path) ≡ before
+  path-extension : ∀ seg path → comparePath (seg ∷ path) [] ≡ after
+  path-head-before : ∀ x y xs ys → compareSegment x y ≡ before → comparePath (x ∷ xs) (y ∷ ys) ≡ before
+  path-head-after : ∀ x y xs ys → compareSegment x y ≡ after → comparePath (x ∷ xs) (y ∷ ys) ≡ after
+  path-head-equal : ∀ x y xs ys → compareSegment x y ≡ equal → comparePath (x ∷ xs) (y ∷ ys) ≡ comparePath xs ys
+
+  compareRow : Base.Row → Base.Row → Comparison
+  row-order : ∀ p q c d → compareRow (Base.row p c) (Base.row q d) ≡ comparePath p q
+
+  orderRows : List Base.Row → List Base.Row
+  orderMembers : List (String × List Char) → List (String × List Char)
+  rows-preserved : ∀ rs → Permutation rs (orderRows rs)
+  rows-ordered : ∀ rs → Ordered compareRow (orderRows rs)
+  members-preserved : ∀ fs → Permutation fs (orderMembers fs)
+  members-ordered : ∀ fs → Ordered (λ f g → compareText (toList (proj₁ f)) (toList (proj₁ g))) (orderMembers fs)
+
+postulate
+  join : List Char → List (List Char) → List Char
+  join-empty : ∀ sep → join sep [] ≡ []
+  join-single : ∀ sep x → join sep (x ∷ []) ≡ x
+  join-next : ∀ sep x y ys → join sep (x ∷ y ∷ ys) ≡ x ++ sep ++ join sep (y ∷ ys)
+
+  assignmentStep : Style → Base.Segment → List Char
+  assignmentSuffix : Style → List Base.Segment → List Char
+  jsonPathPart : Style → Base.Segment → List Char
+  forwardCell : Style → Base.Cell → List Char
+  forwardLine : Style → RowFormat → Base.Row → List Char
+  forwardOutput : Style → RowFormat → Bool → List Base.Row → String
+
+  assignment-key-dot : ∀ s k → keyForm k ≡ dotted → assignmentStep s (Base.key k) ≡ '.' ∷ paint s blueBold (toList k)
+  assignment-key-bracket : ∀ s k → keyForm k ≡ bracketed → assignmentStep s (Base.key k) ≡
+    paint s violet [ '[' ] ++ paint s yellow (quoted forwardQuote (toList k)) ++ paint s violet [ ']' ]
+  assignment-index : ∀ s i → assignmentStep s (Base.index i) ≡
+    paint s violet [ '[' ] ++ paint s red (toList (primShowNat i)) ++ paint s violet [ ']' ]
+  suffix-empty : ∀ s → assignmentSuffix s [] ≡ []
+  suffix-cons : ∀ s x xs → assignmentSuffix s (x ∷ xs) ≡ assignmentStep s x ++ assignmentSuffix s xs
+  row-key-part : ∀ s k → jsonPathPart s (Base.key k) ≡ paint s yellow (quoted forwardQuote (toList k))
+  row-index-part : ∀ s i → jsonPathPart s (Base.index i) ≡ paint s red (toList (primShowNat i))
+
+  forward-object-cell : ∀ s → forwardCell s Base.objectCell ≡ paint s violet (toList "{}")
+  forward-array-cell : ∀ s → forwardCell s Base.arrayCell ≡ paint s violet (toList "[]")
+  forward-null : ∀ s → forwardCell s (Base.leaf Base.null) ≡ paint s cyan (toList "null")
+  forward-true : ∀ s → forwardCell s (Base.leaf (Base.truth true)) ≡ paint s cyan (toList "true")
+  forward-false : ∀ s → forwardCell s (Base.leaf (Base.truth false)) ≡ paint s cyan (toList "false")
+  forward-number : ∀ s n → forwardCell s (Base.leaf (Base.numeral n)) ≡ paint s red (toList n)
+  forward-text : ∀ s t → forwardCell s (Base.leaf (Base.text t)) ≡ paint s yellow (quoted forwardQuote (toList t))
+
+  assignment-line : ∀ s p c → forwardLine s assignments (Base.row p c) ≡
+    paint s blueBold (toList "json") ++ assignmentSuffix s p ++ toList " = " ++ forwardCell s c ++ toList ";\n"
+  json-row-line : ∀ s p c → forwardLine s jsonRows (Base.row p c) ≡
+    paint s violet [ '[' ] ++ paint s violet [ '[' ] ++ join [ ',' ] (map (jsonPathPart s) p) ++
+    paint s violet [ ']' ] ++ [ ',' ] ++ forwardCell s c ++ paint s violet [ ']' ] ++ [ '\n' ]
+  output-unsorted : ∀ s f rs → forwardOutput s f false rs ≡ fromList (join [] (map (forwardLine s f) rs))
+  output-sorted : ∀ s f rs → forwardOutput s f true rs ≡ fromList (join [] (map (forwardLine s f) (orderRows rs)))
+
+postulate
+  indent : ℕ → List Char
+  reverseEntry : Style → String → List Char → List Char
+  reverseGroup : Style → ℕ → Char → Char → List (List Char) → List Char
+  reverseValue : Style → ℕ → Base.Value → List Char
+  reverseOutput : Style → Base.Value → String
+  mergeDiagnostic : Base.MergeFault → String
+
+  indent-root : indent zero ≡ []
+  indent-next : ∀ depth → indent (suc depth) ≡ ' ' ∷ ' ' ∷ indent depth
+  reverse-empty-group : ∀ depth l r → reverseGroup plain depth l r [] ≡ l ∷ r ∷ []
+  reverse-pretty-group : ∀ depth l r v vs → reverseGroup plain depth l r (v ∷ vs) ≡
+    (l ∷ '\n' ∷ indent (suc depth)) ++ join (',' ∷ '\n' ∷ indent (suc depth)) (v ∷ vs) ++ ('\n' ∷ indent depth) ++ [ r ]
+  reverse-ansi-group : ∀ depth l r vs → reverseGroup ansi depth l r vs ≡
+    paint ansi violet [ l ] ++ join (paint ansi bold [ ',' ]) vs ++ paint ansi violet [ r ]
+  reverse-plain-entry : ∀ k v → reverseEntry plain k v ≡ quoted reverseQuote (toList k) ++ toList ": " ++ v
+  reverse-ansi-entry : ∀ k v → reverseEntry ansi k v ≡
+    paint ansi blueBold [ '"' ] ++ paint ansi blueBold (escapeBody reverseQuote (toList k)) ++
+    paint ansi blueBold [ '"' ] ++ paint ansi bold [ ':' ] ++ v
+  reverse-null : ∀ s depth → reverseValue s depth (Base.scalar Base.null) ≡ paint s cyan (toList "null")
+  reverse-true : ∀ s depth → reverseValue s depth (Base.scalar (Base.truth true)) ≡ paint s cyan (toList "true")
+  reverse-false : ∀ s depth → reverseValue s depth (Base.scalar (Base.truth false)) ≡ paint s cyan (toList "false")
+  reverse-number : ∀ s depth n → reverseValue s depth (Base.scalar (Base.numeral n)) ≡ paint s red (toList n)
+  reverse-plain-text : ∀ depth t → reverseValue plain depth (Base.scalar (Base.text t)) ≡ quoted reverseQuote (toList t)
+  reverse-ansi-text : ∀ depth t → reverseValue ansi depth (Base.scalar (Base.text t)) ≡
+    paint ansi green [ '"' ] ++ paint ansi yellow (escapeBody reverseQuote (toList t)) ++ paint ansi green [ '"' ]
+  reverse-array : ∀ s depth xs → reverseValue s depth (Base.array xs) ≡
+    reverseGroup s depth '[' ']' (map (reverseValue s (suc depth)) xs)
+  reverse-object : ∀ s depth fs → reverseValue s depth (Base.object fs) ≡
+    reverseGroup s depth '{' '}' (map (λ f → reverseEntry s (proj₁ f) (proj₂ f))
+      (orderMembers (map (λ f → (proj₁ f , reverseValue s (suc depth) (proj₂ f))) fs)))
+  reverse-newline : ∀ s v → reverseOutput s v ≡ fromList (reverseValue s zero v ++ [ '\n' ])
+  object-conflict : mergeDiagnostic Base.objectConflict ≡ "failed to merge statements: cannot merge object with non-object\n"
+  array-conflict : mergeDiagnostic Base.arrayConflict ≡ "failed to merge statements: cannot merge array with non-array\n"
+
+postulate
+  valueText : Base.Atom → List Char
+  valuesOutput : List (Maybe Base.Row) → String
+
+  values-null : valueText Base.null ≡ toList "null"
+  values-true : valueText (Base.truth true) ≡ toList "true"
+  values-false : valueText (Base.truth false) ≡ toList "false"
+  values-number : ∀ n → valueText (Base.numeral n) ≡ toList n
+  values-text : ∀ t → valueText (Base.text t) ≡ toList t
+  output-values : ∀ rs → valuesOutput rs ≡ fromList (join [] (map (λ a → valueText a ++ [ '\n' ]) (Base.valuesOf rs)))
+
+  observed-forward-paths :
+    forwardOutput plain jsonRows true
+      (Base.row [] Base.objectCell ∷
+       Base.row (Base.key "a.b" ∷ []) (Base.leaf Base.null) ∷
+       Base.row (Base.key "z" ∷ []) Base.arrayCell ∷
+       Base.row (Base.key "z" ∷ Base.index 0 ∷ []) (Base.leaf (Base.numeral "1")) ∷
+       Base.row (Base.key "z" ∷ Base.index 1 ∷ []) (Base.leaf (Base.text "<&>")) ∷ []) ≡
+    "[[],{}]\n[[\"z\"],[]]\n[[\"z\",0],1]\n[[\"z\",1],\"<&>\"]\n[[\"a.b\"],null]\n"
+  observed-reverse-members :
+    reverseOutput plain (Base.object
+      (("a" , Base.scalar (Base.numeral "1000000000")) ∷ ("A" , Base.scalar (Base.truth false)) ∷
+       ("<&>" , Base.scalar (Base.text (fromList ('x' ∷ fromℕ 8232 ∷ 'y' ∷ fromℕ 8233 ∷ 'z' ∷ fromℕ 1 ∷ [])))) ∷ [])) ≡
+    "{\n  \"<&>\": \"x\\u2028y\\u2029z\\u0001\",\n  \"A\": false,\n  \"a\": 1000000000\n}\n"
+  observed-quoted-order : compareSegment (Base.key ". ") (Base.key ".") ≡ before
+  observed-forward-quote :
+    fromList (quoted forwardQuote (toList "<>&" ++ (fromℕ 127 ∷ fromℕ 8233 ∷ fromℕ 31 ∷ toList "/\"\\😀"))) ≡
+    "\"<>&\\u007F\\u2029\\u001F/\\\"\\\\😀\""
+  observed-reverse-quote :
+    quoted reverseQuote (fromℕ 11 ∷ fromℕ 31 ∷ fromℕ 127 ∷ fromℕ 133 ∷ fromℕ 8232 ∷ fromℕ 8233 ∷ toList "<>&") ≡
+    toList "\"\\u000b\\u001f" ++ (fromℕ 127 ∷ fromℕ 133 ∷ toList "\\u2028\\u2029<>&\"")
+  observed-json-color : forwardLine ansi jsonRows (Base.row (Base.key "x" ∷ []) (Base.leaf (Base.numeral "1"))) ≡
+    (fromℕ 27 ∷ toList "[35m[") ++ (fromℕ 27 ∷ toList "[0m") ++
+    (fromℕ 27 ∷ toList "[35m[") ++ (fromℕ 27 ∷ toList "[0m") ++
+    (fromℕ 27 ∷ toList "[33m\"x\"") ++ (fromℕ 27 ∷ toList "[0m") ++
+    (fromℕ 27 ∷ toList "[35m]") ++ (fromℕ 27 ∷ toList "[0m,") ++
+    (fromℕ 27 ∷ toList "[31m1") ++ (fromℕ 27 ∷ toList "[0m") ++
+    (fromℕ 27 ∷ toList "[35m]") ++ (fromℕ 27 ∷ toList "[0m\n")
+  observed-empty-color : reverseOutput ansi (Base.scalar (Base.text "")) ≡
+    fromList ((fromℕ 27 ∷ toList "[32m\"") ++ (fromℕ 27 ∷ toList "[0m") ++
+              (fromℕ 27 ∷ toList "[33m") ++ (fromℕ 27 ∷ toList "[0m") ++
+              (fromℕ 27 ∷ toList "[32m\"") ++ (fromℕ 27 ∷ toList "[0m\n"))

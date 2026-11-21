@@ -1,0 +1,58 @@
+module EqualityObligations where
+
+open import Agda.Builtin.Char using (primCharEquality)
+open import Agda.Builtin.String using (primStringEquality)
+open import Data.Bool using (Bool; true; false)
+open import Data.Char using (Char)
+open import Data.Empty using (⊥; ⊥-elim)
+open import Data.List using (List; []; _∷_; [_]; _++_)
+open import Data.String using (String)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans)
+
+data Result : Set where
+  accepted rejected : Result
+
+disjoint : accepted ≡ rejected → ⊥
+disjoint ()
+
+nonempty : (a : Result) → (xs : List Result) → (xs ++ [ a ]) ≡ [] → ⊥
+nonempty a [] ()
+nonempty a (x ∷ xs) ()
+
+mustHold : (b : Bool) → (b ≡ false → ⊥) → b ≡ true
+mustHold true impossible = refl
+mustHold false impossible = ⊥-elim (impossible refl)
+
+literalNeedsReflexivity :
+  (c : Char) →
+  (empty matched : Result) →
+  empty ≡ accepted →
+  matched ≡ empty →
+  (primCharEquality c c ≡ false → matched ≡ rejected) →
+  primCharEquality c c ≡ true
+literalNeedsReflexivity c empty matched complete match mismatch =
+  mustHold (primCharEquality c c)
+    (λ no → disjoint (trans (sym (trans match complete)) (mismatch no)))
+
+fieldsNeedReflexivity :
+  (k : String) →
+  (earlier current : List Result) →
+  (v : Result) →
+  earlier ≡ [] →
+  current ≡ (earlier ++ [ v ]) →
+  (primStringEquality k k ≡ false → current ≡ earlier) →
+  primStringEquality k k ≡ true
+fieldsNeedReflexivity k earlier current v empty push miss =
+  mustHold (primStringEquality k k)
+    (λ no → nonempty v earlier (trans (sym push) (trans (miss no) empty)))
+
+-- Specialize the suffix laws to a one-character word and input.
+literalLawRefl :
+  (parse : List Char → List Char → Result) →
+  parse [] [] ≡ accepted →
+  ((c : Char) → parse [ c ] [ c ] ≡ parse [] []) →
+  ((c : Char) → primCharEquality c c ≡ false → parse [ c ] [ c ] ≡ rejected) →
+  (c : Char) → primCharEquality c c ≡ true
+literalLawRefl parse finish same different c =
+  literalNeedsReflexivity c (parse [] []) (parse [ c ] [ c ])
+    finish (same c) (different c)

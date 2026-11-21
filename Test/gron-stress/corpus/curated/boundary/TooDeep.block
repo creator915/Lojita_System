@@ -1,0 +1,3 @@
+module Gen.T2.A.B.C.D where
+open import Data.Bool using (Bool; true)
+postulate flag : Bool
