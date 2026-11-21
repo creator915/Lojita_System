@@ -150,29 +150,36 @@ findKeep bs q = go (keeps bs)
 keepAliases : Bindings → List Code
 keepAliases bs = concatMap (λ { (q , h) → slotAliases q h }) (keeps bs)
 
+findCode : QName → List Code → Maybe Code
+findCode q [] = nothing
+findCode q (c ∷ rest) = if modName c ==ᴺ q then just c else findCode q rest
+
 -- A retained implementation gets no planning turn. Check any new vertical
 -- obligations on that implementation and its retained descendants here.
 retainedLift : List Code → Code → L.LiftSpec → List L.LiftProblem
-retainedLift cs target (L.liftSpecTree base upper entries squares) with findCode base cs
-  where
-    findCode : QName → List Code → Maybe Code
-    findCode q [] = nothing
-    findCode q (c ∷ rest) = if modName c ==ᴺ q then just c else findCode q rest
+retainedLift cs target l@(L.liftSpecTree base _ entries _) with findCode base cs
 ... | nothing = [ L.missingBaseUnit base ]
-... | just b = L.checkLift b target [] (L.liftSpecTree base upper entries squares) ++ nested entries
+... | just b = L.checkLift b target [] l ++ nested entries
   where
+    inspect : L.LiftSpec → List L.LiftProblem
+    inspect s with findCode (L.upperMod s) cs
+    ... | nothing = [ L.missingChildImport (L.upperMod s) ]
+    ... | just c = retainedLift cs c s
+
+    subs : List L.LiftSpec → List L.LiftProblem
+    subs [] = []
+    subs (s ∷ ss) = inspect s ++ subs ss
+
     nested : List L.ChildLift → List L.LiftProblem
     nested [] = []
     nested (L.mkChildLift _ _ nothing ∷ rest) = nested rest
-    nested (L.mkChildLift _ q (just s) ∷ rest) with filterᵇ (λ c → modName c ==ᴺ q) cs
-    ... | [] = L.missingChildImport q ∷ nested rest
-    ... | c ∷ _ = retainedLift cs c s ++ nested rest
+    nested (L.mkChildLift _ _ (just s) ∷ rest) = inspect s ++ nested rest
+    nested (L.moveChildLifts _ _ ss ∷ rest) = subs ss ++ nested rest
 
 checkKeptLifts : List Code → Bindings → L.LiftSpec → List L.LiftProblem
-checkKeptLifts cs bs l = concatMap inspect (L.childLifts l)
+checkKeptLifts cs bs l = concatMap inspect (concatMap L.subLiftsOf (L.childLifts l))
   where
-    inspect : L.ChildLift → List L.LiftProblem
-    inspect (L.mkChildLift _ q (just s)) with findKeep bs q
+    inspect : L.LiftSpec → List L.LiftProblem
+    inspect s with findKeep bs (L.upperMod s)
     ... | nothing = []
-    ... | just h = retainedLift (exported h ++ cs) (implementationAt q h) s
-    inspect _ = []
+    ... | just h = retainedLift (exported h ++ cs) (implementationAt (L.upperMod s) h) s

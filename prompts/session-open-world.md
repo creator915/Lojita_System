@@ -25,6 +25,10 @@ T0 以前可用的是选定的工具 `SessionΨ`、标准库和内置 `--safe` �
 
 若 `drive-tree` 返回 `independent <treeName>`，阅读孩子从 `specSrc` 推出 `Context.Taboo.SafeTaboo` 的证明。保留业务语义和测试，把见证指出的原语或外延等式替换成可反射的运算或逐点定律，再提交修订的 `specSrc`。
 
+若收到 `lift-obstruction <treeName>`，阅读证明和 `CULPRIT_BASE_UNITS`。先驱动新底树 T₀′ 修复这些单元，用 `keep` 复用不受影响的 T₀ 子包。再以 T₀′ 为 `baseTrees` 驱动新上层树 T₁′，将 `maybeTransportSrc` 的源模块设为受阻的旧上层根，对 `PRESERVED_CHILDREN` 中每个可复用的孩子声明 `(keep "<OldChild>" "<NewChild>")`。系统从部分封存提交挂回这些已验证子树，每个孩子需要 0 轮 AI 调用。相同底树闭包、规约和 LiftSpec 会直接触发重试护栏。
+
+函子化 `LiftSpec` 的端点可写为 `(("b1" "b2") ("u1" "u2") "sq")`，交换图须引用列出的全部单元。child-map 可重复同一源子包以拆分，也可用 `(move ("B1" "B2") ("U1" "U2") (sub...))` 合并或重组子包，最后一个表包含嵌套的 lift 描述符，可以为空。
+
 ## 从真实观测开始（自主选用 `procExec`、`pty`、`fsbox`、`netbox`、`gitbox` 与 `FuzzGen`）
 
 `run-script`（以及回合内的 `run_agda_script` 工具）在一次性目录中获得 `SessionEnv`。`SessionΨ = ProcSpec ∷ ptySpec ∷ fsSpec ∷ netSpec ∷ gitSpec ∷ []`：`"ref"` 指向配置的参考程序，构建后的 `"cand"` 指向静态链接的 `workspace/bin/candidate`。**请根据目标二进制所属领域自主组合全套开放世界工具，切勿把探针局限于单一 `procExec`**：先探测目标参数、帮助文档与 I/O 边界，按需选用 `"procExec"`（批处理参数、标准流与退出码）、`"pty"`（`isatty` ANSI 着色、终端尺寸、按键与定时器时序）、`"fsbox"`（文件读写变更、目录报错及 `fixSymlink "ungron" "ref"` 等 `argv[0]` 符号链接分发）、`"netbox"`（本地回环 HTTP/TCP/UDP 桩、`httpDelayedStubMode` 慢响应超时与 `capturedReqs` 请求抓包）以及 `"gitbox"`（仓库工作区、暂存区、提交与分支演进）。当参考目标位于 cleanroom Docker 镜像时，`"ref"` 与 `"cand"` **均在同一目标 cleanroom 容器内对称运行**（`"cand"` 只读挂载于容器内 `/codetransport-cand`），并在容器内同一回环网络命名空间 `127.0.0.1:{{PORT}}` 上自动替换 `{{PORT}}`、`{{ADDR}}`、`{{URL}}`。

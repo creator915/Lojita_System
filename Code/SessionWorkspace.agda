@@ -16,6 +16,7 @@ open import OwnershipIO.MetaFFI using (replaceDuring)
 open import OwnershipIO.FFI
 open import Code
 import Store.CAS as CAS
+import Meta.Sandbox as Sandbox
 open import Store.Verify using (verifyCommitDAG)
 import Code.NodeTransport as NT
 open import Code.TreeSnapshot using (freezeHome)
@@ -132,6 +133,34 @@ uniqueCodes = nubᵇ (λ a b → modName a ==ᴺ modName b)
 treeRef : String → String
 treeRef name = "trees/" ++ˢ name
 
+partialTreeRef : String → String
+partialTreeRef name = "partial/" ++ˢ name
+
+record PartialSealed : Set where
+  constructor partialSealed
+  field
+    sealed : SealedTree
+    ancestorCodes : List Code
+    surfaces : List (Code × String)
+
+-- A partial commit supplies child implementations. Its shell is only the
+-- ownership container for those children, including in a descendant's DAG.
+preservedCodes : NT.Frozen → List Code
+preservedCodes snap = concatMap (λ { (_ , kid) → NT.exported kid }) (NT.children snap)
+
+-- Group receipts by immutable partial tip (or "empty" for a childless
+-- obstruction). Moving a named ref loses neither history nor parent kind.
+obstructionDir : String → String → String
+obstructionDir ws group = ws ++ˢ "/obstructions/" ++ˢ group
+
+previousObstruction : String → String → IO.IO Bool
+previousObstruction ws stamp = sha256 stamp >>= λ digest → entries (ws ++ˢ "/obstructions") >>= find digest
+  where
+    find : String → List String → IO.IO Bool
+    find digest [] = IO.return false
+    find digest (g ∷ gs) = readIfExists (obstructionDir ws g ++ˢ "/" ++ˢ digest ++ˢ ".sexp") >>= λ saved →
+      if saved ==ˢ stamp then IO.return true else find digest gs
+
 -- Workspaces produced before V3 have only current/verdict/bases.sexp. Import
 -- those successful generations once. An existing broken ref is always an error.
 resolveTips : String → ℕ → List String → IO.IO (Maybe (List CAS.Hash))
@@ -176,6 +205,40 @@ private
       parent e k = CAS.getCommit dir k CAS.>>=? λ c →
         if CAS.epoch c ==ˢ e then IO.return (just []) else read k
 
+  verifiedReader : String → IO.IO (CAS.Reader (List SealedTree))
+  verifiedReader dir = do
+    readHome ← CAS.newCommitHomeReader dir
+    read ← CAS.newDAGReader dir CAS.commitK (ancestry readHome dir)
+    IO.return λ key → verifyCommitDAG dir key >>= λ valid → if valid then read key else IO.return nothing
+
+  closureEntries : String → List SealedTree → IO.IO (List SealedTree × List Code)
+  closureEntries ws [] = IO.return ([] , [])
+  closureEntries ws (t ∷ ts) = entries (obstructionDir ws (tip t)) >>= λ receipts →
+    closureEntries ws ts >>= λ { (complete , cs) → IO.return (if nullᵇ receipts
+      then (t ∷ complete , NT.exported (snapshot t) ++ cs)
+      else (complete , preservedCodes (snapshot t) ++ cs)) }
+
+loadPartialBases : String → IO.IO (List PartialSealed)
+loadPartialBases ws = verifiedReader dir >>= λ read → entries (dir ++ˢ "/refs/partial") >>= collect read
+  where
+    dir = ws ++ˢ "/store"
+    safe : Code → Bool
+    safe c = nullᵇ (closedImplOK [] c) ∧ Sandbox.checkObjectModuleSafe false c
+
+    load : CAS.Reader (List SealedTree) → String → IO.IO (Maybe PartialSealed)
+    load read name = CAS.readRef dir (partialTreeRef name) CAS.>>=? λ key → read key CAS.>>=? λ where
+      [] → IO.return nothing
+      (t ∷ parents) → CAS.commitSurfaces dir key CAS.>>=? λ views →
+        closureEntries ws parents >>= λ { (_ , cs) →
+          let modules = NT.exported (snapshot t) ++ cs
+          in IO.return (Data.Maybe.when ((treeEpoch t ==ˢ name) ∧ not (nullᵇ (NT.children (snapshot t)))
+                ∧ allᵇ safe modules ∧ consistentCodes modules) (partialSealed t (uniqueCodes cs) views)) }
+
+    collect : CAS.Reader (List SealedTree) → List String → IO.IO (List PartialSealed)
+    collect read [] = IO.return []
+    collect read (n ∷ ns) = (if safeTree n then load read n else IO.return nothing) >>= λ entry →
+      collect read ns >>= λ rest → IO.return (maybe′ (_∷ rest) rest entry)
+
 record BaseClosure : Set where
   constructor closure
   field
@@ -187,16 +250,11 @@ open BaseClosure public
 loadClosure : String → List String → IO.IO (Maybe BaseClosure)
 loadClosure ws names = entries (ws ++ˢ "/trees") >>= λ trees →
   resolveTips ws (suc (length trees)) names CAS.>>=? λ ps →
-  CAS.newCommitHomeReader dir >>= λ readHome →
-  CAS.newDAGReader dir CAS.commitK (ancestry readHome dir) >>= λ read →
-  readMany (verified read) ps CAS.>>=? λ all →
-    let bs = nubᵇ (λ a b → tip a ==ˢ tip b) all
-        cs = concatMap (λ b → NT.exported (snapshot b)) bs
-    in IO.return (Data.Maybe.when (consistentCodes cs) (closure ps bs (uniqueCodes cs)))
+  verifiedReader dir >>= λ read → readMany read ps CAS.>>=? λ all →
+  closureEntries ws (nubᵇ (λ a b → tip a ==ˢ tip b) all) >>= λ { (bs , cs) →
+    IO.return (Data.Maybe.when (consistentCodes cs) (closure ps bs (uniqueCodes cs))) }
   where
     dir = ws ++ˢ "/store"
-    verified : CAS.Reader (List SealedTree) → CAS.Reader (List SealedTree)
-    verified read key = verifyCommitDAG dir key >>= λ valid → if valid then read key else IO.return nothing
 
 loadBases : String → List String → IO.IO BaseResult
 loadBases ws bases = loadClosure ws bases >>= λ loaded →

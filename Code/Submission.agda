@@ -16,6 +16,7 @@ data Submission : Set where
   addMoves : List Proarrow → Maybe String → Submission
   refute : String → Submission
   independent : String → String → Submission
+  refuteLift : String → String → Submission
 
 private
   infixl 1 _>>=_
@@ -106,6 +107,10 @@ decodeSubmission (list (sym "submission" ∷ fs)) = if uniqueFields [] fs then k
     ... | nothing | just (str src ∷ []) = just src
     ... | _ | _ = nothing
 
+    witness : (String → String → Submission) → Maybe Submission
+    witness submit = if allowedFields ("kind" ∷ "why" ∷ "refute" ∷ "witness" ∷ []) fs then
+      (reason >>= λ why → witnessSource >>= λ src → just (submit why src)) else nothing
+
     kind : Maybe (List SExpr) → Maybe Submission
     kind (just (sym "plan" ∷ [])) =
       if allowedFields ("kind" ∷ "why" ∷ "main" ∷ "subspecs" ∷ "moves" ∷ []) fs then
@@ -123,9 +128,8 @@ decodeSubmission (list (sym "submission" ∷ fs)) = if uniqueFields [] fs then k
         ... | _ = nothing
     kind (just (sym "contradiction" ∷ [])) =
       if allowedFields ("kind" ∷ "refute" ∷ []) fs then (textField "refute" fs >>= λ src → just (refute src)) else nothing
-    kind (just (sym "independent" ∷ [])) =
-      if allowedFields ("kind" ∷ "why" ∷ "refute" ∷ "witness" ∷ []) fs then
-        (reason >>= λ why → witnessSource >>= λ src → just (independent why src)) else nothing
+    kind (just (sym "independent" ∷ [])) = witness independent
+    kind (just (sym "refute-lift" ∷ [])) = witness refuteLift
     kind _ = nothing
 decodeSubmission _ = nothing
 
@@ -180,7 +184,7 @@ explainSubmissionFailure s with s ==ˢ ""
       "submission: malformed envelope fields or moves (note: found quoted string " ++ˢ intersperse ", " q
       ++ˢ " — write bare @name WITHOUT double quotes to reference a draft/fence block!)"
     ... | [] | [] =
-      "submission: envelope parsed as S-expression, but failed schema check (expected `(submission (kind plan|add-moves|contradiction|independent) ...)` with unique valid fields: `plan` requires `why`, `main`, `moves`, optional `subspecs`; `independent` accepts (submission (kind independent) (why \"...\") (refute @unprovable)); `moves` entries must be `(move SRC TGT)` where SRC/TGT are `bot`, `flags`, `(unit \"...\")`, or `(ext \"...\")`)"
+      "submission: envelope parsed as S-expression, but failed schema check (expected `(submission (kind plan|add-moves|contradiction|independent|refute-lift) ...)` with unique valid fields: `plan` requires `why`, `main`, `moves`, optional `subspecs`; `independent` and `refute-lift` accept optional `why` and exactly one of (refute @proof) or (witness @proof); `moves` entries must be `(move SRC TGT)` where SRC/TGT are `bot`, `flags`, `(unit \"...\")`, or `(ext \"...\")`)"
     inspectEnv : Maybe SExpr → String
     inspectEnv nothing =
       "submission: top-level text outside ```agda fences is not a single valid S-expression (output ONLY the `(submission ...)` S-expression without narrative prose!). Prefix seen:\n"

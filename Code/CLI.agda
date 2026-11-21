@@ -22,7 +22,7 @@ open import Code.Lift
 open import Code.Parse using (parseLift)
 open import Code.Render using (render)
 open import Code.Codecs
-open import Code.Prompt using (showImplProblem)
+open import Code.Prompt using (showImplProblem; liftObstructionSummary)
 open import Code.AI using (Backend; CodexCLIBackend; ScriptedBackend; defaultCodex; nodeCodex; sessionCodex)
 open import Code.SessionRunner using (runNode; runScript; runSessionScript; runAutonomousSession; sessionConfig)
 open import Code.SessionProtocol using (parseRefSpec)
@@ -63,6 +63,7 @@ runTaskIn repo backend specFile state bases lifting with Data.List.concatMap (λ
         replaceDuring (stage ++ˢ "/refs/current") (cas ++ˢ "/refs/current") (storeHome state result))
         IO.>>= λ _ → F.putStrLn "just ok"
     persist (contradiction c) result = storeHome state result IO.>>= λ _ → F.putStrLn ("contradiction:\n" ++ˢ render c)
+    persist (liftObstruction why culprits c) result = F.putStrLn (liftObstructionSummary why culprits ++ˢ "\n" ++ˢ render c)
 
     persist (independent why c) result = storeHome state result IO.>>= λ _ →
       F.putStrLn ("independent" ++ˢ (if why ==ˢ "" then "" else " — " ++ˢ why) ++ˢ ":\n" ++ˢ render c)

@@ -360,20 +360,38 @@ decodeLift (list (sym "lift" ∷ b ∷ u ∷ list cs ∷ list es ∷ [])) =
   decodeQ b >>= λ b′ → decodeQ u >>= λ u′ → children cs >>= λ cs′ → ends es >>= λ es′ →
   just (liftSpecTree b′ u′ cs′ es′)
   where
+    names : List SExpr → Maybe (List QName)
+    names [] = just []
+    names (x ∷ xs) = decodeQ x >>= λ q → names xs >>= λ qs → just (q ∷ qs)
+
+    nested : List SExpr → Maybe (List LiftSpec)
+    nested [] = just []
+    nested (s ∷ ss) = decodeLift s >>= λ sub → nested ss >>= λ subs → just (sub ∷ subs)
+
     children : List SExpr → Maybe (List ChildLift)
     children [] = just []
     children (list (b ∷ u ∷ []) ∷ cs) = decodeQ b >>= λ b′ → decodeQ u >>= λ u′ → children cs >>= λ rs → just (mkChildLift b′ u′ nothing ∷ rs)
     children (list (b ∷ u ∷ sub ∷ []) ∷ cs) = decodeQ b >>= λ b′ → decodeQ u >>= λ u′ → decodeLift sub >>= λ sub′ →
       children cs >>= λ rs → just (mkChildLift b′ u′ (just sub′) ∷ rs)
+    children (list (sym "move" ∷ list bs ∷ list us ∷ list subs ∷ []) ∷ cs) =
+      names bs >>= λ bs′ → names us >>= λ us′ → nested subs >>= λ subs′ →
+      children cs >>= λ rest → just (moveChildLifts bs′ us′ subs′ ∷ rest)
     children _ = nothing
-    refs : List SExpr → Maybe (List QName)
-    refs [] = just []
-    refs (r ∷ rs) = decodeQ r >>= λ r′ → refs rs >>= λ rs′ → just (r′ ∷ rs′)
+
+    -- A scoped QName is itself a list headed by the symbol q.
+    side : SExpr → Maybe (List QName)
+    side x@(list (sym "q" ∷ _)) = decodeQ x >>= λ q → just (q ∷ [])
+    side (list xs) = names xs
+    side x = decodeQ x >>= λ q → just (q ∷ [])
+
+    endpoint : SExpr → SExpr → SExpr → List SExpr → Maybe EndpointLift
+    endpoint b u s rs = side b >>= λ bs → side u >>= λ us → decodeQ s >>= λ sq →
+      names rs >>= λ qs → just (polyEndpointLiftRefs bs us sq qs)
+
     ends : List SExpr → Maybe (List EndpointLift)
     ends [] = just []
-    ends (list (b ∷ u ∷ s ∷ []) ∷ es) = decodeQ b >>= λ b′ → decodeQ u >>= λ u′ → decodeQ s >>= λ s′ → ends es >>= λ rs → just (endpointLift b′ u′ s′ ∷ rs)
-    ends (list (b ∷ u ∷ s ∷ list rs ∷ []) ∷ es) = decodeQ b >>= λ b′ → decodeQ u >>= λ u′ → decodeQ s >>= λ s′ →
-      refs rs >>= λ rs′ → ends es >>= λ es′ → just (endpointLiftRefs b′ u′ s′ rs′ ∷ es′)
+    ends (list (b ∷ u ∷ s ∷ []) ∷ es) = endpoint b u s [] >>= λ e → ends es >>= λ rest → just (e ∷ rest)
+    ends (list (b ∷ u ∷ s ∷ list rs ∷ []) ∷ es) = endpoint b u s rs >>= λ e → ends es >>= λ rest → just (e ∷ rest)
     ends _ = nothing
 decodeLift _ = nothing
 

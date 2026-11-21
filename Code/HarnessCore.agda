@@ -134,7 +134,7 @@ childAncestors parent q with allowedAncestors parent
   where
     lifted : Maybe (Code × LiftSpec) → List QName
     lifted nothing = []
-    lifted (just (_ , l)) = map baseChild (filterᵇ (λ e → upperChild e ==ᴺ q) (childLifts l))
+    lifted (just (_ , l)) = concatMap baseChildrenOf (filterᵇ (λ e → elemᵇ _==ᴺ_ q (upperChildrenOf e)) (childLifts l))
 
 lookupRawSubspec : List (Name × String) → Name → String
 lookupRawSubspec [] _ = ""
@@ -156,16 +156,16 @@ childTaskWithRaw rawSubs parent c p n = record (nodeTask (restrict c p childQ) (
     ... | nothing = nothing
     ... | just (base , l) = findMap (childLifts l)
       where
-        childSpec : ChildLift → LiftSpec
-        childSpec entry with subLift entry
-        ... | just sub = sub
-        ... | nothing = liftSpec (baseChild entry) childQ [] []
-        findBase : ChildLift → List Code → Maybe (Code × LiftSpec)
-        findBase entry [] = nothing
-        findBase entry (b ∷ bs) = if modName b ==ᴺ baseChild entry then just (b , childSpec entry) else findBase entry bs
+        forTarget : ChildLift → Maybe (Code × LiftSpec)
+        forTarget entry with filterᵇ (λ s → upperMod s ==ᴺ childQ) (childSpecs entry)
+        ... | [] = nothing
+        ... | s ∷ _ with NT.findCode (baseMod s) bases
+        ...   | nothing = nothing
+        ...   | just b = just (b , s)
+
         findMap : List ChildLift → Maybe (Code × LiftSpec)
         findMap [] = nothing
-        findMap (entry ∷ ms) = if upperChild entry ==ᴺ childQ then findBase entry bases else findMap ms
+        findMap (entry ∷ ms) = if elemᵇ _==ᴺ_ childQ (upperChildrenOf entry) then forTarget entry else findMap ms
 
 childTask : NodeTask → Code → Plan → Name → NodeTask
 childTask = childTaskWithRaw []

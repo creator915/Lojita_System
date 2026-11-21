@@ -2,11 +2,11 @@
 module Code.HarnessEngineMain where
 
 open import Data.Bool using (Bool; true; false; _∧_; not; if_then_else_)
-open import Data.List using (List; []; _∷_; length; map)
+open import Data.List using (List; []; _∷_; length; map; reverse)
 open import Data.Maybe using (Maybe; just; nothing; maybe′)
 open import Data.Nat using (_≡ᵇ_)
 open import Data.Product using (_,_)
-open import Data.String using (String; unlines) renaming (_++_ to _++ˢ_)
+open import Data.String using (String; intersperse; unlines) renaming (_++_ to _++ˢ_)
 import Data.Unit as Unit
 open import Data.Unit.Polymorphic using (⊤; tt)
 import IO.Primitive as Prim
@@ -20,18 +20,18 @@ import Context.Terminal as Term
 import Context.Filter as Filter
 import Backend.Mode as Mode
 open import Code
-open import Code.SExpr using (parseSExpr; showSExpr; str)
+open import Code.SExpr using (SExpr; parseSExpr; showSExpr; list; sym; str)
 open import Code.Shape using (HomeShape; node)
 open import Code.Transport
-open import Code.Lift using (liftSpec)
+open import Code.Lift using (liftSpec; LiftSpec; endpoints; baseUnits; upperUnits; validLiftRefutation; extractCulpritBaseUnits)
 open import Code.Protocol
 open import Code.Encode using (encodeCanonical)
-open import Code.Parse using (parse; parsePlan; parseLift; decodeQ)
+open import Code.Parse using (parse; parsePlan; parseLift; decodeQ; decodeCode)
 open import Code.Render using (render)
 import Code.Namespace as NS
 import Code.PolyTransport as PT
 import Code.NodeTransport as NT
-open import Code.Submission using (parseSubmission)
+open import Code.Submission using (Submission; parseSubmission; refuteLift)
 open import Code.SessionProtocol using (parseSessionAction)
 open import Code.Prompt using (nodePrompt; showRefuteProblem; showImplProblem)
 open import Code.HarnessCore
@@ -70,6 +70,21 @@ private
     (λ c → maybe′ (checkWitnesses allowed c) "REFUTE_GATE_ERROR\ninvalid spec name" (decodeQ (str specName)))
     "REFUTE_GATE_ERROR\ninvalid candidate" (parse txt)
 
+  -- check-lift-refute SPEC FILE [FLAG ...] reads (bundle BASE ... CANDIDATE).
+  checkLiftBundle : QName → List String → SExpr → String
+  checkLiftBundle spec allowed (list (sym "bundle" ∷ modules)) = collect [] modules
+    where
+      verify : List Code → Code → String
+      verify bases c with validLiftRefutation spec bases allowed c
+      ... | [] = "OK:liftObstruction\nCULPRIT_BASE_UNITS: " ++ˢ intersperse " " (map NT.moduleKey (extractCulpritBaseUnits bases c))
+      ... | ps@(_ ∷ _) = unlines ("REFUTE_GATE_ERROR" ∷ map showRefuteProblem ps)
+
+      collect : List Code → List SExpr → String
+      collect acc [] = "REFUTE_GATE_ERROR\nmissing candidate"
+      collect acc (x ∷ []) = maybe′ (verify (reverse acc)) "REFUTE_GATE_ERROR\ninvalid candidate" (decodeCode x)
+      collect acc (x ∷ y ∷ ys) = maybe′ (λ b → collect (b ∷ acc) (y ∷ ys)) "REFUTE_GATE_ERROR\ninvalid base" (decodeCode x)
+  checkLiftBundle _ _ _ = "REFUTE_GATE_ERROR\nexpected (bundle BASE ... CANDIDATE)"
+
   checkObject : String → List String → Code → String
   checkObject role allowed c with if role ==ˢ "closed" then closedImplOK allowed c else specImplOK allowed c
   ... | p ∷ ps = unlines ("OBJECT_GATE_ERROR" ∷ map showImplProblem (p ∷ ps))
@@ -93,7 +108,9 @@ private
                        (parseSessionAction "(session-action (kind finish) (summary \"done\"))")
         subOK      = maybe′ (λ _ → true) false
                        (parseSubmission "(submission (kind contradiction) (refute \"module R where\"))")
+        refuteOK   = parsedRefute (parseSubmission "(submission (kind refute-lift) (why \"unliftable\") (refute \"module R where\"))")
         liftOK     = maybe′ (λ _ → true) false (parseLift "(lift \"A\" \"B\" () ())")
+        multiOK    = maybe′ parsedMulti false (parseLift "(lift \"A\" \"B\" () (((\"A.x\" \"A.y\") (\"B.x\" \"B.y\") \"B.square\")))")
         polyOK     = maybe′ (λ _ → true) false (PT.parsePolyTransport "(poly-transport \"A\" \"B\" () ())")
         bpOK       = BP.project (BP.keepPort Bool) true
         cptOK      = let _ = CPT.graphPort not in true
@@ -104,8 +121,15 @@ private
         nsOK       = NS.validSegment "Engine" ∧ not (NS.validSegment "module")
         ntOK       = length (NT.exported (NT.frozen emptyC [] [] [])) ≡ᵇ 1
         shOK       = caseShape (node [])
-    in rtOK ∧ modeOK ∧ termOK ∧ filtOK ∧ actOK ∧ subOK ∧ liftOK ∧ polyOK ∧ bpOK ∧ cptOK ∧ promptOK ∧ gatesOK ∧ nsOK ∧ ntOK ∧ shOK
+    in rtOK ∧ modeOK ∧ termOK ∧ filtOK ∧ actOK ∧ subOK ∧ refuteOK ∧ liftOK ∧ multiOK ∧ polyOK ∧ bpOK ∧ cptOK ∧ promptOK ∧ gatesOK ∧ nsOK ∧ ntOK ∧ shOK
     where
+      parsedRefute : Maybe Submission → Bool
+      parsedRefute (just (refuteLift why src)) = (why ==ˢ "unliftable") ∧ (src ==ˢ "module R where")
+      parsedRefute _ = false
+      parsedMulti : LiftSpec → Bool
+      parsedMulti l with endpoints l
+      ... | e ∷ [] = (length (baseUnits e) ≡ᵇ 2) ∧ (length (upperUnits e) ≡ᵇ 2)
+      ... | _ = false
       caseShape : HomeShape → Bool
       caseShape (node _) = true
 
@@ -122,6 +146,9 @@ private
     readFile f >>= λ sp → putStrLn (refuteStubText sp)
   runArgs ("check-refute" ∷ spec ∷ f ∷ allowed) =
     readFile f >>= λ c → putStrLn (checkRefuteText spec allowed c)
+  runArgs ("check-lift-refute" ∷ spec ∷ f ∷ allowed) =
+    readFile f >>= λ txt → putStrLn (maybe′ (checkLiftBundle (NT.moduleQName spec) allowed)
+      "REFUTE_GATE_ERROR\ninvalid bundle" (parseSExpr txt))
   runArgs ("check-object" ∷ role ∷ f ∷ allowed) =
     readFile f >>= λ c → putStrLn (checkObjectText role allowed c)
   runArgs ("check-plan" ∷ f ∷ g ∷ []) =

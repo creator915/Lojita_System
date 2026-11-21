@@ -223,13 +223,24 @@ open import Code.Shape
 encodeLift : LiftSpec → SExpr
 encodeLift (liftSpecTree b u cs es) = list (sym "lift" ∷ encQ b ∷ encQ u ∷ list (children cs) ∷ list (map endpoint es) ∷ [])
   where
+    nested : List LiftSpec → List SExpr
+    nested [] = []
+    nested (s ∷ ss) = encodeLift s ∷ nested ss
+
     children : List ChildLift → List SExpr
     children [] = []
     children (mkChildLift b u nothing ∷ cs) = list (encQ b ∷ encQ u ∷ []) ∷ children cs
     children (mkChildLift b u (just sub) ∷ cs) = list (encQ b ∷ encQ u ∷ encodeLift sub ∷ []) ∷ children cs
+    children (moveChildLifts bs us subs ∷ cs) =
+      list (sym "move" ∷ list (map encQ bs) ∷ list (map encQ us) ∷ list (nested subs) ∷ []) ∷ children cs
+
+    proof : QName → List QName → List SExpr
+    proof s [] = encQ s ∷ []
+    proof s rs = encQ s ∷ list (map encQ rs) ∷ []
+
     endpoint : EndpointLift → SExpr
-    endpoint (endpointLiftRefs b u s []) = list (encQ b ∷ encQ u ∷ encQ s ∷ [])
-    endpoint (endpointLiftRefs b u s rs) = list (encQ b ∷ encQ u ∷ encQ s ∷ list (map encQ rs) ∷ [])
+    endpoint (polyEndpointLiftRefs (b ∷ []) (u ∷ []) s rs) = list (encQ b ∷ encQ u ∷ proof s rs)
+    endpoint (polyEndpointLiftRefs bs us s rs) = list (list (map encQ bs) ∷ list (map encQ us) ∷ proof s rs)
 
 encodeShape : HomeShape → SExpr
 encodeShape (node kids) = list (sym "node" ∷ go kids)

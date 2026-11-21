@@ -549,15 +549,49 @@ private def preloadSpec (cfg : MCPConfig) : IO Unit := do
     IO.FS.withTempDir fun dir => do
       discard <| specGateInput cfg dir.toString ancestors spec
 
+private def onlyAncestorImports (report : String) (bases : List CodeMod) : Bool :=
+  match report.splitOn "\n" with
+  | "REFUTE_GATE_ERROR" :: problems@(_ :: _) => problems.all fun line =>
+      match parseSExprText line with
+      | some (.list [.sym "unauthorizedImport", name]) =>
+          (decQ name).any fun q => bases.any fun b => b.modName.full.isPrefixOf q.full
+      | _ => false
+  | _ => false
+
+private def declaresBottom (cand : CodeMod) : Bool :=
+  cand.params.isEmpty && cand.decls.any fun
+    | .sig m n (.def_ q) => !m.isPrivate && n != "_" &&
+        [["Data", "Empty", "⊥"], ["Agda", "Builtin", "Empty", "⊥"]].contains q.full
+    | _ => false
+
+private def checkLiftWitness (cfg : MCPConfig) (workDir spec : String) (flags : List String)
+    (bases : List CodeMod) (cand : CodeMod) : IO (Except String (Option String)) := do
+  let bundle := SExpr.list (.sym "bundle" :: bases.map encodeCodeMod ++ [encodeCodeMod cand])
+  let file := s!"{workDir}/lift-refute.sexp"
+  IO.FS.writeFile file (renderTopSExpr bundle)
+  match ← runGateEngine cfg (#["check-lift-refute", spec, file] ++ flags.toArray) with
+  | .ok report =>
+      if (report.splitOn "\n").head? == some "OK:liftObstruction" then return .ok (some "refute-lift")
+      return .error report
+  | .error e => return .error e
+
 private def verifyDraftGates (cfg : MCPConfig) (workDir role : String) (flags : List String)
-    (cand : CodeMod) (refuteSpec ifaceFile : Option String) : IO (Except String (Option String)) := do
+    (cand : CodeMod) (refuteSpec ifaceFile : Option String) (ancestors : List CodeMod)
+    (explicitLift : Bool) : IO (Except String (Option String)) := do
+  if explicitLift then
+    let some spec := refuteSpec | return .error "REFUTE_GATE_ERROR\nmissing node SPECIFICATION"
+    return ← checkLiftWitness cfg workDir spec flags ancestors cand
   let file ← writeGateInput workDir "candidate" cand
   if let some specName := refuteSpec then
+    let hint := "\nExpose a closed, public proof of Data.Empty.⊥ or Context.Taboo.SafeTaboo; import the node SPECIFICATION for its assumptions."
     match ← runGateEngine cfg (#["check-refute", specName, file] ++ flags.toArray) with
     | .ok "OK:contradiction" => return .ok (some "contradiction")
     | .ok "OK:independent" => return .ok (some "independent")
-    | .ok e | .error e =>
-        return .error (e ++ "\nExpose a closed, public proof of Data.Empty.⊥ or Context.Taboo.SafeTaboo; import the node SPECIFICATION for its assumptions.")
+    | .ok e =>
+        if declaresBottom cand && onlyAncestorImports e ancestors then
+          return ← checkLiftWitness cfg workDir specName flags ancestors cand
+        return .error (e ++ hint)
+    | .error e => return .error (e ++ hint)
   let obj ← gateJson cfg (#["check-object-json", role, file] ++ flags.toArray)
   let (ok, errors) ← readGateReport cfg (fullDot cand.modName) obj
   if !ok then
@@ -570,7 +604,8 @@ private def verifyDraftGates (cfg : MCPConfig) (workDir role : String) (flags : 
   return .ok none
 
 private def checkStagedDraft (cfg : MCPConfig) (workDir mainPath modName role : String)
-    (deps flags : List String) (refuteSpec ifaceFile : Option String) : IO Json := do
+    (deps flags : List String) (refuteSpec ifaceFile : Option String)
+    (ancestorPaths : List String := []) (explicitLift : Bool := false) : IO Json := do
   let (depPoints, mainPoint) ← match ← dumpSurfaceBundle deps mainPath cfg.libDir s!"{workDir}/parse" cfg.dumpBin with
     | .ok bundle => pure bundle
     | .error e => return mkToolResult s!"SCOPE_GATE_ERROR:\n{e}" true
@@ -584,7 +619,8 @@ private def checkStagedDraft (cfg : MCPConfig) (workDir mainPath modName role : 
     return mkToolResult ((if closed then "CLOSED_IMPL_VIOLATION" else "SPEC_ENVELOPE_VIOLATION") ++ ":\n" ++ String.intercalate "\n" envErrs) true
   let laws := primitiveCertificates cm.modName.full cm.decls
   for law in laws do observe cfg modName law
-  let verdict ← match ← verifyDraftGates cfg workDir role flags cm refuteSpec ifaceFile with
+  let bases := depPoints.filterMap fun (u, c) => if ancestorPaths.contains u.path then some c else none
+  let verdict ← match ← verifyDraftGates cfg workDir role flags cm refuteSpec ifaceFile bases explicitLift with
     | .error e => return mkToolResult e true
     | .ok v => pure v
   let hint := if !closed && (primitiveHint cm.decls || !laws.isEmpty) then
@@ -642,17 +678,27 @@ private def checkAgdaNode (cfg : MCPConfig) (args : Json) (workDir : String) : I
     | .ok src => pure src
   let srcDir := s!"{workDir}/src"
   let allowPost := jsonBoolField args "allow_postulates" false
+  let explicitLift := jsonBoolField args "refute_lift" false || jsonStrField args "role" == some "refute-lift"
+  let witnessRequested := explicitLift || jsonBoolField args "refute_spec" false
   let (spec, flags) ← readNodePrompt cfg
+  if witnessRequested && (allowPost || spec.isNone) then
+    return mkToolResult "REFUTE_GATE_ERROR\na witness requires the node SPECIFICATION and allow_postulates=false" true
   let hdr ← match ← sourceHeader cfg "<main>" mainSrc with
     | .error e => return mkToolResult s!"SYNTAX_ERROR: {e}" true
     | .ok u => pure u
   if let some err ← checkBoundary cfg false hdr.modName hdr.imports then return mkToolResult err true
-  let refuteSpec := spec.filter fun s => !allowPost && hdr.modName != s.name && hdr.imports.contains s.name
+  let refuteSpec := spec.filter fun s => !allowPost && (witnessRequested || (hdr.modName != s.name && hdr.imports.contains s.name))
+  if refuteSpec.any (fun s => s.name == hdr.modName) then
+    return mkToolResult "REFUTE_GATE_ERROR\nwitness module shadows SPECIFICATION" true
   let mut deps : List String := []
   for af in ← listAgdaFilesBelow s!"{cfg.ctxDir}/ancestors" do
     match ← writeModuleToWork cfg srcDir (← IO.FS.readFile af) with
     | .error e => return mkToolResult e true
-    | .ok (_, _, fp) => deps := deps ++ [fp]
+    | .ok (name, _, fp) =>
+        if refuteSpec.isSome && name == hdr.modName then
+          return mkToolResult s!"REFUTE_GATE_ERROR\nwitness module shadows ancestor {name}" true
+        deps := deps ++ [fp]
+  let ancestorPaths := deps
   let mut ifaceFile : Option String := none
   if let some s := spec then
     if refuteSpec.isSome || (!allowPost && hdr.modName == s.name) then
@@ -687,7 +733,7 @@ private def checkAgdaNode (cfg : MCPConfig) (args : Json) (workDir : String) : I
   | .ok (name, _, path) =>
       let role := if allowPost then "subspec" else "closed"
       checkStagedDraft cfg workDir path name role ((deps.filter (· != path)).eraseDups)
-        flags (refuteSpec.map (·.name)) ifaceFile
+        flags (refuteSpec.map (·.name)) ifaceFile ancestorPaths explicitLift
 
 private def handleCheckAgdaNode (cfg : MCPConfig) (args : Json) : IO Json := do
   let workDir := s!"{cfg.ctxDir}/check_{← IO.monoNanosNow}"
@@ -1073,9 +1119,12 @@ private def toolsForConfig (cfg : MCPConfig) : Array Json :=
       ]
     else
       [ mkToolSchema "check_agda"
-          "Typecheck a draft and run the closed-world gates. Import your SPECIFICATION in a contradiction or independence witness to stage its authoritative refutation stub automatically."
+          "Typecheck a draft and run the closed-world gates. Import your SPECIFICATION to check a contradiction, independence, or lift-obstruction witness against its authoritative stub."
           [ ("main_block", strProp "Draft block name (e.g. 'main') or inline Agda module")
           , ("dep_blocks", strArrProp "Optional list of subspec/dependency draft block names")
+          , ("refute_spec", boolProp "Check a witness against the node SPECIFICATION and its staged ancestors")
+          , ("refute_lift", boolProp "Require a closed public proof of ⊥ that references a staged ancestor")
+          , ("role", strProp "Set to refute-lift to require the lift-obstruction gate")
           , ("allow_postulates", boolProp "Set true only when checking a child subspec; leave false for closed implementations/refutations") ]
           ["main_block"]
       , mkToolSchema "check_plan"

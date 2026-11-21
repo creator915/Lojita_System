@@ -20,7 +20,7 @@ import Code.Lift as L
 import Code.PolyTransport as P
 open import Code.SessionProtocol
 open import Code.SessionRunner using (sessionEnvSource)
-open import Code.Submission using (parseSubmission; submitPlan; addMoves; refute; independent)
+open import Code.Submission using (parseSubmission; submitPlan; addMoves; refute; independent; refuteLift)
 open import Code.Prompt public using
   ( PromptHeader; nativeHeader; closedWorldTemplate; sessionTemplate; sessionTransportHelp
   ; refuteExtraText; nodePrompt; showProblem; showImplProblem; showLiftProblem; showRefuteProblem )
@@ -53,6 +53,7 @@ private
         save dir ("subspec-" ++ˢ show n) code >>= λ _ → children (suc n) rest
   ... | just (refute src) = save dir "refute" src
   ... | just (independent _ src) = save dir "refute" src
+  ... | just (refuteLift _ src) = save dir "refute" src
   ... | just (addMoves _ nothing) = return tt
   ... | just (addMoves _ (just src)) = save dir "main" src
 

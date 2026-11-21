@@ -258,6 +258,12 @@ postulate
 
 cut₁ 只把第一路送进判定，第二路直通。graphPort 将旧的一个输出 b 对应到新输出对 (b , b)。square 的类型必须点名旧端点、全部新端点和描述符要求的引用。若只为提速，输入和输出都选 idPort，定义域覆盖全部合法输入，证明新算法与旧算法外延相等。在 why 中说明具体省去了哪项工作以及保留了哪些观测。
 
+纵向 `LiftSpec` 的一个方块可以连接两侧多个单元。方块签名要引用两侧全部端点，可用 `Context.PolyTransport.TransportsPoly` 表达复合后的逐点关系。子包可以拆分或合并，父实现须导入 child-map 的每一个目标，落实各嵌套 lift。
+
+## refute-lift
+
+若 `SPECIFICATION` 结合已封存的底树 T₀ 实现能推出 `Data.Empty.⊥`，提交 `(submission (kind refute-lift) (why "说明哪一步丢失了信息") (refute @proof))`。证明模块须导出闭合的 `: ⊥`，在证明中实际引用导致提升失败的 T₀ 定义。单靠规约推出 ⊥ 时用 `contradiction`，规约蕴含 `Context.Taboo.SafeTaboo` 时用 `independent`。孩子报告提升受阻后，父节点可调整拆分，或给出本层的提升反驳。
+
 ## contradiction
 
 只有规约本身推出 ⊥ 时才交反驳。导入当前规约模块（提示中标作 `{{SPEC_MOD}}`）及准许的标准库。REFUTATION EXTRA POSTULATES 列出核心规约之外可用的测试命题。系统也保留其类型依赖的具体辅助定义。命名测试按原名暴露，匿名测试依次获得 specTest0、specTest1 等未占用名字，以实际渲染为准。规约里的匿名测试要给出正文，未证明的义务须显式命名。

@@ -23,7 +23,7 @@ open import Code.Submission renaming (independent to submitIndependent)
 open import Code.Protocol public
 open import Code.Tree public
 open import Code.HarnessCore public
-open import Code.Prompt using (nodePrompt; moduleText; showProblem; showImplProblem; showLiftProblem; showRefuteProblem)
+open import Code.Prompt using (nodePrompt; moduleText; showProblem; showImplProblem; showLiftProblem; showRefuteProblem; liftObstructionSummary)
 open import Code.Render using (render)
 import Code.SExpr
 import Code.Encode
@@ -101,20 +101,42 @@ freeze p ((n , awake) ∷ ks) k = stopHead p λ sh →
 freeze p ((n , finished) ∷ ks) k = stopHead p λ sh →
   freeze (push (n , HomeSt sh) p) ks λ ss → k ((n , sh) ∷ ss)
 
-shutdown : (ks : Slots) → Proc NodeΨ (Work ks) (∃Res HomeShape HomeSt ⊗ End)
-shutdown ks = freeze toolPrefix ks λ ss →
+freezeVerifiedKids : ∀ {S} (p : Prefix) (ks : Slots)
+                   → ((ss : List (Name × HomeShape)) → Proc NodeΨ (plug p (KidsCtx ss ++ Leaves)) S)
+                   → Proc NodeΨ (plug p (liveCtx ks)) S
+freezeVerifiedKids p [] k = k []
+freezeVerifiedKids p ((n , finished) ∷ ks) k = stopHead p λ sh →
+  freezeVerifiedKids (push (n , HomeSt sh) p) ks λ ss → k ((n , sh) ∷ ss)
+freezeVerifiedKids p ((n , sleeping sh true) ∷ ks) k =
+  freezeVerifiedKids (push (n , HomeSt sh) p) ks λ ss → k ((n , sh) ∷ ss)
+freezeVerifiedKids p ((n , awake) ∷ ks) k = stopHead p λ sh →
+  dropHead p (homeDroppable sh) (freezeVerifiedKids p ks k)
+freezeVerifiedKids p ((n , sleeping sh false) ∷ ks) k =
+  dropHead p (homeDroppable sh) (freezeVerifiedKids p ks k)
+
+giveStoppedHome : (ss : List (Name × HomeShape)) →
+  Proc NodeΨ (plug toolPrefix (KidsCtx ss ++ Leaves)) (∃Res HomeShape HomeSt ⊗ End)
+giveStoppedHome ss =
   dropHead root (λ _ → tt) (dropHead root (λ _ → tt) (dropHead root (λ _ → tt) (give∃Dir (node ss) refl)))
+
+shutdown : (ks : Slots) → Proc NodeΨ (Work ks) (∃Res HomeShape HomeSt ⊗ End)
+shutdown ks = freeze toolPrefix ks giveStoppedHome
+
+pollNamedKids : ∀ {S} (p : Prefix) (ks : Slots)
+              → ((next : Slots) → Maybe (Name × Verdict) → Proc NodeΨ (plug p (liveCtx next)) S)
+              → Proc NodeΨ (plug p (liveCtx ks)) S
+pollNamedKids p [] k = k [] nothing
+pollNamedKids p ((n , sleeping sh b) ∷ ks) k = pollNamedKids (push (n , HomeSt sh) p) ks λ next e → k ((n , sleeping sh b) ∷ next) e
+pollNamedKids p ((n , finished) ∷ ks) k = pollNamedKids (push (n , Chan ChildS) p) ks λ next e → k ((n , finished) ∷ next) e
+pollNamedKids p ((n , awake) ∷ ks) k = run (callAt (at p (here refl)) (at-state p (here refl)) tt) λ where
+  nothing → pollNamedKids (push (n , Chan ChildS) p) ks λ next e → k ((n , awake) ∷ next) e
+  (just ok) → pollNamedKids (push (n , Chan ChildS) p) ks λ next e → k ((n , finished) ∷ next) e
+  (just verdict) → stopHead p λ sh → pollNamedKids (push (n , HomeSt sh) p) ks λ next e → k ((n , sleeping sh false) ∷ next) (just (n , verdict))
 
 pollKids : ∀ {S} (p : Prefix) (ks : Slots)
          → ((next : Slots) → Maybe Verdict → Proc NodeΨ (plug p (liveCtx next)) S)
          → Proc NodeΨ (plug p (liveCtx ks)) S
-pollKids p [] k = k [] nothing
-pollKids p ((n , sleeping sh b) ∷ ks) k = pollKids (push (n , HomeSt sh) p) ks λ next e → k ((n , sleeping sh b) ∷ next) e
-pollKids p ((n , finished) ∷ ks) k = pollKids (push (n , Chan ChildS) p) ks λ next e → k ((n , finished) ∷ next) e
-pollKids p ((n , awake) ∷ ks) k = run (callAt (at p (here refl)) (at-state p (here refl)) tt) λ where
-  nothing → pollKids (push (n , Chan ChildS) p) ks λ next e → k ((n , awake) ∷ next) e
-  (just ok) → pollKids (push (n , Chan ChildS) p) ks λ next e → k ((n , finished) ∷ next) e
-  (just verdict) → stopHead p λ sh → pollKids (push (n , HomeSt sh) p) ks λ next e → k ((n , sleeping sh false) ∷ next) (just verdict)
+pollKids p ks k = pollNamedKids p ks λ next e → k next (Data.Maybe.map proj₂ e)
 
 private
   open NT using (moduleQName)
@@ -225,9 +247,12 @@ retry s err = record s { diagnostic = err ; phase = Planning }
 rememberSource : NodeState → Code → String → NodeState
 rememberSource s ir src = record s { task = record (task s) { authoredSources = (ir , src) ∷ authoredSources (task s) } }
 
+shutdownLiftObstruction : (ks : Slots) → NodeState → Proc NodeΨ (Work ks) (∃Res HomeShape HomeSt ⊗ End)
+
 shutdownState : (ks : Slots) → NodeState → Proc NodeΨ (Work ks) (∃Res HomeShape HomeSt ⊗ End)
 shutdownState ks s with phase s
 ... | Done ok = shutdown ks
+... | Done (liftObstruction _ _ _) = shutdownLiftObstruction ks s
 ... | _ = freeze toolPrefix ks λ ss →
   dropHead root (λ _ → tt) (dropHead root (λ _ → tt) (dropHead root (λ _ → tt)
     (run (clear (Home (HomeCtx (node ss))) (homeDroppable (node ss))) λ _ → restore (original s))))
@@ -305,6 +330,16 @@ commitBelow : ∀ {Ψ} (p : Prefix) (ks : List (Name × HomeShape)) → Code →
 commitBelow p [] = commitLeaves p
 commitBelow p ((n , sh) ∷ ks) = commitBelow (push (n , HomeSt sh) p) ks
 
+shutdownLiftObstruction ks s = freezeVerifiedKids toolPrefix ks λ ss →
+  run (snapshotKids toolPrefix ss) λ snapshot →
+  let kids = NT.children (freezeHome (node ss) snapshot)
+      shell = code (child (δ (task s))) [] (map kidImport kids)
+  in run (commitBelow toolPrefix ss shell (oldMemory s) []) λ _ → giveStoppedHome ss
+  where
+    kidImport : Name × NT.Frozen → Decl
+    kidImport (n , h) = let q , iface = NT.keptIface (moduleQName n , h)
+                        in import′ q false everything iface
+
 -- A finite transaction returns its next state together with the entire owned
 -- resource context. The kernel's machine coiterator supplies the sole loop.
 StepEnd : Session
@@ -342,7 +377,7 @@ oneTurn ks s = ask λ _ → next (phase s)
     next : Phase → Proc NodeΨ (Work ks) StepReply
     next Planning = planning ks s
     next (Done v) = respond ks s (just v)
-    next WaitingKids = pollKids toolPrefix ks λ next evidence → after next evidence
+    next WaitingKids = pollNamedKids toolPrefix ks after
       where
         revise : (next : Slots) → String → Proc NodeΨ (Work next) StepReply
         revise next detail = respond next (record (retry s detail)
@@ -352,9 +387,12 @@ oneTurn ks s = ask λ _ → next (phase s)
           ; pendingRawSubs = []
           ; task = record (task s) { δ = reseedSelf (runningCode s) (δ (task s)) }
           }) nothing
-        after : (next : Slots) → Maybe Verdict → Proc NodeΨ (Work next) StepReply
-        after next (just (contradiction c)) = revise next ("child contradiction:\n" ++ˢ render c)
-        after next (just (independent why c)) = revise next
+        after : (next : Slots) → Maybe (Name × Verdict) → Proc NodeΨ (Work next) StepReply
+        after next (just (_ , contradiction c)) = revise next ("child contradiction:\n" ++ˢ render c)
+        after next (just (n , liftObstruction why culprits c)) = revise next
+          ("child " ++ˢ liftObstructionSummary why culprits ++ˢ "\nCHILD: " ++ˢ n
+           ++ˢ "\nIf your local child split/bridge caused this, revise your plan; if the base blueprint itself makes your SPECIFICATION unliftable, submit (submission (kind refute-lift) (why \"...\") (refute @proof)):\n" ++ˢ render c)
+        after next (just (_ , independent why c)) = revise next
           ("child independent (--safe unprovability witness" ++ˢ (if why ==ˢ "" then "" else " — " ++ˢ why)
            ++ˢ "; your subspec is consistent in the standard model, NOT false, so keep intended semantics and replace opaque --safe primitives like primStringEquality/primCharEquality, String roundtrips, or function _≡_ with --safe reflective definitions such as Context.Tools.FsSandbox.eqStr, Data.String.Properties._≟_, Data.Char.Properties._≟_, toℕ, or pointwise equality):\n" ++ˢ render c)
         after next _ with ready next | pending s
@@ -383,6 +421,10 @@ handle ks s (just (refute src)) = checkEvidence ks s src ordinaryCheck "validRef
     validateContradiction spec allowed c = witnessNamespaceProblems spec c ++ validRefutation spec allowed c
 handle ks s (just (submitIndependent why src)) = checkEvidence ks s src
   (independenceCheck (child (δ (task s))) (parentFlags (task s)) (rawSpecSource (task s)) src) "validIndependence" validIndependence (independent why)
+handle ks s (just (refuteLift why src)) with baseModules (task s)
+... | [] = respond ks (retry s "refute-lift: node has no base modules to refute; use (kind contradiction) if SPECIFICATION is inconsistent") nothing
+... | bases@(_ ∷ _) = checkEvidence ks s src ordinaryCheck "validLiftRefutation"
+  (λ spec → validLiftRefutation spec bases) (λ c → liftObstruction why (extractCulpritBaseUnits bases c) c)
 handle ks s (just (submitPlan why src subs ms)) = run
   (dumpSubspecs subs [] (baseModules (task s)) (task s) (siblingModules subs ks)) λ where
   (invalidSpec e) → respond ks (retry s e) nothing

@@ -1,12 +1,12 @@
 module Code.Namespace where
 
 open import Data.Bool using (Bool; true; false; _∧_; _∨_; not; if_then_else_)
-open import Data.Char using (Char; isAlpha; isDigit)
+open import Data.Char using (Char; isAlpha; isDigit; toLower)
 open import Agda.Builtin.Char using (primCharEquality)
 open import Data.List using (List; []; _∷_; [_]; _++_; map; concatMap)
 open import Data.Maybe as Maybe using (Maybe; nothing; just)
 open import Data.Product using (_×_; _,_)
-open import Data.String using (toList; intersperse) renaming (_++_ to _++ˢ_)
+open import Data.String using (toList; fromList; intersperse) renaming (_++_ to _++ˢ_)
 
 open import Code
 open import Code.Transport using (Plan; mkPlan; Proarrow; _⇝_)
@@ -269,9 +269,12 @@ private
     ++ (if elemᵇ _==ˢ_ k seen then [ duplicateChildSlot k ] else [])
     ++ slotProblems (k ∷ seen) ks
 
+moduleImports : Code → List QName
+moduleImports c = importsBinds (params c) ++ importsDecls (decls c)
+
 checkNodeImports : NamespaceCtx → List Name → List QName → Code → List NamespaceProblem
 checkNodeImports ctx ownedKids allowedBases c = slotProblems [] ownedKids
-  ++ concatMap problem (importsBinds (params c) ++ importsDecls (decls c))
+  ++ concatMap problem (moduleImports c)
   where
     directChild : QName → Name → Bool
     directChild m k = m ==ᴺ mkQ [ k ] ∨ m ==ᴺ canonicalMod (below ctx k) k
@@ -320,8 +323,25 @@ namespaceOf : QName → NamespaceCtx
 namespaceOf (scopedQName ("Gen" ∷ e ∷ path) _ _) = nsCtx e path
 namespaceOf m = nsCtx "" (full m)
 
+private
+  -- A session may spell the epoch T0v2 as the workspace name t0_v2.
+  workspaceEpoch : Name → Name
+  workspaceEpoch e with toList e
+  ... | [] = ""
+  ... | c ∷ cs = fromList (toLower c ∷ version cs)
+    where
+      version : List Char → List Char
+      version [] = []
+      version (c ∷ cs) = if primCharEquality c 'v' ∧ nonemptyDigits cs
+        then '_' ∷ c ∷ cs else c ∷ version cs
+        where
+          nonemptyDigits : List Char → Bool
+          nonemptyDigits [] = false
+          nonemptyDigits ds@(_ ∷ _) = allᵇ isDigit ds
+
 canonicalRootOK : Name → QName → Bool
-canonicalRootOK name (scopedQName ("Gen" ∷ e ∷ r ∷ []) _ _) = e ==ˢ name ∧ validSegment e ∧ validSegment r
+canonicalRootOK name (scopedQName ("Gen" ∷ e ∷ r ∷ []) _ _) =
+  ((e ==ˢ name) ∨ (workspaceEpoch e ==ˢ name)) ∧ validSegment e ∧ validSegment r
 canonicalRootOK _ (scopedQName ("Gen" ∷ _) _ _) = false
 canonicalRootOK _ q = not (isMetaModule q ∨ isPreTaskContext q)
 
@@ -339,11 +359,17 @@ checkOwnedNames parent owned retained bases =
   ++ concatMap owner owned
   where
     ctx = namespaceOf parent
+    -- Root may own modules directly in its epoch, as in Gen.T1.Escape.
+    epochChild : List Name → List Name → Bool
+    epochChild ("Gen" ∷ e ∷ "Root" ∷ []) ("Gen" ∷ e′ ∷ k ∷ []) = (e ==ˢ e′) ∧ not (k ==ˢ "Root")
+    epochChild _ _ = false
+
     owner : QName → List NamespaceProblem
     owner q = if isMetaModule q ∨ isPreTaskContext q then [ metaNamespaceCollision q ]
       else if elemᵇ _==ᴺ_ q retained then []
       else if elemᵇ _==ᴺ_ q bases then [ forbiddenSiblingOrExternalImport q ]
-      else if (epoch ctx ==ˢ "") ∨ (q ==ᴺ canonicalMod (below ctx (shown (mkQ (full q)))) (shown q))
+      else if (epoch ctx ==ˢ "") ∨ epochChild (full parent) (full q)
+              ∨ (q ==ᴺ canonicalMod (below ctx (shown (mkQ (full q)))) (shown q))
         then [] else [ forbiddenSiblingOrExternalImport q ]
 
 checkOwnedImports : QName → List QName → List QName → List QName → Code → List NamespaceProblem

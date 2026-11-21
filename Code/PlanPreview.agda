@@ -195,9 +195,9 @@ private
 
   extraProblems : NodeTask → Code → Maybe LiftSpec → List String
   extraProblems t c nothing = []
-  extraProblems t c (just l) with filterᵇ (λ b → modName b ==ᴺ baseMod l) (baseModules t ++ map proj₁ (message (maybeLift t)))
-  ... | [] = ("checkLift: unknown base " ++ˢ NT.moduleKey (baseMod l)) ∷ []
-  ... | b ∷ _ = map showLiftProblem (liftProblems (record t { maybeLift = just (b , l) }) c)
+  extraProblems t c (just l) with NT.findCode (baseMod l) (baseModules t ++ map proj₁ (message (maybeLift t)))
+  ... | nothing = ("checkLift: unknown base " ++ˢ NT.moduleKey (baseMod l)) ∷ []
+  ... | just b = map showLiftProblem (liftProblems (record t { maybeLift = just (b , l) }) c)
 
   preview : Snapshot → Request → String
   preview (snapshot t old slots _) (request ms main subs lift) =
@@ -241,6 +241,7 @@ decodePlanSource : String → String
 decodePlanSource txt with Sub.parseSubmission txt
 ... | just (Sub.submitPlan _ main subs ms) = "{\"main\":" ++ˢ jsonString main ++ˢ ",\"moves\":" ++ˢ jsonString (showSExpr (tagged "moves" (map encMove ms)))
   ++ˢ ",\"subspecs\":" ++ˢ array (map (λ { (n , s) → array (jsonString n ∷ jsonString s ∷ []) }) subs) ++ˢ "}"
+... | just (Sub.refuteLift _ _) = failure "Use check_agda with refute_lift=true to check a refute-lift witness."
 ... | _ = failure ("expected a plan submission: " ++ˢ Sub.explainSubmissionFailure txt)
 
 private

@@ -706,6 +706,7 @@ data Verdict : Set where
   ok : Verdict
   contradiction : Code → Verdict
   independent : String → Code → Verdict
+  liftObstruction : String → List QName → Code → Verdict
 
 data CheckResult : Set where
   pass : CheckResult

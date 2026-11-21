@@ -19,7 +19,7 @@
 ------------------------------------------------------------------------
 module Code where
 
-open import Data.Nat using (ℕ; zero; suc; _+_; _≡ᵇ_)
+open import Data.Nat using (ℕ; zero; suc; _+_; _≡ᵇ_; _<ᵇ_)
 open import Data.Bool using (Bool; true; false; _∧_; _∨_; not; if_then_else_)
 open import Data.List using (List; []; _∷_; _++_; map; concatMap; foldr; length; reverse; [_])
 open import Data.Maybe using (Maybe; just; nothing)
@@ -706,19 +706,21 @@ record Unit : Set where
     udecls : List Decl
 open Unit public
 
--- Data constructors and record fields live under the unit's name, but a
--- named record constructor lives in the record's enclosing module.
-unitOwns : Unit → QName → Bool
-unitOwns u q = isPrefix (full (uname u)) (full q) ∨ anyᵇ ownsConstructor (udecls u)
+inUnitScope : Unit → Name → QName → Bool
+inUnitScope u n q = eqList _==ˢ_ (full q) (init (full (uname u)) ++ [ n ])
   where
     init : List Name → List Name
     init []           = []
     init (_ ∷ [])     = []
     init (x ∷ y ∷ xs) = x ∷ init (y ∷ xs)
 
+-- Data constructors and record fields live under the unit's name, but a
+-- named record constructor lives in the record's enclosing module.
+unitOwns : Unit → QName → Bool
+unitOwns u q = isPrefix (full (uname u)) (full q) ∨ anyᵇ ownsConstructor (udecls u)
+  where
     ownsConstructor : Decl → Bool
-    ownsConstructor (recDef _ _ _ (recDir _ (just c)) _) =
-      eqList _==ˢ_ (full q) (init (full (uname u)) ++ (c ∷ []))
+    ownsConstructor (recDef _ _ _ (recDir _ (just c)) _) = inUnitScope u c q
     ownsConstructor _ = false
 
 -- 一条声明定义了哪个（本地）名字；pragma/import/open/fixity 没有名字
@@ -821,35 +823,22 @@ flagsOf c = concatMap optionsOf (decls c)
 --   某条 import 接口里的名字   → ext（孩子暴露的）
 --   别的、不在本模块路径下的名字 → ext 整个名字（语境库里的东西）
 --   本模块路径下但不是单元的    → nothing（where 里的局部定义、模式变量等）
+longestUnit : List Unit → Maybe Unit
+longestUnit [] = nothing
+longestUnit (u ∷ us) with longestUnit us
+... | nothing = just u
+... | just v = just (if length (full (uname u)) <ᵇ length (full (uname v)) then v else u)
+
 -- resolveIn：单元表和外部单元表预先算好传进来（一个文件只算一次，别每个引用重算一遍）
 resolveIn : QName → List Unit → List Unit → QName → Maybe Obj
-resolveIn top us es q = pick (longest (filterᵇ (λ u → unitOwns u q) us))
+resolveIn top us es q = pick (longestUnit (filterᵇ (λ u → unitOwns u q) us))
   where
-    longer : Unit → Unit → Unit
-    longer u v = if length (full (uname v)) ≡ᵇ length (full (uname u)) then u
-                 else (if lessThan (length (full (uname u))) (length (full (uname v))) then v else u)
-      where
-        lessThan : ℕ → ℕ → Bool
-        lessThan zero    (suc _) = true
-        lessThan (suc m) (suc n) = lessThan m n
-        lessThan _       zero    = false
-    longest : List Unit → Maybe Unit
-    longest []       = nothing
-    longest (u ∷ us) with longest us
-    ... | nothing = just u
-    ... | just v  = just (longer u v)
     pick : Maybe Unit → Maybe Obj
     pick (just u) = if full (uname u) ==ᴸ full top then nothing else just (unit (uname u))
       where
         _==ᴸ_ : List Name → List Name → Bool
         _==ᴸ_ = eqList _==ˢ_
-    pick nothing with longestExt (filterᵇ (λ u → unitOwns u q) es)
-      where
-        longestExt : List Unit → Maybe Unit
-        longestExt []       = nothing
-        longestExt (u ∷ us) with longestExt us
-        ... | nothing = just u
-        ... | just v  = just (longer u v)
+    pick nothing with longestUnit (filterᵇ (λ u → unitOwns u q) es)
     ... | just u  = just (ext (uname u))
     ... | nothing = if isPrefix (full top) (full q) then nothing else just (ext q)
 
@@ -1324,7 +1313,7 @@ closedImplOK allowed c = implementationBlock (full (modName c)) (decls c)
 data RefuteProblem : Set where
   invalidImplementation : ImplProblem → RefuteProblem
   unauthorizedImport : QName → RefuteProblem
-  missingBottomProof missingTabooProof : RefuteProblem
+  missingBottomProof missingTabooProof missingBaseReference : RefuteProblem
 
 contextModule : QName → Bool
 contextModule q = safeQName q ∧ anyᵇ (λ p → isPrefix p (full q))
@@ -1340,16 +1329,17 @@ tabooExpr : Expr → Bool
 tabooExpr e@(def q) = bottomExpr e ∨ eqList _==ˢ_ (full q) ("Context" ∷ "Taboo" ∷ "SafeTaboo" ∷ [])
 tabooExpr _ = false
 
-checkWitness : (Expr → Bool) → RefuteProblem → QName → List String → Code → List RefuteProblem
-checkWitness target missingProof specMod allowed c = map invalidImplementation (closedImplOK allowed c)
-  ++ checkImports (decls c)
+checkWitnessIn : (Name → Expr → Bool) → RefuteProblem → List QName → List QName
+               → List String → Code → List RefuteProblem
+checkWitnessIn target missingProof permitted imported allowed c = map invalidImplementation (closedImplOK allowed c)
+  ++ map unauthorizedImport (filterᵇ (λ q → not (elemᵇ _==ᴺ_ q permitted ∨ contextModule q)) imported)
   ++ concatMap checkReference (refsDecls (decls c))
   ++ (if nullParams (params c) ∧ anyᵇ provesTarget (unitsIn (full (modName c)) (filterᵇ topLevel (decls c))) then [] else missingProof ∷ [])
   where
     -- Scope checking canonicalizes aliases. This also catches unauthorized
     -- dependencies introduced inside a where block or an extended lambda.
     checkReference : QName → List RefuteProblem
-    checkReference q = if isPrefix (full (modName c)) (full q) ∨ isPrefix (full specMod) (full q) ∨ contextModule q
+    checkReference q = if anyᵇ (λ m → isPrefix (full m) (full q)) (modName c ∷ permitted) ∨ contextModule q
       then [] else unauthorizedImport q ∷ []
     topLevel : Decl → Bool
     topLevel (module′ _ _ _) = false
@@ -1357,17 +1347,21 @@ checkWitness target missingProof specMod allowed c = map invalidImplementation (
     nullParams : List Bind → Bool
     nullParams [] = true
     nullParams _ = false
-    checkImports : List Decl → List RefuteProblem
-    checkImports [] = []
-    checkImports (import′ q _ _ _ ∷ ds) =
-      (if q ==ᴺ specMod ∨ contextModule q then [] else unauthorizedImport q ∷ []) ++ checkImports ds
-    checkImports (module′ _ _ inner ∷ ds) = checkImports inner ++ checkImports ds
-    checkImports (_ ∷ ds) = checkImports ds
     targetSig : Decl → Bool
-    targetSig (sig m _ e) = not (isPrivate m) ∧ target e
+    targetSig (sig m n e) = not (isPrivate m) ∧ target n e
     targetSig _ = false
     provesTarget : Unit → Bool
     provesTarget u = anyᵇ targetSig (udecls u) ∧ not (isPostulate (udecls u))
+
+checkWitness : (Expr → Bool) → RefuteProblem → QName → List String → Code → List RefuteProblem
+checkWitness target missingProof specMod allowed c =
+  checkWitnessIn (λ _ → target) missingProof [ specMod ] (witnessImports (decls c)) allowed c
+  where
+    witnessImports : List Decl → List QName
+    witnessImports [] = []
+    witnessImports (import′ q _ _ _ ∷ ds) = q ∷ witnessImports ds
+    witnessImports (module′ _ _ inner ∷ ds) = witnessImports inner ++ witnessImports ds
+    witnessImports (_ ∷ ds) = witnessImports ds
 
 validRefutation : QName → List String → Code → List RefuteProblem
 validRefutation = checkWitness bottomExpr missingBottomProof

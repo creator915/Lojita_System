@@ -9,14 +9,14 @@ open import Data.String using (String; wordsBy; unlines; intersperse; lines; toL
 open import Agda.Builtin.Char using (primCharEquality)
 import Data.Char as Char
 open import Data.Unit using (⊤; tt)
-open import Data.Nat using (ℕ; zero; suc)
+open import Data.Nat using (ℕ; zero; suc; _⊔_)
 open import Data.Nat.Show using (show)
 import IO.Primitive as IO
 import IO.Primitive.Finite as F
 open import Ownership using (Prog; Dir)
 open import OwnershipIO hiding (ext)
 open import OwnershipIO.FFI
-open import Code.Transport using (Verdict; ok; contradiction; independent)
+open import Code.Transport using (Verdict; ok; contradiction; independent; liftObstruction)
 open import Code.Harness using (NodeΨ; NodeTask; nodeAgent; HomeShape; HomeSt; ChildS)
 open import Code.Codecs using (HomeValue; storeHome)
 open import Code.Driver using (writeSource; moduleNameOf; nodeEnvironmentWithTasks)
@@ -56,10 +56,13 @@ import Meta.Sandbox as Sandbox
 import Store.CAS as CAS
 open import Store.Verify using (verifyCommitDAG)
 open import OwnershipIO.MetaFFI using (catchIO; replaceDuring; withTreeLock; withScopeProcess; appendNarrowingEvent)
-open import Code.Lift using (LiftSpec; ChildLift; EndpointLift; baseMod; upperMod; childLifts; endpoints; baseChild; upperChild; subLift; baseUnit; LiftProblem; wrongBase; wrongUpper; missingChildMap; missingBaseUnit) renaming (liftSpec to mkLiftSpec)
+open import Code.Lift using (LiftSpec; liftSpecTree; ChildLift; mkChildLift; moveChildLifts; baseMod; upperMod;
+  childLifts; endpoints; childSpecs; requiredBaseChildren; childMapProblems; baseEndpointProblems; missingLiftNames;
+  LiftProblem; wrongBase; wrongUpper; missingBaseUnit)
 open import Code.Parse using (parseLift)
+open import Code.Encode using (encodeCanonical)
 open import Code.Render using (render)
-open import Code.AgdaTool using (writeCodes; modulePath)
+open import Code.AgdaTool using (modulePath)
 open import Code.AI using (Backend; trackedService; isConcurrentBackend; withBackendAncestors; withBackendNarrowLog)
 open import Code.Prompt using (sessionTemplate; sessionTransportHelp; showLiftProblem; showImplProblem)
 open import Code.SExpr using (list; str; sym; showSExpr)
@@ -261,35 +264,58 @@ precheckLift zero cs base expectedUpper l = []
 precheckLift (suc fuel) cs base expectedUpper l =
   (if modName base ==ᴺ baseMod l then [] else wrongBase ∷ [])
   ++ (if expectedUpper ==ᴺ upperMod l then [] else wrongUpper ∷ [])
-  ++ concatMap checkKid reqKids
-  ++ concatMap checkEp (endpoints l)
+  ++ childMapProblems base mappings
+  ++ missingLiftNames missingBaseUnit (requiredBaseChildren base mappings) (map modName cs)
+  ++ concatMap checkSub (concatMap childSpecs mappings)
+  ++ concatMap (baseEndpointProblems (map uname (units base ++ extUnits base))) (endpoints l)
   where
-    reqKids : List QName
-    reqKids = nubᵇ _==ᴺ_ (map imod (filterᵇ (λ i → not (nullᵇ (assumes i))) (imports base)) ++ map baseChild (childLifts l))
-    findCode : QName → List Code → Maybe Code
-    findCode q [] = nothing
-    findCode q (c ∷ rest) = if modName c ==ᴺ q then just c else findCode q rest
-    checkKid : QName → List LiftProblem
-    checkKid q with filterᵇ (λ c → baseChild c ==ᴺ q) (childLifts l)
-    ... | [] = missingChildMap q ∷ []
-    ... | entry ∷ _ with findCode q cs | subLift entry
-    ...   | nothing | _ = missingBaseUnit q ∷ []
-    ...   | just childBase | just sub = precheckLift fuel cs childBase (upperChild entry) sub
-    ...   | just childBase | nothing =
-            if anyᵇ (λ c → modName c ==ᴺ upperChild entry) cs then []
-            else precheckLift fuel cs childBase (upperChild entry) (mkLiftSpec (baseChild entry) (upperChild entry) [] [])
-    checkEp : EndpointLift → List LiftProblem
-    checkEp e = if anyᵇ (λ u → uname u ==ᴺ baseUnit e) (units base ++ extUnits base)
-      then [] else missingBaseUnit (baseUnit e) ∷ []
+    mappings = childLifts l
 
-chooseTransport : List SealedTree → Maybe String → Maybe NT.Bindings
-chooseTransport bs nothing = just []
-chooseTransport bs (just src) = PT.parsePolyTransport src Data.Maybe.>>= λ s →
-  selectSource s (filterᵇ (λ b → modName (NT.implementation (snapshot b)) ==ᴺ PT.oldModOf s) bs)
+    checkSub : LiftSpec → List LiftProblem
+    checkSub sub with NT.findCode (baseMod sub) cs
+    ... | nothing = []  -- The missing source or inconsistent nested spec is reported above.
+    ... | just b = precheckLift fuel cs b (upperMod sub) sub
+
+-- Different levels of a descriptor can select the same sealed base.
+-- Bound the full precheck by the descriptor, including implicit leaf lifts.
+precheckLiftTree : List Code → Code → QName → LiftSpec → List LiftProblem
+precheckLiftTree cs base expectedUpper l = precheckLift (depth l) cs base expectedUpper l
   where
-    selectSource : PT.TransportSpec → List SealedTree → Maybe NT.Bindings
-    selectSource s (b ∷ []) = Data.Maybe.when (NT.validSource (snapshot b) s) ((snapshot b , s) ∷ [])
+    depth : LiftSpec → ℕ
+    depth (liftSpecTree _ _ children _) = suc (childDepth children)
+      where
+        subDepth : List LiftSpec → ℕ
+        subDepth [] = 0
+        subDepth (s ∷ ss) = depth s ⊔ subDepth ss
+
+        childDepth : List ChildLift → ℕ
+        childDepth [] = 0
+        childDepth (mkChildLift _ _ nothing ∷ rest) = 1 ⊔ childDepth rest
+        childDepth (mkChildLift _ _ (just s) ∷ rest) = depth s ⊔ childDepth rest
+        childDepth (moveChildLifts _ _ ss ∷ rest) = (1 ⊔ subDepth ss) ⊔ childDepth rest
+
+TransportChoice : Set
+TransportChoice = NT.Bindings × Maybe PartialSealed
+
+chooseTransport : List SealedTree → List PartialSealed → Maybe String → Maybe TransportChoice
+chooseTransport bs partials nothing = just ([] , nothing)
+chooseTransport bs partials (just src) = PT.parsePolyTransport src Data.Maybe.>>= λ s →
+  selectSource s (filterᵇ (matches s) bs)
+  where
+    matches : PT.TransportSpec → SealedTree → Bool
+    matches s b = modName (NT.implementation (snapshot b)) ==ᴺ PT.oldModOf s
+
+    selectSource : PT.TransportSpec → List SealedTree → Maybe TransportChoice
+    selectSource s (b ∷ []) = Data.Maybe.when (NT.validSource (snapshot b) s) (((snapshot b , s) ∷ []) , nothing)
+    selectSource s [] with filterᵇ (λ p → let t = PartialSealed.sealed p in
+      matches s t ∧ NT.validSource (snapshot t) s) partials
+    ... | p ∷ [] = just (((snapshot (PartialSealed.sealed p) , s) ∷ []) , just p)
+    ... | _ = nothing
     selectSource _ _ = nothing
+
+obstructionStamp : BaseClosure → Code → Maybe String → String
+obstructionStamp b spec liftSrc = showSExpr (list (list (map (λ t → str (tip t)) (sealedBases b))
+  ∷ str (encodeCanonical spec) ∷ Data.Maybe.maybe′ (λ s → list (str s ∷ [])) (list []) liftSrc ∷ []))
 
 -- A single deduplicated include tree is materialized from the selected sealed
 -- commits. Only in-flight interfaces/implementations go into the tool's work
@@ -331,18 +357,44 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
                   (CAS.writeRef storeDir (treeRef name) key))
               IO.return (accepted ("ok " ++ˢ name ++ˢ "\n" ++ˢ unlines (map moduleSummary codes)))
 
+    publishObstruction : BaseClosure → String → String → List QName → Code → List (Code × String) → HomeValue → IO.IO ActionResult
+    publishObstruction b stamp why culprits proof views result@(sh , h) =
+      if not (nullᵇ names) ∧ allᵇ (λ c → nullᵇ (closedImplOK [] c)) (NT.exported snap)
+      then (CAS.storeTreeWithSurfaces views storeDir (directTips b) name reason result >>= λ key →
+        verifyCommitDAG storeDir key >>= λ valid →
+        if valid then complete (just key) names else IO.return (rejected "drive-tree: invalid partial commit DAG"))
+      else complete nothing []
+      where
+        snap = freezeHome sh (dropModel (homeNoChan sh) h)
+        names = map proj₁ (NT.children snap)
+        complete : Maybe CAS.Hash → List String → IO.IO ActionResult
+        complete key kids = publishGeneration ws path bases "lift-obstruction" result λ stage → do
+          digest ← sha256 stamp
+          let group = Data.Maybe.maybe′ (λ k → k) "empty" key
+              file = stage ++ˢ "/obstruction.sexp"
+          F.writeFile file stamp
+          replaceDuring file (obstructionDir ws group ++ˢ "/" ++ˢ digest ++ˢ ".sexp")
+            (Data.Maybe.maybe′ (CAS.writeRef storeDir (partialTreeRef name))
+              (removeAll (storeDir ++ˢ "/refs/" ++ˢ partialTreeRef name)) key)
+          IO.return (accepted (unlines (("lift-obstruction " ++ˢ name ++ˢ " — " ++ˢ why)
+            ∷ ("CULPRIT_BASE_UNITS: " ++ˢ intersperse " " (map NT.moduleKey culprits))
+            ∷ ("PRESERVED_CHILDREN: " ++ˢ (if nullᵇ kids then "(none)" else intersperse " " kids))
+            ∷ "NOTE: Base tree solution is not in the image of the descent functor for this specification. Refactor the culprit base units in a new base tree (T0 -> T0'), then drive the new upper tree (T1') reusing PRESERVED_CHILDREN via maybeTransportSrc (keep ...)."
+            ∷ render proof ∷ [])))
+
     narrowLogPath = ws ++ˢ "/narrowing-events.jsonl"
 
     scopeSource : Sandbox.ScopeFrontend → List String → DumpReq → IO.IO DumpResult
     scopeSource frontend dirs = Sandbox.sandboxDumpUsing narrowLogPath repo scratch dirs frontend
 
-    dispatch : Sandbox.ScopeFrontend → BaseClosure → List String → Maybe (Maybe (Code × LiftSpec)) → Maybe NT.Bindings → IO.IO ActionResult
-    dispatch frontend b dirs nothing _ = IO.return (rejected "drive-tree: invalid LiftSpec or baseMod absent from baseTrees")
-    dispatch frontend b dirs _ nothing = IO.return (rejected "drive-tree: invalid TransportSpec, source snapshot or nested child mapping")
-    dispatch frontend b dirs (just lifting) (just transports′) =
+    dispatch : Sandbox.ScopeFrontend → BaseClosure → List String → List (Code × String) → Maybe (Maybe (Code × LiftSpec)) → NT.Bindings → IO.IO ActionResult
+    dispatch frontend b dirs inherited nothing _ = IO.return (rejected "drive-tree: invalid LiftSpec or baseMod absent from baseTrees")
+    dispatch frontend b dirs inherited (just lifting) transports′ =
       scopeSource frontend dirs (dumpReq src [] []) >>= λ where
         (dumpFailed e) → IO.return (rejected e)
-        (dumped spec) → validateSpec spec (specProblem (decls spec))
+        (dumped spec) → previousObstruction ws (obstructionStamp b spec liftSrc) >>= λ repeated →
+          if repeated then IO.return (rejected "drive-tree: identical base closure, specification, and LiftSpec already produced lift-obstruction; refactor CULPRIT_BASE_UNITS in a new base tree or revise the upper specification/LiftSpec before retrying")
+          else validateSpec spec (specProblem (decls spec))
       where
         cs = baseCodes b
         ancestors = map modName cs
@@ -351,7 +403,7 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
 
         liftIssues : Code → Maybe (Code × LiftSpec) → List LiftProblem
         liftIssues spec nothing = []
-        liftIssues spec (just (base , l)) = precheckLift (suc (length cs)) cs base (modName spec) l
+        liftIssues spec (just (base , l)) = precheckLiftTree cs base (modName spec) l
         validateSpec : Code → Maybe String → IO.IO ActionResult
         execute : Code → List (Code × String) → Maybe HomeValue → IO.IO ActionResult
         resume : Code → IO.IO ActionResult
@@ -363,9 +415,10 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
                 nothing → IO.return (rejected "drive-tree: missing previous home")
                 (just h) → CAS.commitSurfaces storeDir key >>= λ where
                   nothing → IO.return (rejected "drive-tree: invalid source presentation")
-                  (just views) → execute spec views (just h))
+                  (just views) → execute spec (inherited ++ views) (just h))
               else IO.return (rejected "drive-tree: invalid previous commit DAG"))
-          else loadHome path >>= execute spec []
+          else if v ==ˢ "lift-obstruction" then execute spec inherited nothing
+          else loadHome path >>= execute spec inherited
         validateSpec spec (just e) = IO.return (rejected e)
         validateSpec spec nothing with liftIssues spec lifting
         ... | ps@(_ ∷ _) = IO.return (rejected ("drive-tree: invalid LiftSpec for base tree (every base child subpackage must appear in LiftSpec child-map):\n" ++ˢ unlines (map showLiftProblem ps)))
@@ -415,6 +468,8 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
                      switchCheckWithLog narrowLogPath mode repo scratch [] (record req { dependencies = cs ++ localDeps (dependencies req) }))
                  >>= λ env → runNode env task home >>= λ where
                    (ok , result) → readIORef seen >>= λ surfaces → publish surfaces b result
+                   (liftObstruction why culprits c , result) → readIORef seen >>= λ surfaces →
+                     publishObstruction b (obstructionStamp b spec liftSrc) why culprits c surfaces result
                    (contradiction c , result) → publishGeneration ws path bases "contradiction" result λ _ →
                      IO.return (accepted ("contradiction " ++ˢ name ++ˢ "\n" ++ˢ render c))
                    (independent why c , result) → publishGeneration ws path bases "independent" result λ _ →
@@ -422,8 +477,9 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
                        ++ˢ "\nNOTE: Child formally proved your specification implies a known Agda 2.6.3 --safe independent taboo (Context.Taboo.SafeTaboo). Your business semantics and test cases are NOT contradictory — rewrite the specification replacing opaque primitives (primStringEquality / primCharEquality / String toList-fromList roundtrips) or function equality with --safe decidable/reflective operations (Context.Tools.FsSandbox.eqStr, Data.String.Properties._≟_, Data.Char.Properties._≟_, toℕ, or _≢_), then drive-tree again.\n" ++ˢ render c)))
                 else IO.return (rejected "drive-tree: saved ownership root differs from specSrc")
 
-    runTree : Sandbox.ScopeFrontend → BaseClosure → IO.IO ActionResult
-    runTree frontend b with concatMap recheckAncestor (baseCodes b)
+    runTree : Sandbox.ScopeFrontend → BaseClosure → Maybe TransportChoice → IO.IO ActionResult
+    runTree frontend b nothing = IO.return (rejected "drive-tree: invalid TransportSpec, source snapshot or nested child mapping")
+    runTree frontend b (just (bindings , selected)) with concatMap recheckAncestor (baseCodes b)
       where
         recheckAncestor : Code → List String
         recheckAncestor c = map (λ p → intersperse "." (full (modName c)) ++ˢ " " ++ˢ showImplProblem p)
@@ -432,15 +488,23 @@ driveTreeWith cfg name reason src bases liftSrc transportSrc = catchIO (withTree
     ... | [] = if elemᵇ _==ˢ_ name (map treeEpoch (sealedBases b))
                    ∨ not (allᵇ (Sandbox.checkObjectModuleSafe false) (baseCodes b))
       then IO.return (rejected "drive-tree: cyclic or unsafe ancestor")
+      else if not (consistentCodes modules) then IO.return (rejected "drive-tree: conflicting partial and base implementations")
       else withTempDirectory (ws ++ˢ "/tmp/ancestors") λ dir → do
-        writeCodes dir (baseCodes b)
-        dispatch frontend b (dir ∷ []) (chooseLift (baseCodes b) liftSrc) (chooseTransport (sealedBases b) transportSrc)
+        writeViews dir inheritedViews cs
+        dispatch frontend (record b { baseCodes = cs ; directTips = parents }) (dir ∷ []) inheritedViews
+          (chooseLift (baseCodes b) liftSrc) bindings
+      where
+        modules = baseCodes b ++ Data.Maybe.maybe′
+          (λ p → preservedCodes (snapshot (PartialSealed.sealed p)) ++ PartialSealed.ancestorCodes p) [] selected
+        cs = uniqueCodes modules
+        inheritedViews = Data.Maybe.maybe′ PartialSealed.surfaces [] selected
+        parents = nubᵇ _==ˢ_ (directTips b ++ Data.Maybe.maybe′ (λ p → tip (PartialSealed.sealed p) ∷ []) [] selected)
 
     action : Sandbox.ScopeFrontend → IO.IO ActionResult
     action frontend = if safeTree name ∧ not (elemᵇ _==ˢ_ name bases) then
       (loadClosure ws bases >>= λ where
         nothing → IO.return (rejected "baseTrees: missing, conflicting or invalid ancestor")
-        (just b) → runTree frontend b)
+        (just b) → loadPartialBases ws >>= λ partials → runTree frontend b (chooseTransport (sealedBases b) partials transportSrc))
       else IO.return (rejected "drive-tree: unsafe treeName or direct self-dependency")
 
 driveTree : SessionConfig → String → String → List String → Maybe String → IO.IO ActionResult
