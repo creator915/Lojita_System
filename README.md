@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="./docs/assets/logo.svg" width="112" height="112" alt="Lojita System Logo" />
+  <img src="./docs/assets/logo.svg" width="112" height="112" alt="*⋉ Lojita System Icon" />
 </p>
 
-<h1 align="center">Lojita System</h1>
+<h1 align="center">Lojita System &nbsp;<code>*⋉</code></h1>
 
 <p align="center">
   <strong>Categorical Programming for the Post-Agent Era.</strong><br/>
@@ -20,15 +20,15 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Kernel-Agda_2.6.3_(--safe)-0F172A?style=flat-square&logoColor=white" alt="Agda 2.6.3 --safe" />
+  <img src="https://img.shields.io/badge/Kernel-Agda_2.6.3_(--safe)-0F172A?style=flat-square" alt="Agda 2.6.3 --safe" />
   <img src="https://img.shields.io/badge/Fast_Backend-Lean_4_C%2B%2B_%2F_LCNF-2563EB?style=flat-square" alt="Lean 4 Backend" />
   <img src="https://img.shields.io/badge/Soundness-Zero--Axiom_Guard_(0_False_Positives)-10B981?style=flat-square" alt="Zero Axiom Guard" />
-  <img src="https://img.shields.io/badge/BYOA-Works_with_Claude_Code_%26_Codex_CLI-FF2E54?style=flat-square" alt="Works with Claude Code & Codex" />
+  <img src="https://img.shields.io/badge/Intelligence-Zero--Cost_API_%26_Agent_Plug--in-D83139?style=flat-square" alt="Zero-Cost API & Agent Plug-in" />
 </p>
 
 <!-- 录屏完成后可将下方 ./docs/assets/hero-loop.svg 直接替换为 15~30 秒实录 ./docs/assets/demo.gif -->
 <p align="center">
-  <img src="./docs/assets/hero-loop.svg" width="960" alt="Lojita System: Wish → Dialectica Cut → : ⊥ Refutation & DETOUR → 0-Turn Subtree Reuse → Native Replay" />
+  <img src="./docs/assets/hero-loop.svg" width="960" alt="Lojita System: Structure-Preserving Closed Loop" />
 </p>
 
 ---
@@ -48,41 +48,43 @@
 
 ---
 
-## 🧩 什么是「范畴式编程」？（30 秒直觉版）
+## 🧩 什么是「范畴式编程」？—— 在每一次变换中保持结构
 
-不需要先啃完范畴论教材。在 Lojita 中，范畴式编程把人类驾驭超复杂系统的直觉凝练成了三个标准化动作：
+范畴论的核心思想只有一句话：**在变换中保持结构**。
+
+软件工程的全生命周期，本质上就是一连串**变换**：从抽象规约到代码实现、从极简原型到完整系统、从旧架构到新架构、从高层逻辑到原生机器码。传统编程与 Vibe Coding 之所以一扩就乱、一改就崩，根本原因在于**每一次变换都在丢失原有的组合结构与隐含契约**。
+
+**范畴式编程先用有色端口接线（`cut`）钉死系统的组合骨架，再强制生命周期中的每一种变换都严格保持这套结构：**
 
 <table>
   <tr>
     <td width="33%" valign="top">
-      <h3>1. Wire · 按端口接线</h3>
-      <p><strong>不拼提示词，拼带颜色的接口。</strong></p>
-      <p>每个模块都是带类型颜色端口的积木（有色复范畴）。把上游输出端口插进下游输入端口（<code>cut</code>），编译器在唤醒任何 AI 之前先锁死整张接线图的契约——写程序就是构造保接线的函子。</p>
+      <h3>1. 实现与编译变换<br/><sub>保接线的函子</sub></h3>
+      <p><strong>从“规约”变换到“代码与机器码”，外部组合关系不走样。</strong></p>
+      <p>一步高层操作在实现时可以展开为底层一段复杂的多模块复合接线图，但<strong>函子</strong>强制变换前后的端口边界与部分复合严格守恒；拆分子包前必须先编译证明“局部合取蕴含整体”，分包变换绝不弱化设计。</p>
     </td>
     <td width="33%" valign="top">
-      <h3>2. Lift · 从沙盘吹胀</h3>
-      <p><strong>先跑通 5 个点的骨架，再长出血肉。</strong></p>
-      <p>面对几百条边缘需求，先忽略细节，在仅有几个枚举值的有限沙盘（<code>T0</code>）跑通分包逻辑；再通过 <code>El</code> 算子把底下的<strong>单个值</strong>一键吹胀成带完整状态与规则的上层局部子系统（<code>T1</code>）。</p>
+      <h3>2. 纵向精化变换<br/><sub>保骨架的吹胀与投影</sub></h3>
+      <p><strong>从“极简沙盘”变换到“完整系统”，粗粒度控制流不坍塌。</strong></p>
+      <p>先忘却细节投影到几个点的有限蓝图（<code>T0</code>）跑通骨架，再用 <code>El</code> 把底下的<strong>单个值</strong>吹胀成带完整状态与规则的局部范畴（<code>T1</code>）。无论上层长出多少细节，向下投影回底蓝图时必须保持交换方块；若沙盘捷径破坏了可提升性，直接交 <code>: ⊥</code> 打回修正蓝图。</p>
     </td>
     <td width="33%" valign="top">
-      <h3>3. Refute &amp; Transport · 反驳与搬运</h3>
-      <p><strong>走不通就亮 <code>: ⊥</code> 红牌，绝不全部重来。</strong></p>
-      <p>沙盘捷径在真实世界行不通？子节点直接构造闭合反例证明 <code>: ⊥</code> 打回重排底蓝图；架构重构是两端地位对等的异函子，未受波及的已完成模块 <strong>0 Token 消耗</strong>原样挂回新树。</p>
+      <h3>3. 横向重构变换<br/><sub>两端对等的保结构搬运</sub></h3>
+      <p><strong>从“旧架构”变换到“新架构”，依赖闭合与历史因果不断裂。</strong></p>
+      <p>改代码不是覆盖文本，而是新旧系统间<strong>两端地位对等的保结构关系（多异函子）</strong>。无论一拆多、多合一还是增删模块，变换必须保持全图接线闭合——设计记忆顺着变换精准继承，未受波及的子树 <strong>0 次 AI 调用</strong>原封不动复用。</p>
     </td>
   </tr>
 </table>
 
 ---
 
-## 🔌 Bring Your Own Agent：驯化你手头的商用 Agent
+## 🔌 零成本无缝衔接：API 与现成 Agent 皆可即插即用
 
-**你不需要放弃正在付费订阅的 Claude Code 或 Codex CLI，更不需要冒着封号与违约风险去逆向“破壳”提取裸 API。**
+在 Lojita 的文件本体论架构下，记忆驻留在文件树上、权限收敛在类型系统里，智能层被彻底解耦为标准的无状态推理算子。因此，**无论接入裸大模型 API（直连协议接口后续补齐），还是直接挂载你手头现成的商用 Agent，都能零成本无缝衔接**：
 
-大模型厂商习惯将最强推理模型与高性价比额度绑定在官方 CLI Agent 之中。Lojita 原生支持将它们直接接入为底层推理引擎，并在启动瞬间完成**“去壳入笼”**：
-
-- **剥离危险宿主权限**：强制锁定只读空目录沙箱，关闭内置 Shell、任意文件写入与自治多智能体派发，彻底杜绝幻觉破坏工作区；
-- **注入毫秒级只读预检（MCP）**：仅向其开放零副作用的 Lean 4 / Agda 形式化草稿自测工具（`check_agda`、`check_plan`）；
-- **增信息、绝不增权限（0 假阳性）**：内核门禁寸步不让，绝不放过任何 `sorry`、隐藏公理或接口篡改；当 AI 撞上保守静态窄口（假阴性）时，系统自动弹出结构化 **`DETOUR` 绕路证书**（精确指出期望 vs 实际 AST 见证与等价改写处方），引导 AI 在草稿箱内改几行代码丝滑绕过。
+- **零迁移成本，零合规风险**：许多大模型厂商将主力推理额度绑定在自家订阅制 Agent 客户端内；你既无需为跑形式化工程额外承担高昂的按量 API 账单，也无需冒着封号与违约风险逆向“破壳”——现有订阅即插即用。
+- **自动剥离越权外壳**：接入外部 Agent 时，Lojita 自动关闭其多余的宿主 Shell、任意文件改写与自治多智能体派发权限，将其无缝收编进只读形式化预检沙箱（MCP：`check_agda`、`check_plan`）。
+- **增信息、绝不增权限（0 假阳性）**：内核门禁寸步不让，错证明与隐藏公理 0 放行；当 AI 触碰保守静态窄口（假阴性）时，系统即时弹出结构化 **`DETOUR` 绕路证书**（精确给出期望 vs 实际 AST 见证与等价改写路径），引导 AI 在草稿箱内改几行代码丝滑绕过。
 
 ---
 
@@ -90,7 +92,7 @@
 
 为什么业务软件工程显得**“庞杂但平庸”**，而著名数学定理显得**“简洁但深奥”**？
 
-因为业务软件一开始就把跨系统架构（IO、文件树、终端协议、Canvas 视图）摊在了明面上；而初等数学命题只给出了单一离散整数世界里的最终验收规约，**隐藏了通往答案所需的跨世界有色复范畴结构**！一旦找对范畴结构，开发工业级软件与证明菲尔兹奖级经典数学定理，在 Lojita 中运行的是**完全同一套二维状态机**：
+因为业务软件一开始就把跨系统架构（IO、文件树、终端协议、Canvas 视图）摊在了明面上；而初等数学命题只给出了单一离散整数世界里的最终验收规约，**隐藏了通往答案所需的跨世界有色复范畴结构**！一旦找对范畴结构，开发工业级软件与证明菲尔兹奖级经典数学定理，在 Lojita 中运行的是**完全同一套保结构状态机**：
 
 | 统一二维范畴状态机 | 超大型软件开发（例：Markdown 转换器） | 经典数学定理证明（例：Roth 三项等差数列定理） |
 | :--- | :--- | :--- |

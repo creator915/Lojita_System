@@ -1,19 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 310" width="980" height="310" role="img" aria-label="Lojita System Closed-Loop Execution Preview">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 310" width="980" height="310" role="img" aria-label="Lojita System Structure-Preserving Closed Loop">
   <rect width="980" height="310" rx="16" fill="#0B0D12" stroke="#1E293B" stroke-width="2"/>
   <!-- Window Header -->
   <rect x="1" y="1" width="978" height="38" rx="15" fill="#111622"/>
   <rect x="1" y="24" width="978" height="15" fill="#111622"/>
   <line x1="1" y1="39" x2="979" y2="39" stroke="#1E293B" stroke-width="1"/>
-  <circle cx="24" cy="20" r="5.5" fill="#EF4444"/>
+  <circle cx="24" cy="20" r="5.5" fill="#D83139"/>
   <circle cx="42" cy="20" r="5.5" fill="#F59E0B"/>
   <circle cx="60" cy="20" r="5.5" fill="#10B981"/>
-  <text x="490" y="24" fill="#94A3B8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" text-anchor="middle">lojita-session :: T0 (Blueprint) ──▶ T1 (Collage) ──▶ Native Binary &amp; Cleanroom Replay</text>
+  <text x="490" y="24" fill="#94A3B8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" text-anchor="middle">*⋉ lojita-session :: T0 (Blueprint) ──▶ T1 (Collage) ──▶ Structure-Preserving Native Replay</text>
 
   <!-- Card 1: Wish -> Spec -->
   <rect x="22" y="58" width="172" height="186" rx="10" fill="#111827" stroke="#334155" stroke-width="1.5"/>
-  <text x="36" y="82" fill="#38BDF8" font-family="ui-monospace, monospace" font-size="11" font-weight="bold">01 WISH &amp; PROBE</text>
-  <text x="36" y="106" fill="#E2E8F0" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="bold">交互探针凝练规约</text>
-  <text x="36" y="130" fill="#94A3B8" font-family="ui-monospace, monospace" font-size="11">SessionEnv probe</text>
+  <text x="36" y="82" fill="#38BDF8" font-family="ui-monospace, monospace" font-size="11" font-weight="bold">01 WISH &amp; FUNCTOR</text>
+  <text x="36" y="106" fill="#E2E8F0" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="bold">保接线结构拆分子包</text>
+  <text x="36" y="130" fill="#94A3B8" font-family="ui-monospace, monospace" font-size="11">F(q ∘ p) = F(q) ∘ F(p)</text>
   <text x="36" y="148" fill="#94A3B8" font-family="ui-monospace, monospace" font-size="11">∀ (w : SimWorld)</text>
   <rect x="36" y="166" width="144" height="60" rx="6" fill="#0B0D12" stroke="#1E293B"/>
   <text x="46" y="186" fill="#CBD5E1" font-family="ui-monospace, monospace" font-size="10">T0: 5 finite tags</text>
@@ -25,13 +25,13 @@
   <polygon points="214,151 207,146 207,156" fill="#475569"/>
 
   <!-- Card 2: Lift & : ⊥ Red Card -->
-  <rect x="216" y="58" width="188" height="186" rx="10" fill="#1A1118" stroke="#FF2E54" stroke-width="1.5"/>
-  <text x="230" y="82" fill="#FF2E54" font-family="ui-monospace, monospace" font-size="11" font-weight="bold">02 : ⊥ RED CARD</text>
-  <text x="230" y="106" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="bold">拦截偷懒与死胡同</text>
-  <text x="230" y="130" fill="#FDA4AF" font-family="ui-monospace, monospace" font-size="11">c₀ ∉ Im(p) / Narrow</text>
+  <rect x="216" y="58" width="188" height="186" rx="10" fill="#1A1115" stroke="#D83139" stroke-width="1.5"/>
+  <text x="230" y="82" fill="#F87171" font-family="ui-monospace, monospace" font-size="11" font-weight="bold">02 : ⊥ &amp; DETOUR</text>
+  <text x="230" y="106" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="bold">破坏结构即刻红牌拦截</text>
+  <text x="230" y="130" fill="#FCA5A5" font-family="ui-monospace, monospace" font-size="11">c₀ ∉ Im(p) / Narrow</text>
   <text x="230" y="148" fill="#94A3B8" font-family="ui-monospace, monospace" font-size="11">(δ + T₀) ⊢ ⊥</text>
-  <rect x="230" y="166" width="160" height="60" rx="6" fill="#0B0D12" stroke="#881337"/>
-  <text x="240" y="185" fill="#FB7185" font-family="ui-monospace, monospace" font-size="10">[KIND] lift_refute</text>
+  <rect x="230" y="166" width="160" height="60" rx="6" fill="#0B0D12" stroke="#7F1D1D"/>
+  <text x="240" y="185" fill="#F87171" font-family="ui-monospace, monospace" font-size="10">[KIND] lift_refute</text>
   <text x="240" y="202" fill="#FBBF24" font-family="ui-monospace, monospace" font-size="10">[CULPRIT] Parse0</text>
   <text x="240" y="219" fill="#38BDF8" font-family="ui-monospace, monospace" font-size="10">[DETOUR] 2-pass T0'</text>
 
@@ -41,14 +41,14 @@
 
   <!-- Card 3: 0-Turn Subtree Reuse -->
   <rect x="426" y="58" width="182" height="186" rx="10" fill="#111827" stroke="#10B981" stroke-width="1.5"/>
-  <text x="440" y="82" fill="#10B981" font-family="ui-monospace, monospace" font-size="11" font-weight="bold">03 0-TURN TRANSPORT</text>
-  <text x="440" y="106" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="bold">无辜子树零重算复用</text>
+  <text x="440" y="82" fill="#10B981" font-family="ui-monospace, monospace" font-size="11" font-weight="bold">03 POLY-TRANSPORT</text>
+  <text x="440" y="106" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="bold">保依赖搬运与零重算</text>
   <text x="440" y="130" fill="#94A3B8" font-family="ui-monospace, monospace" font-size="11">T₀ ⇝ T₀' ──▶ T₁'</text>
   <text x="440" y="148" fill="#6EE7B7" font-family="ui-monospace, monospace" font-size="11">refs/partial sealed</text>
   <rect x="440" y="166" width="154" height="60" rx="6" fill="#0B0D12" stroke="#065F46"/>
   <text x="450" y="185" fill="#A7F3D0" font-family="ui-monospace, monospace" font-size="10">(keep "T1.Escape")</text>
-  <text x="450" y="202" fill="#10B981" font-family="ui-monospace, monospace" font-size="10">LLM Calls == 0</text>
-  <text x="450" y="219" fill="#94A3B8" font-family="ui-monospace, monospace" font-size="10">Scratch destroyed</text>
+  <text x="450" y="202" fill="#10B981" font-family="ui-monospace, monospace" font-size="10">AI Calls == 0</text>
+  <text x="450" y="219" fill="#94A3B8" font-family="ui-monospace, monospace" font-size="10">Memory inherited</text>
 
   <!-- Connector 3->4 -->
   <line x1="608" y1="151" x2="628" y2="151" stroke="#475569" stroke-width="2"/>
@@ -57,7 +57,7 @@
   <!-- Card 4: Dual-Kernel & World Replay -->
   <rect x="630" y="58" width="328" height="186" rx="10" fill="#111827" stroke="#6366F1" stroke-width="1.5"/>
   <text x="646" y="82" fill="#818CF8" font-family="ui-monospace, monospace" font-size="11" font-weight="bold">04 LEAN 4 PRISM &amp; WORLD REPLAY</text>
-  <text x="646" y="106" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="bold">双核极速编译 + 沙箱与画布像素级对拍</text>
+  <text x="646" y="106" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="bold">双核保色编译 + 沙箱与画布对拍</text>
   <text x="646" y="130" fill="#CBD5E1" font-family="ui-monospace, monospace" font-size="11">SweetMod ⊔_M₀ ExoMod ──▶ leanc -O3 -static</text>
   <text x="646" y="148" fill="#94A3B8" font-family="ui-monospace, monospace" font-size="11">guardAxioms: 0 sorryAx · 0 choice · --safe</text>
   <rect x="646" y="166" width="296" height="60" rx="6" fill="#0B0D12" stroke="#312E81"/>
@@ -66,6 +66,6 @@
   <text x="658" y="219" fill="#E2E8F0" font-family="ui-monospace, monospace" font-size="10">✓ MANIFEST.tsv &amp; Merkle CAS DAG sealed</text>
 
   <!-- Bottom Caption Bar -->
-  <text x="490" y="276" fill="#64748B" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" text-anchor="middle">Files are the ontology · Types are the rails · LLMs (Claude Code / Codex CLI) run caged in read-only MCP sandboxes</text>
-  <text x="490" y="294" fill="#475569" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" text-anchor="middle">无需放宽 AI 权限 —— 用形式化 : ⊥ 反驳、结构化 DETOUR 证书与二维异函子搬运驱动超大规模系统收敛</text>
+  <text x="490" y="276" fill="#64748B" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" text-anchor="middle">*⋉ Files are the ontology · Types are the rails · Zero-cost drop-in for LLM APIs &amp; existing Agents</text>
+  <text x="490" y="294" fill="#475569" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" text-anchor="middle">在实现、精化、重构与编译的每一次变换中严格保持系统结构 —— 零假阳性驱动超大规模工程收敛</text>
 </svg>

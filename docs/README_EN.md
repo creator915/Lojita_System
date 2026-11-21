@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="./assets/logo.svg" width="112" height="112" alt="Lojita System Logo" />
+  <img src="./assets/logo.svg" width="112" height="112" alt="*⋉ Lojita System Icon" />
 </p>
 
-<h1 align="center">Lojita System</h1>
+<h1 align="center">Lojita System &nbsp;<code>*⋉</code></h1>
 
 <p align="center">
   <strong>Categorical Programming for the Post-Agent Era.</strong><br/>
@@ -20,14 +20,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Kernel-Agda_2.6.3_(--safe)-0F172A?style=flat-square&logoColor=white" alt="Agda 2.6.3 --safe" />
+  <img src="https://img.shields.io/badge/Kernel-Agda_2.6.3_(--safe)-0F172A?style=flat-square" alt="Agda 2.6.3 --safe" />
   <img src="https://img.shields.io/badge/Fast_Backend-Lean_4_C%2B%2B_%2F_LCNF-2563EB?style=flat-square" alt="Lean 4 Backend" />
   <img src="https://img.shields.io/badge/Soundness-Zero--Axiom_Guard_(0_False_Positives)-10B981?style=flat-square" alt="Zero Axiom Guard" />
-  <img src="https://img.shields.io/badge/BYOA-Works_with_Claude_Code_%26_Codex_CLI-FF2E54?style=flat-square" alt="Works with Claude Code & Codex" />
+  <img src="https://img.shields.io/badge/Intelligence-Zero--Cost_API_%26_Agent_Plug--in-D83139?style=flat-square" alt="Zero-Cost API & Agent Plug-in" />
 </p>
 
 <p align="center">
-  <img src="./assets/hero-loop.svg" width="960" alt="Lojita System Closed-Loop Execution" />
+  <img src="./assets/hero-loop.svg" width="960" alt="Lojita System Structure-Preserving Closed Loop" />
 </p>
 
 ---
@@ -47,44 +47,49 @@ Most AI coding tools anthropomorphize LLMs into chatty interns sitting at a Bash
 
 ---
 
-## 🧩 What Is Categorical Programming? (In 30 Seconds)
+## 🧩 What Is Categorical Programming? — Preserving Structure Across Transformations
+
+The soul of category theory fits in one sentence: **preserving structure across transformations**.
+
+Software engineering is a chain of transformations—from specification to implementation, from toy prototype to full production system, from legacy architecture to refactored architecture, and from verified logic to native machine code. Traditional coding and Vibe Coding collapse at scale because **every transformation silently breaks compositional invariants**.
+
+**Categorical Programming locks down explicit typed port wiring (`cut`) first, and forces every transformation across the software lifecycle to preserve that structure:**
 
 <table>
   <tr>
     <td width="33%" valign="top">
-      <h3>1. Wire</h3>
-      <p><strong>Plug typed ports, not prompts.</strong></p>
-      <p>Modules live in a <strong>Colored Polycategory</strong>. Connecting an output port to an input port (<code>cut</code>) locks cross-module invariants at compile time. Writing a program is constructing a cut-preserving functor.</p>
+      <h3>1. Implementation &amp; Compilation<br/><sub>Cut-Preserving Functors</sub></h3>
+      <p><strong>Transform specs into code &amp; native binaries without losing wiring invariants.</strong></p>
+      <p>A high-level operation may expand into a complex multi-module wiring diagram, yet a <strong>functor</strong> guarantees port boundaries and partial composition (<code>cut</code>) remain strictly invariant—and child decomposition never weakens parent specs.</p>
     </td>
     <td width="33%" valign="top">
-      <h3>2. Lift</h3>
-      <p><strong>Solve a 5-point sandbox, then blow up.</strong></p>
-      <p>Instead of drowning in hundreds of edge cases at once, prove the architecture over a tiny finite blueprint (<code>T0</code>), then apply <code>El</code> to blow up each base value into a rich fiber category (<code>T1</code>).</p>
+      <h3>2. Vertical Refinement<br/><sub>Blueprint-Preserving Lifts</sub></h3>
+      <p><strong>Transform a 5-point sandbox into a full system without collapsing control flow.</strong></p>
+      <p>Project messy requirements onto a finite blueprint (<code>T0</code>) to prove the skeleton, then apply <code>El</code> to blow up each single base value into a rich local category (<code>T1</code>). Every upper refinement must commute with <code>T0</code>—or return a formal <code>: ⊥</code> witness to revise the blueprint.</p>
     </td>
     <td width="33%" valign="top">
-      <h3>3. Refute &amp; Transport</h3>
-      <p><strong>Throw a <code>: ⊥</code> red card; keep innocent work.</strong></p>
-      <p>When a sandbox shortcut fails to lift, the child submits a verified <code>: ⊥</code> proof to refactor <code>T0 ⇝ T0'</code>. Symmetric poly-profunctors transport architecture while sealing and reusing untouched subtrees at <strong>0 token cost</strong>.</p>
+      <h3>3. Horizontal Refactoring<br/><sub>Symmetric Poly-Profunctors</sub></h3>
+      <p><strong>Transform old architectures into new ones without breaking causality.</strong></p>
+      <p>Refactoring is not text overwriting—it is a <strong>two-sided symmetric relation</strong> preserving dependency closure across splits, merges, births, and deletions. Design memory flows along the transformation, while untouched subtrees reuse in <strong>0 AI calls</strong>.</p>
     </td>
   </tr>
 </table>
 
 ---
 
-## 🔌 Bring Your Own Agent: Tame Claude Code & Codex CLI
+## 🔌 Zero-Cost Seamless Plug-In: Both APIs & Existing Agents
 
-**Keep your existing Claude Code or Codex CLI subscription—zero ToS-breaking reverse engineering required.**
+Because memory lives on the file tree and permissions live in the type system, Lojita decouples intelligence into a clean, stateless local oracle. **Whether you plug in a raw LLM API (direct adapter roadmap in progress) or an off-the-shelf commercial Agent you already subscribe to, integration is seamless and zero-cost:**
 
-Frontier labs bundle their strongest models and quotas inside proprietary CLI agents. Lojita plugs them directly into `Code/AI.agda` while caging them inside a strict formal harness:
-- **Zero Host Shell / Write Authority**: Launched in isolated read-only directories with built-in shell and autonomous sub-agent spawning disabled;
-- **Millisecond Read-Only Oracles (MCP)**: Exposes zero-side-effect Lean 4 / Agda pre-checkers (`check_agda`, `check_plan`);
-- **More Information, Never More Permission (0 False Positives)**: Soundness gates never compromise; when an AI hits a conservative syntactic gate (false negative), Lojita returns a structured **`DETOUR` certificate** (`[KIND] · [WITNESS] · [CAUSE] · [DETOUR]`) so the model routes around it in lines.
+- **Zero Extra Spend, Zero ToS Risk**: Frontier labs often bundle their best models and generous quotas inside subscription CLI agents. Use your existing agent subscription out of the box—no expensive duplicate pay-per-token bills and no fragile reverse engineering.
+- **Automatic De-Shelling**: When wrapping an external agent, Lojita automatically strips its host shell, arbitrary file writes, and sub-agent spawning, embedding it cleanly inside a read-only formal pre-check sandbox (MCP: `check_agda`, `check_plan`).
+- **More Information, Never More Permission (0 False Positives)**: Soundness gates never compromise; when an AI hits a conservative syntactic gate (false negative), Lojita emits a structured **`DETOUR` certificate** (`[KIND] · [WITNESS] · [CAUSE] · [DETOUR]`) so the model routes around it in lines.
 
 ---
 
 ## 🌌 One Machine: From Large-Scale Software to Classic Theorems
 
-Software looks *"sprawling yet locally routine"* because its multi-system boundaries are explicit; famous mathematical theorems look *"deceptively concise yet unfathomably deep"* only because they state acceptance specs inside a single rigid root world (`ℤ`) while hiding the cross-world categorical architecture. In Lojita, both run on the **exact same 2D categorical state machine**:
+Software looks *"sprawling yet locally routine"* because its multi-system boundaries are explicit; famous mathematical theorems look *"deceptively concise yet unfathomably deep"* only because they state acceptance specs inside a single rigid root world (`ℤ`) while hiding the cross-world categorical architecture. In Lojita, both run on the **exact same structure-preserving 2D state machine**:
 
 | 2D Categorical Machine | Large-Scale Software (e.g., Markdown Converter) | Classic Mathematics (e.g., Roth's Theorem on 3-APs) |
 | :--- | :--- | :--- |
