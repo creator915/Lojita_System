@@ -1314,6 +1314,7 @@ data RefuteProblem : Set where
   invalidImplementation : ImplProblem → RefuteProblem
   unauthorizedImport : QName → RefuteProblem
   missingBottomProof missingTabooProof missingBaseReference : RefuteProblem
+  missingCountermodelBundle missingCountermodelRefute : RefuteProblem
 
 contextModule : QName → Bool
 contextModule q = safeQName q ∧ anyᵇ (λ p → isPrefix p (full q))
@@ -1374,10 +1375,20 @@ witnessNamespaceProblems specMod c = (if modName c ==ᴺ specMod then unauthoriz
     -- Neither side of the witness may own the trusted goal's name.
     shadow : QName → List RefuteProblem
     shadow q = if anyᵇ (isPrefix (full q))
-      (("Context" ∷ "Taboo" ∷ "SafeTaboo" ∷ []) ∷ ("Data" ∷ "Empty" ∷ "⊥" ∷ [])
+      (("Context" ∷ "Taboo" ∷ "SafeTaboo" ∷ []) ∷ ("Countermodel" ∷ "CountermodelBundle" ∷ [])
+       ∷ ("CountermodelCheck" ∷ "VerifiedClaim" ∷ []) ∷ ("Data" ∷ "Empty" ∷ "⊥" ∷ [])
        ∷ ("Agda" ∷ "Builtin" ∷ "Empty" ∷ "⊥" ∷ []) ∷ [])
       then unauthorizedImport q ∷ [] else []
 
+validIndependenceWithBases : QName → List QName → List String → Code → List RefuteProblem
+validIndependenceWithBases specMod baseMods allowed c = witnessNamespaceProblems specMod c
+  ++ checkWitnessIn (λ _ → tabooExpr) missingTabooProof (specMod ∷ baseMods) (witnessImports (decls c)) allowed c
+  where
+    witnessImports : List Decl → List QName
+    witnessImports [] = []
+    witnessImports (import′ q _ _ _ ∷ ds) = q ∷ witnessImports ds
+    witnessImports (module′ _ _ inner ∷ ds) = witnessImports inner ++ witnessImports ds
+    witnessImports (_ ∷ ds) = witnessImports ds
+
 validIndependence : QName → List String → Code → List RefuteProblem
-validIndependence specMod allowed c = witnessNamespaceProblems specMod c
-  ++ checkWitness tabooExpr missingTabooProof specMod allowed c
+validIndependence specMod = validIndependenceWithBases specMod []

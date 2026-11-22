@@ -577,16 +577,33 @@ private def checkLiftWitness (cfg : MCPConfig) (workDir spec : String) (flags : 
 
 private def verifyDraftGates (cfg : MCPConfig) (workDir role : String) (flags : List String)
     (cand : CodeMod) (refuteSpec ifaceFile : Option String) (ancestors : List CodeMod)
-    (explicitLift : Bool) : IO (Except String (Option String)) := do
+    (explicitLift : Bool) (modelMod : Option CodeMod := none) (isModelBundle : Bool := false) :
+    IO (Except String (Option String)) := do
   if explicitLift then
     let some spec := refuteSpec | return .error "REFUTE_GATE_ERROR\nmissing node SPECIFICATION"
     return ← checkLiftWitness cfg workDir spec flags ancestors cand
   let file ← writeGateInput workDir "candidate" cand
+  if isModelBundle then
+    match ← runGateEngine cfg (#["check-countermodel", file] ++ flags.toArray) with
+    | .ok "OK:countermodel-bundle" => return .ok (some "countermodel-bundle")
+    | .ok e => return .error e
+    | .error e => return .error e
   if let some specName := refuteSpec then
-    let hint := "\nExpose a closed, public proof of Data.Empty.⊥ or Context.Taboo.SafeTaboo; import the node SPECIFICATION for its assumptions."
-    match ← runGateEngine cfg (#["check-refute", specName, file] ++ flags.toArray) with
+    let gateFile ← match modelMod with
+      | some m => do
+          let p := s!"{workDir}/refute-bundle.sexp"
+          IO.FS.writeFile p (renderTopSExpr (.list (.sym "bundle" :: (ancestors ++ [m, cand]).map encodeCodeMod)))
+          pure p
+      | none =>
+          if ancestors.isEmpty || declaresBottom cand then pure file else do
+            let p := s!"{workDir}/refute-bundle.sexp"
+            IO.FS.writeFile p (renderTopSExpr (.list (.sym "bundle" :: (ancestors ++ [cand]).map encodeCodeMod)))
+            pure p
+    let hint := "\nExpose a closed, public proof of Data.Empty.⊥, Context.Taboo.SafeTaboo, or CountermodelCheck.VerifiedClaim."
+    match ← runGateEngine cfg (#["check-refute", specName, gateFile] ++ flags.toArray) with
     | .ok "OK:contradiction" => return .ok (some "contradiction")
     | .ok "OK:independent" => return .ok (some "independent")
+    | .ok "OK:countermodel" => return .ok (some "countermodel")
     | .ok e =>
         if declaresBottom cand && onlyAncestorImports e ancestors then
           return ← checkLiftWitness cfg workDir specName flags ancestors cand
@@ -605,7 +622,8 @@ private def verifyDraftGates (cfg : MCPConfig) (workDir role : String) (flags : 
 
 private def checkStagedDraft (cfg : MCPConfig) (workDir mainPath modName role : String)
     (deps flags : List String) (refuteSpec ifaceFile : Option String)
-    (ancestorPaths : List String := []) (explicitLift : Bool := false) : IO Json := do
+    (ancestorPaths : List String := []) (explicitLift : Bool := false)
+    (modelPath : Option String := none) (isModelBundle : Bool := false) : IO Json := do
   let (depPoints, mainPoint) ← match ← dumpSurfaceBundle deps mainPath cfg.libDir s!"{workDir}/parse" cfg.dumpBin with
     | .ok bundle => pure bundle
     | .error e => return mkToolResult s!"SCOPE_GATE_ERROR:\n{e}" true
@@ -620,14 +638,16 @@ private def checkStagedDraft (cfg : MCPConfig) (workDir mainPath modName role : 
   let laws := primitiveCertificates cm.modName.full cm.decls
   for law in laws do observe cfg modName law
   let bases := depPoints.filterMap fun (u, c) => if ancestorPaths.contains u.path then some c else none
-  let verdict ← match ← verifyDraftGates cfg workDir role flags cm refuteSpec ifaceFile bases explicitLift with
+  let modelMod := modelPath.bind fun mp => depPoints.findSome? fun (u, c) => if u.path == mp then some c else none
+  let verdict ← match ← verifyDraftGates cfg workDir role flags cm refuteSpec ifaceFile bases explicitLift modelMod isModelBundle with
     | .error e => return mkToolResult e true
     | .ok v => pure v
   let hint := if !closed && (primitiveHint cm.decls || !laws.isEmpty) then
-    "\n[SAFE_INDEPENDENCE_HINT] Primitive comparison computes on literals. Check whether the assumptions imply open-variable reflexivity. If so, derive Context.Taboo.SafeTaboo or use a constructive comparison such as Context.Tools.FsSandbox.eqStr."
+    "\n[SAFE_INDEPENDENCE_HINT] Primitive comparison computes on literals. Check whether the assumptions imply open-variable reflexivity. If so, derive Context.Taboo.SafeTaboo or submit (kind countermodel), or use a constructive comparison such as Context.Tools.FsSandbox.eqStr."
     else ""
+  let isIndep := verdict == some "independent" || verdict == some "countermodel"
   let unsupported (reason : String) : IO Json := do
-    if verdict == some "independent" then
+    if isIndep then
       let msg := s!"independence requires a scope-checked, kernel-audited witness. Rewrite the proof using FastFocus-supported syntax and run check_agda again:\n{reason}"
       appendNarrowEvent cfg "independence_prism_required" modName msg
       return mkToolResult msg true
@@ -644,7 +664,7 @@ private def checkStagedDraft (cfg : MCPConfig) (workDir mainPath modName role : 
   if !slow.isEmpty then appendNarrowEvent cfg "prism_slow_slice" modName (String.intercalate ", " slow)
   let sliceInfo := formatSliceSummary slice
   let (code, msg) ← checkSlicedBundle cfg.libDir s!"{workDir}/lean" slicedDeps sm
-    (if verdict == some "independent" then refuteSpec else none)
+    (if isIndep then refuteSpec else none)
   if code == exitOK then
     let label := if role == "spec" then "specification " else ""
     let witness := verdict.map (fun k => s!" [witness: {k}]") |>.getD ""
@@ -687,7 +707,12 @@ private def checkAgdaNode (cfg : MCPConfig) (args : Json) (workDir : String) : I
     | .error e => return mkToolResult s!"SYNTAX_ERROR: {e}" true
     | .ok u => pure u
   if let some err ← checkBoundary cfg false hdr.modName hdr.imports then return mkToolResult err true
-  let refuteSpec := spec.filter fun s => !allowPost && (witnessRequested || (hdr.modName != s.name && hdr.imports.contains s.name))
+  let usesBridge := !allowPost && hdr.imports.contains "CountermodelCheck"
+  let isModelBundle := !allowPost && !usesBridge && hdr.imports.contains "Countermodel" &&
+    spec.all (fun s => hdr.modName != s.name && !hdr.imports.contains s.name)
+  let refuteSpec := spec.filter fun s => !allowPost && (witnessRequested || usesBridge || (hdr.modName != s.name && hdr.imports.contains s.name))
+  if usesBridge && refuteSpec.isNone then
+    return mkToolResult "REFUTE_GATE_ERROR\nCountermodelCheck requires node SPECIFICATION and allow_postulates=false" true
   if refuteSpec.any (fun s => s.name == hdr.modName) then
     return mkToolResult "REFUTE_GATE_ERROR\nwitness module shadows SPECIFICATION" true
   let mut deps : List String := []
@@ -699,10 +724,46 @@ private def checkAgdaNode (cfg : MCPConfig) (args : Json) (workDir : String) : I
           return mkToolResult s!"REFUTE_GATE_ERROR\nwitness module shadows ancestor {name}" true
         deps := deps ++ [fp]
   let ancestorPaths := deps
+  let mut modelPath : Option String := none
+  if isModelBundle || usesBridge then
+    let cmLibSrc ← match ← runGateEngine cfg #["countermodel-lib"] with
+      | .ok s => pure s
+      | .error e => return mkToolResult s!"REFUTE_GATE_ERROR: {e}" true
+    let cmLibPath ← match ← writeModuleToWork cfg srcDir cmLibSrc with
+      | .ok (_, _, p) => pure p
+      | .error e => return mkToolResult s!"REFUTE_GATE_ERROR: {e}" true
+    deps := deps ++ [cmLibPath]
+    if usesBridge then
+      let rawModel? := (jsonStrField args "model_block").orElse fun _ =>
+        match jsonStrArrayField args "dep_blocks" with
+        | [m] => some m
+        | _ => none
+      let some rawModel := rawModel?
+        | return mkToolResult "REFUTE_GATE_ERROR\nCountermodelCheck witness requires 'model_block' (or single @model in 'dep_blocks')" true
+      let modelSrc ← match ← resolveBlockOrInline cfg rawModel with
+        | .ok s => pure s
+        | .error e => return mkToolResult e true
+      let mPath ← match ← writeModuleToWork cfg srcDir modelSrc with
+        | .ok (mName, mImps, p) =>
+            if let some err ← checkBoundary cfg false mName mImps then return mkToolResult err true
+            pure p
+        | .error e => return mkToolResult e true
+      let (_, (_, modelCode)) ← match ← dumpSurfaceBundle [cmLibPath] mPath cfg.libDir s!"{workDir}/model_parse" cfg.dumpBin with
+        | .ok b => pure b
+        | .error e => return mkToolResult s!"SCOPE_GATE_ERROR (@model):\n{e}" true
+      let modelGateFile ← writeGateInput workDir "model" modelCode
+      let bridgeSrc ← match ← runGateEngine cfg (#["countermodel-bridge", modelGateFile] ++ flags.toArray) with
+        | .ok s => pure s
+        | .error e => return mkToolResult e true
+      let bPath ← match ← writeModuleToWork cfg srcDir bridgeSrc with
+        | .ok (_, _, p) => pure p
+        | .error e => return mkToolResult s!"REFUTE_GATE_ERROR: {e}" true
+      deps := deps ++ [mPath, bPath]
+      modelPath := some mPath
   let mut ifaceFile : Option String := none
   if let some s := spec then
     if refuteSpec.isSome || (!allowPost && hdr.modName == s.name) then
-      match ← specGateInput cfg workDir deps s with
+      match ← specGateInput cfg workDir ancestorPaths s with
       | .error e => return mkToolResult s!"SPECIFICATION_GATE_ERROR: {e}" true
       | .ok sf =>
           if refuteSpec.isSome then
@@ -718,7 +779,7 @@ private def checkAgdaNode (cfg : MCPConfig) (args : Json) (workDir : String) : I
             ifaceFile := some sf
   -- A witness is checked against the actual task assumptions even if a caller
   -- supplied an alternative spec or a forged Context module in dep_blocks.
-  if refuteSpec.isNone then
+  if refuteSpec.isNone && !isModelBundle then
     for da in jsonStrArrayField args "dep_blocks" do
       match ← resolveBlockOrInline cfg da with
       | .error e => return mkToolResult e true
@@ -733,7 +794,7 @@ private def checkAgdaNode (cfg : MCPConfig) (args : Json) (workDir : String) : I
   | .ok (name, _, path) =>
       let role := if allowPost then "subspec" else "closed"
       checkStagedDraft cfg workDir path name role ((deps.filter (· != path)).eraseDups)
-        flags (refuteSpec.map (·.name)) ifaceFile ancestorPaths explicitLift
+        flags (refuteSpec.map (·.name)) ifaceFile ancestorPaths explicitLift modelPath isModelBundle
 
 private def handleCheckAgdaNode (cfg : MCPConfig) (args : Json) : IO Json := do
   let workDir := s!"{cfg.ctxDir}/check_{← IO.monoNanosNow}"

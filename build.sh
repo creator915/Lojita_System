@@ -32,6 +32,8 @@ trap 'rm -f -- "$engine_stage"' EXIT
   --dep Code/Parse.agda \
   --dep Code/Render.agda \
   --dep Code/Namespace.agda \
+  --dep Code/Countermodel/Wire.agda \
+  --dep Code/Countermodel.agda \
   --dep Code/PolyTransport.agda \
   --dep Code/NodeTransport.agda \
   --dep Code/Submission.agda \

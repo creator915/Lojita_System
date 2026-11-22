@@ -549,9 +549,19 @@ private def rewriteBody (ctx : EmitCtx) (lvls : List String) (ty : Expr) (eqs : 
         steps := steps.push (← `(tactic| try simp only [$[$heads:ident],*] at $h:ident ⊢))
     let proof ← expr ctx lvls p
     let eqProof ← `($(mkIdent `AgdaMirror.agdaIdToEq) $proof)
-    let step ← if heads.isEmpty then `(tactic| rewrite [$eqProof:term]) else
+    let direct ← if heads.isEmpty then `(tactic| rewrite [$eqProof:term]) else
       `(tactic| first | rewrite [$eqProof:term] | rewrite (config := {transparency := .default}) [$eqProof:term] | (try dsimp only [$[$heads:ident],*]; rewrite (config := {transparency := .default}) [$eqProof:term]))
-    steps := steps.push step
+    let h := ident "_agdaRewriteEq"
+    let exposed ← `(tactic| (
+      have $h:ident := $eqProof:term
+      set_option smartUnfolding false in conv at $h:ident => lhs; whnf
+      set_option smartUnfolding false in conv => arg 1; whnf
+      set_option smartUnfolding false in conv => arg 2; whnf
+      rewrite (config := {transparency := .default}) [$h:ident]))
+    let target ← `(tactic| (
+      set_option smartUnfolding false in conv => arg 1; whnf
+      rewrite (config := {transparency := .default}) [$eqProof:term]))
+    steps := steps.push (← `(tactic| first | $direct:tactic | $target:tactic | $exposed:tactic))
   steps := steps.push (← `(tactic| exact $body))
   `(by $[$steps:tactic];*)
 

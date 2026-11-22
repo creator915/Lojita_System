@@ -17,11 +17,13 @@ open import Function.Base using (case_of_)
 open import OwnershipIO using (RunningIO; EnvIO; onCall)
 open import OwnershipIO.FFI using (mkdirP; fileExists; dirExists; listDirectory; absolutePath; failIO; readProcessAt; ProcResult; procResult; stripStdlibWarnings)
 open import OwnershipIO.MetaFFI using (withPrivateTemp; writeUTF8; catchIO; copyReadOnly; sealDirectory; inspectSourceDiag; appendNarrowingEvent)
-open import Code using (Code; QName; validIndependence; full; modName; eqList; anyᵇ; filterᵇ; hasWord; _==ˢ_; closedImplOK; flagsOK; flagsOf; ImplProblem; flagEnvelopeViolation)
+open import Code using (Code; QName; RefuteProblem; validIndependenceWithBases; full; modName; eqList; anyᵇ; filterᵇ; hasWord; _==ˢ_; _==ᴺ_; closedImplOK; flagsOK; flagsOf; ImplProblem; flagEnvelopeViolation)
 open import Code.SExpr using (SExpr; list; str; sym; showSExpr)
 open import Code.Encode using (encodeCode; encodeCanonical)
 open import Code.Parse using (parse)
 open import Code.Render using (render)
+import Code.Countermodel as CM
+import Code.Namespace as NS
 open import Code.Prompt using (showRefuteProblem)
 open import Code.AgdaTool using (parentPath)
 open import Code.Protocol using (AIReq; AIReply; AgdaCheckReq; CheckPurpose; agdaCheck; checkRequest; ordinaryCheck; independenceCheck; narrowedSubspec; checkPurpose; DumpReq; dumpReq; DumpResult; dumped; dumpFailed)
@@ -232,27 +234,65 @@ private
             else if encodeCanonical actual ==ˢ encodeCanonical stub
                  then prepareSource log false raw else prepareCode false stub
 
-      checkedWitness : QName → List String → String → Prim.IO SourceUnit
-      checkedWitness spec flags witness = Sandbox.sandboxDump (repo / "dump/dump") repo scratch ancestors
+      checkedWitness : (Code → List RefuteProblem) → String → Prim.IO SourceUnit
+      checkedWitness validate witness = Sandbox.sandboxDump (repo / "dump/dump") repo scratch ancestors
         (dumpReq witness [] depCs) >>= λ where
           (dumpFailed e) → failIO e
-          (dumped actual) → case validIndependence spec flags actual of λ where
+          (dumped actual) → case validate actual of λ where
             [] → if encodeCanonical actual ==ˢ encodeCanonical mainC
                  then prepareSource log false witness
                  else failIO "INDEPENDENCE_SPEC_ERROR: authored witness and staged proof disagree"
             ps@(_ ∷ _) → failIO ("Agda independent witness gate:\n" ++ˢ unlines (map showRefuteProblem ps))
 
+      findMod : QName → List Code → Maybe Code
+      findMod _ [] = nothing
+      findMod q (c ∷ cs) = if modName c ==ᴺ q then just c else findMod q cs
+
+      findBridgeModel : Code → List Code → Maybe Code
+      findBridgeModel bridge [] = nothing
+      findBridgeModel bridge (c ∷ cs) =
+        if not (modName c ==ᴺ CM.countermodelMod) ∧ not (modName c ==ᴺ CM.bridgeMod)
+           ∧ anyᵇ (_==ᴺ_ (modName c)) (NS.moduleImports bridge)
+        then just c else findBridgeModel bridge cs
+
       inputs : String → List Code → CheckPurpose → List Code → Prim.IO (List String)
-      inputs work inherited (independenceCheck spec flags raw witness) (stub ∷ bases) = do
-        s ← witnessInput spec raw bases stub
-        ds ← prepareAll (prepareCode false) (inherited ++ bases)
-        w ← checkedWitness spec flags witness
-        paths ← writeUnits work (s ∷ ds)
-        files ← writeUnits work (w ∷ [])
-        case files of λ where
-          (file ∷ []) → return ("--independence-spec" ∷ intersperse "." (full spec) ∷ "--main" ∷ file ∷ depFlags paths)
-          _ → failIO "INDEPENDENCE_SPEC_ERROR: missing witness source"
-      inputs _ _ (independenceCheck _ _ _ _) [] = failIO "INDEPENDENCE_SPEC_ERROR: missing specification"
+      inputs work inherited (independenceCheck spec flags raw witness) cs with findMod spec cs
+      ... | nothing = failIO "INDEPENDENCE_SPEC_ERROR: missing specification"
+      ... | just stub =
+        let otherDeps = filterᵇ (λ d → not (modName d ==ᴺ spec)) cs in
+        case findMod CM.bridgeMod otherDeps of λ where
+          nothing → do
+            s ← witnessInput spec raw otherDeps stub
+            ds ← prepareAll (prepareCode false) (inherited ++ otherDeps)
+            w ← checkedWitness (validIndependenceWithBases spec (map modName (inherited ++ otherDeps)) flags) witness
+            paths ← writeUnits work (s ∷ ds)
+            files ← writeUnits work (w ∷ [])
+            case files of λ where
+              (file ∷ []) → return ("--independence-spec" ∷ intersperse "." (full spec) ∷ "--main" ∷ file ∷ depFlags paths)
+              _ → failIO "INDEPENDENCE_SPEC_ERROR: missing witness source"
+          (just bridge) → case findMod CM.countermodelMod otherDeps of λ where
+            nothing → failIO "INDEPENDENCE_SPEC_ERROR: missing Countermodel library"
+            (just cmLib) → case findBridgeModel bridge otherDeps of λ where
+              nothing → failIO "INDEPENDENCE_SPEC_ERROR: missing countermodel module"
+              (just modelC) → case CM.validCountermodel flags modelC of λ where
+                ps@(_ ∷ _) → failIO ("validCountermodel:\n" ++ˢ unlines (map showRefuteProblem ps))
+                [] → case CM.firstBundleUnit modelC of λ where
+                  nothing → failIO "INDEPENDENCE_SPEC_ERROR: missing CountermodelBundle export"
+                  (just bName) →
+                    if not ((encodeCanonical cmLib ==ˢ encodeCanonical CM.countermodelLib)
+                            ∧ (encodeCanonical bridge ==ˢ encodeCanonical (CM.countermodelBridge (modName modelC) bName)))
+                    then failIO "INDEPENDENCE_SPEC_ERROR: forged Countermodel or CountermodelCheck dependency"
+                    else do
+                      let isAux = λ d → (modName d ==ᴺ CM.countermodelMod) ∨ (modName d ==ᴺ CM.bridgeMod) ∨ (modName d ==ᴺ modName modelC)
+                          taskBases = filterᵇ (λ d → not (isAux d)) otherDeps
+                      s ← witnessInput spec raw taskBases stub
+                      ds ← prepareAll (prepareCode false) (inherited ++ otherDeps)
+                      w ← checkedWitness (CM.validCountermodelRefute spec (map modName (inherited ++ taskBases)) (modName modelC) flags) witness
+                      paths ← writeUnits work (s ∷ ds)
+                      files ← writeUnits work (w ∷ [])
+                      case files of λ where
+                        (file ∷ []) → return ("--independence-spec" ∷ intersperse "." (full spec) ∷ "--main" ∷ file ∷ depFlags paths)
+                        _ → failIO "INDEPENDENCE_SPEC_ERROR: missing witness source"
       inputs work inherited _ cs = writeBundle work mainC (inherited ++ cs) >>= λ bundle →
         return ("--sexpr-bundle" ∷ bundle ∷ [])
 

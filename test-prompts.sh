@@ -34,6 +34,7 @@ quiet() {
 }
 echo "Building the protocol checker, dump and sandbox relays"
 quiet ghc -O2 -threaded -package Agda -outputdir "$scratch/ghc" dump/Dump.hs -o "$scratch/dump"
+DUMP_BIN="$scratch/dump" python3 "$root/scripts/embed_countermodel.py" --check
 quiet cc -std=c11 -O2 -Wall -Wextra -Werror -static runtime/term-relay.c -o "$scratch/term-relay"
 quiet cc -std=c11 -O2 -Wall -Wextra -Werror -static runtime/tools/fs-relay.c -o "$scratch/fs-relay"
 quiet cc -std=c11 -O2 -Wall -Wextra -Werror -static runtime/tools/net-relay.c -o "$scratch/net-relay"
@@ -44,6 +45,7 @@ quiet agda --compile --ghc-flag=-O0 "--ghc-flag=-i$repo/runtime" "--ghc-flag=-i$
   -i . -i /usr/share/agda-stdlib Test/PromptExamplesCheck.agda
 "$build/PromptExamplesCheck" env "$scratch/candidate" "$scratch/term-relay" "$scratch/resources" \
   > "$scratch/env/SessionEnv.agda"
+"$build/PromptExamplesCheck" countermodel-lib > "$scratch/env/Countermodel.agda"
 
 cd "$scratch"
 python3 - "$root" "$scratch" <<'PY'
@@ -130,7 +132,7 @@ for prompt, symbol, kind in [
             key = remember(text, where)
             sources[key] = where
             # These standalone blocks show interfaces supplied by the harness.
-            if tag == 'agda' and key[0] in ('SwitchSpec', 'PrimStrSpec', 'Gen.U0.Root'):
+            if tag == 'agda' and key[0] in ('SwitchSpec', 'PrimStrSpec', 'DashSpec', 'Gen.U0.Root'):
                 roles[key] = 'spec'
             continue
 
@@ -143,7 +145,7 @@ for prompt, symbol, kind in [
         fields = wire.with_suffix('.fields')
         fields.mkdir()
         run([checker, kind, fields, wire])
-        for field in fields.iterdir():
+        for field in sorted(fields.iterdir()):
             if field.name in ('entry', 'mode'):
                 continue
             spec = field.name == 'specSrc' or field.name.startswith('subspec-')
@@ -196,6 +198,8 @@ for i, key in enumerate(sources):
         role = 'io'
     run([checker, 'dump', role, ast])
     dumps[key] = ast
+    if name == 'DashModel':
+        (tmp / 'env/CountermodelCheck.agda').write_text(run([checker, 'countermodel-bridge', ast]))
 
 for name, base in [('Gen.T0.Base', 'Gen.T0.Base'), ('Gen.T1.Emph', 'Gen.T0.Base'),
                    ('Gen.B1.Root0', 'Gen.B0.Root0')]:
@@ -203,6 +207,7 @@ for name, base in [('Gen.T0.Base', 'Gen.T0.Base'), ('Gen.T1.Emph', 'Gen.T0.Base'
     run([checker, 'squares', actions[spec], dumps[defaults[base]], dumps[defaults[name]], dumps[spec]])
 run([checker, 'refutation', dumps[defaults['SwitchSpec']], dumps[defaults['Refute']]])
 run([checker, 'independence', dumps[defaults['PrimStrSpec']], dumps[defaults['UnprovableRefute']]])
+run([checker, 'countermodel', dumps[defaults['DashSpec']], dumps[defaults['DashModel']], dumps[defaults['DashRefute']]])
 print("Specifications, refutation, independence, LiftSpec and one-to-many PolyTransport squares passed", flush=True)
 
 if '(entry "Gen.T1.Emph.app")' not in (root / "prompts/session-open-world.md").read_text():

@@ -265,7 +265,17 @@ applyDecls path p ds = freshPragmas ++ freshImports ++ go ds false false
     freshPragmas = if anyᵇ isPragma ds then [] else newPragmas
 
     removedImport : QName → List Decl → Bool
-    removedImport m a = not (nullᵇ a) ∧ allᵇ (λ u → elemᵇ _==ᴼ_ ⊥ (targetsOf p (ext (uname u)))) (unitsIn (full m) a)
+    removedImport m a = not (nullᵇ a) ∧ allᵇ retired (unitsIn (full m) a)
+      where
+        leavesSlot : Obj → Bool
+        leavesSlot (ext v) = not (isPrefix (full m) (full v))
+        leavesSlot ⊥ = true
+        leavesSlot _ = false
+
+        retired : Unit → Bool
+        retired u with targetsOf p (ext (uname u))
+        ... | [] = false
+        ... | ts@(_ ∷ _) = elemᵇ _==ᴼ_ ⊥ ts ∨ allᵇ leavesSlot ts
 
     -- ins：新声明是否已经放进去了；prag：新 pragma 是否已经放进去了（整体替换：旧 pragma 都不要了）
     go : List Decl → Bool → Bool → List Decl
@@ -688,15 +698,23 @@ inherit p m = untouched ++ map forTarget (filterᵇ notBot (nubᵇ _==ᴼ_ (tgts
     notBot ⊥ = false
     notBot _ = true
     untouched : Memory
-    untouched = filterᵇ (λ e → not (isSrc p (proj₁ e)) ∧ not (isTgt p (proj₁ e))) m
+    untouched = filterᵇ untouchedEntry m
+      where
+        untouchedEntry : Obj × List String → Bool
+        untouchedEntry (⊥ , _) = not (isTgt p ⊥)
+        untouchedEntry (o , _) = not (isSrc p o) ∧ not (isTgt p o)
     -- 靶 t 的记忆：所有源的记忆接起来，再加这次的 why
     forTarget : Obj → Obj × List String
-    forTarget t = t , (concatMap (notesOf m) (sourcesOf p t) ++ (why p ∷ []))
+    forTarget t = t , (initial ++ concatMap (notesOf m) incoming ++ [ why p ])
+      where
+        incoming = sourcesOf p t
+        -- A new slot may already carry notes at a birth target in its m₀.
+        initial = if elemᵇ _==ᴼ_ ⊥ incoming ∧ not (isSrc p t) then notesOf m t else []
     -- 坟场：丢掉的东西的记忆，加上为什么丢
     graveyard : Memory
     graveyard with sourcesOf p ⊥
     ... | [] = []
-    ... | ds = (⊥ , concatMap (notesOf m) ds ++ (why p ∷ [])) ∷ []
+    ... | ds = (⊥ , notesOf m ⊥ ++ concatMap (notesOf m) (filterᵇ notBot ds) ++ (why p ∷ [])) ∷ []
 
 ------------------------------------------------------------------------
 -- §10  报告：孩子做完以后说什么
@@ -788,7 +806,10 @@ alignSpecΔ old oldSpec raw with objects old | map uname (units (stubOf raw)) | 
 
     align : Proarrow → List Proarrow
     align (⊥ ⇝ ext v) = [ supply v ]
-    align a@(ext u ⇝ ext v) = [ if present u then a else supply v ]
+    align a@(ext u ⇝ ext v) with underModule (child raw) (ext u) | underModule (child raw) (ext v)
+    ... | true | false = []  -- complete supplies the surviving or retired source locally
+    ... | false | true = [ supply v ]
+    ... | _ | _ = [ if present u then a else supply v ]
     align a@(ext u ⇝ ⊥) = if present u then [ a ] else []
     align a = [ a ]
 
@@ -856,3 +877,39 @@ absorbDeadMemory k childMem parentMem =
   filterᵇ (λ e → not (proj₁ e ==ᴼ ⊥) ∧ not (underModule k (proj₁ e))) parentMem
   ++ ((⊥ , notesOf parentMem ⊥ ++ concatMap proj₂ childMem
          ++ concatMap proj₂ (filterᵇ (λ e → underModule k (proj₁ e)) parentMem)) ∷ [])
+
+-- A parent can route only notes attached to the named local source unit.
+-- Other entries (including private helpers and the child's own graveyard)
+-- never acquire a destination just because their child was split.
+ChildMemories = List (QName × Memory)
+
+crossesChildren : QName → QName → Proarrow → Bool
+crossesChildren from to a = not (from ==ᴺ to) ∧ underModule from (src a) ∧ underModule to (tgt a)
+
+crossChildMemory : Plan → ChildMemories → QName → Memory
+crossChildMemory pl sources to = map gather (nubᵇ _==ᴼ_ (map proj₁ routed))
+  where
+    along : QName → Memory → Proarrow → Memory
+    along from mem a@(ext u ⇝ ext v) with crossesChildren from to a ∧ anyᵇ (λ e → proj₁ e ==ᴼ unit u) mem
+    ... | true = [ unit v , notesOf mem (unit u) ]
+    ... | false = []
+    along _ _ _ = []
+
+    routed = concatMap (λ e → concatMap (along (proj₁ e) (proj₂ e)) (moves pl)) sources
+    gather : Obj → Obj × List String
+    gather target = target , notesOf routed target ++ [ why pl ]
+
+mergeMemory : Memory → Memory → Memory
+mergeMemory m [] = m
+mergeMemory m additions = map gather (nubᵇ _==ᴼ_ (map proj₁ (m ++ additions)))
+  where
+    gather : Obj → Obj × List String
+    gather o = o , existing ++ filterᵇ (λ n → not (elemᵇ _==ˢ_ n existing)) (notesOf additions o)
+      where existing = notesOf m o
+
+unmappedChildMemory : Plan → List QName → QName → Memory → Memory
+unmappedChildMemory pl wanted from = filterᵇ (λ e → not (routed (proj₁ e)))
+  where
+    routed : Obj → Bool
+    routed (unit u) = anyᵇ (λ a → (src a ==ᴼ ext u) ∧ anyᵇ (λ to → crossesChildren from to a) wanted) (moves pl)
+    routed _ = false

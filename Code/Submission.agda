@@ -16,6 +16,7 @@ data Submission : Set where
   addMoves : List Proarrow → Maybe String → Submission
   refute : String → Submission
   independent : String → String → Submission
+  submitCountermodel : String → String → String → Submission
   refuteLift : String → String → Submission
 
 private
@@ -129,6 +130,10 @@ decodeSubmission (list (sym "submission" ∷ fs)) = if uniqueFields [] fs then k
     kind (just (sym "contradiction" ∷ [])) =
       if allowedFields ("kind" ∷ "refute" ∷ []) fs then (textField "refute" fs >>= λ src → just (refute src)) else nothing
     kind (just (sym "independent" ∷ [])) = witness independent
+    kind (just (sym "countermodel" ∷ [])) =
+      if allowedFields ("kind" ∷ "why" ∷ "model" ∷ "refute" ∷ "witness" ∷ []) fs then
+        (reason >>= λ why → textField "model" fs >>= λ m → witnessSource >>= λ r → just (submitCountermodel why m r))
+      else nothing
     kind (just (sym "refute-lift" ∷ [])) = witness refuteLift
     kind _ = nothing
 decodeSubmission _ = nothing
@@ -184,7 +189,7 @@ explainSubmissionFailure s with s ==ˢ ""
       "submission: malformed envelope fields or moves (note: found quoted string " ++ˢ intersperse ", " q
       ++ˢ " — write bare @name WITHOUT double quotes to reference a draft/fence block!)"
     ... | [] | [] =
-      "submission: envelope parsed as S-expression, but failed schema check (expected `(submission (kind plan|add-moves|contradiction|independent|refute-lift) ...)` with unique valid fields: `plan` requires `why`, `main`, `moves`, optional `subspecs`; `independent` and `refute-lift` accept optional `why` and exactly one of (refute @proof) or (witness @proof); `moves` entries must be `(move SRC TGT)` where SRC/TGT are `bot`, `flags`, `(unit \"...\")`, or `(ext \"...\")`)"
+      "submission: envelope parsed as S-expression, but failed schema check (expected `(submission (kind plan|add-moves|contradiction|independent|countermodel|refute-lift) ...)` with unique valid fields: `plan` requires `why`, `main`, `moves`, optional `subspecs`; `independent` and `refute-lift` accept optional `why` and exactly one of (refute @proof) or (witness @proof); `countermodel` requires `model` and `refute`/`witness` plus optional `why`; `moves` entries must be `(move SRC TGT)` where SRC/TGT are `bot`, `flags`, `(unit \"...\")`, or `(ext \"...\")`)"
     inspectEnv : Maybe SExpr → String
     inspectEnv nothing =
       "submission: top-level text outside ```agda fences is not a single valid S-expression (output ONLY the `(submission ...)` S-expression without narrative prose!). Prefix seen:\n"

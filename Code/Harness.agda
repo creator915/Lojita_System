@@ -3,19 +3,21 @@ module Code.Harness where
 
 open import Data.Nat using (ℕ; zero; suc)
 open import Data.Bool using (Bool; true; false; not; _∧_; _∨_; if_then_else_)
-open import Data.List using (List; []; _∷_; _++_; map; concatMap)
+open import Data.List using (List; []; _∷_; _++_; map; concatMap; reverse)
 open import Data.List.Relation.Unary.Any using (here; there)
 open import Data.Maybe using (Maybe; just; nothing; maybe′)
 open import Data.Product using (_×_; _,_; proj₁; proj₂; Σ)
 open import Data.String using (String; unlines; intersperse) renaming (_++_ to _++ˢ_)
 open import Data.Unit using (⊤; tt)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; cong; subst)
+open import Function using (case_of_)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; cong; subst; inspect; [_])
 open import Ownership hiding (Home; Agent; wake; mockAgent)
 open import Code hiding (Name; set; open′)
 open import Code.Transport
 open import Code.Lift
 import Code.NodeTransport as NT
 import Code.Namespace as NS
+import Code.Countermodel as CM
 import Code.PlanPreview as Preview
 import Code.PolyTransport as PT
 open import Code.TreeSnapshot using (freezeHome; thawHome; plantFrozenAt)
@@ -149,37 +151,130 @@ private
       submitted = map (λ e → moduleQName (proj₁ e)) subs
       existing  = map (λ e → moduleQName (proj₁ e)) ks
 
--- Reconcile existing resources only after the conditional proof has passed.
--- A sibling whose interface and g references survive is kept as the same Chan.
+  -- Export order is owner, alias, implementation, then its descendants.
+  -- Checking it backwards supplies each parent with its checked children.
+  compileSaved : ∀ {Γ} → (AgdaCheckReq → Prog NodeΨ (Dir Γ) (Dir Γ) CheckResult) →
+                 List Code → List Code → Prog NodeΨ (Dir Γ) (Dir Γ) Bool
+  compileSaved compiler deps [] = done true
+  compileSaved compiler deps (c ∷ cs) = compiler (agdaCheck c (filterᵇ (λ d → not (modName c ==ᴺ modName d)) deps)) >>= λ where
+    pass → compileSaved compiler (c ∷ deps) cs
+    (fail _) → done false
+
+  reusable : NodeTask → NT.Frozen → Bool
+  reusable t snap = (modName impl ==ᴺ q)
+    ∧ eqDecls (localizeTo q (NT.interface snap)) (localizeTo q requiredIface)
+    ∧ not (nullᵇ (decls impl)) ∧ satisfies (δ t) impl
+    ∧ allᵇ (λ c → nullᵇ (closedImplOK (parentFlags t) c)) exports
+    ∧ nullᵇ (scopeProblems t (withTests impl requiredIface))
+    ∧ liftOK (maybeLift t) ∧ nullᵇ (transports t)
+    where
+      q = child (δ t)
+      requiredIface = newIface (δ t)
+      impl = NT.implementation snap
+      exports = NT.exported snap
+      liftOK : Maybe (Code × LiftSpec) → Bool
+      liftOK nothing = true
+      liftOK (just (_ , l)) = nullᵇ (NT.retainedLift (exports ++ baseModules t) impl l)
+
+  -- The caller can hold any zipper prefix. Borrow the stateless Agda
+  -- service inside the child's reserved tool slot and return the same Home.
+  checkSaved : ∀ {Γ} → NodeTask → NT.Frozen → Prog NodeΨ (Dir Γ) (Dir Γ) Bool
+  checkSaved {Γ} t snap with reusable t snap | member "agda" Γ | inspect (member "agda") Γ
+  ... | true | false | [ eq ] = do
+    mkdir "agda" {{subst (λ b → Data.Bool.T (not b)) (sym eq) tt}}
+    openAs "agda" "agda" tt
+    ok′ ← compileSaved (call "agda") (baseModules t) ordered
+    stop "agda"
+    rmdir "agda"
+    done ok′
+    where
+      impl = NT.implementation snap
+      tested = withTests impl (newIface (δ t))
+      ordered = reverse (NT.exported snap) ++ (if eqCode impl tested then [] else tested ∷ [])
+  ... | _ | _ | _ = done false
+
+  routesFrom : Code → Plan → QName → Bool
+  routesFrom cand pl from = anyᵇ (λ i → anyᵇ (crossesChildren from (imod i)) (moves pl)) (childImports cand)
+
+  receivesNotes : Plan → QName → Bool
+  receivesNotes pl to = anyᵇ incoming (moves pl)
+    where
+      incoming : Proarrow → Bool
+      incoming a@(ext _ ⇝ ext _) = underModule to (tgt a) ∧ not (underModule to (src a))
+      incoming _ = false
+
+  setChildMemory : ∀ {Ψ} (p : Prefix) (ks : List (Name × HomeShape)) → Memory →
+    Prog Ψ (Dir (plug p (KidsCtx ks ++ Leaves))) (Dir (plug p (KidsCtx ks ++ Leaves))) Bool
+  setChildMemory p [] = replaceHead (push ("code" , File Code) p)
+  setChildMemory p ((n , sh) ∷ ks) = setChildMemory (push (n , HomeSt sh) p) ks
+
+  useSaved : ∀ {S n Γ} (p : Prefix) (sh : HomeShape) → Model (HomeSt sh) → Bool → NodeTask → Memory →
+    Proc NodeΨ (plug p ((n , HomeSt sh) ∷ Γ)) S → Proc NodeΨ (plug p ((n , Chan ChildS) ∷ Γ)) S →
+    Proc NodeΨ (plug p ((n , HomeSt sh) ∷ Γ)) S
+  useSaved p sh@(node kids) h canReuse t additions asleep active =
+    run (focusSame slot (subst (λ s → Prog NodeΨ s s Bool) (sym (at-state p (here refl))) prepare)) λ where
+      true → asleep
+      false → run (wakeChild p sh (record t { δ = alignSpecΔ (codeOf sh h) (NT.interface snap) (δ t) })) λ _ → active
+    where
+      slot = at p (here refl)
+      snap = freezeHome sh h
+      prepare : Prog NodeΨ (HomeSt sh) (HomeSt sh) Bool
+      prepare = do
+        _ ← if nullᵇ additions then done true else setChildMemory root kids (mergeMemory (memoryOf sh h) additions)
+        if canReuse then checkSaved t snap else done false
+
+  -- Accumulate each source before changing its slot. An existing recipient
+  -- holds its Home until the suffix has contributed all its source notes.
+  reconcileChildren : ∀ {S} → List (Name × String) → (pfx : Prefix) (ks : Slots) → NodeTask → Code → Code → Plan → Memory → ChildMemories
+                    → ((next : Slots) → Memory → ChildMemories → Proc NodeΨ (plug pfx (liveCtx next)) S)
+                    → Proc NodeΨ (plug pfx (liveCtx ks)) S
+  settleChild : ∀ {S} → Bool → List (Name × String) → (pfx : Prefix) (ks : Slots) (n : Name) (sh : HomeShape)
+              → NodeTask → Code → Code → Plan → Memory → ChildMemories
+              → ((next : Slots) → Memory → ChildMemories → Proc NodeΨ (plug pfx (liveCtx next)) S)
+              → Proc NodeΨ (plug pfx ((n , HomeSt sh) ∷ liveCtx ks)) S
+
+  reconcileChildren raw p [] task old cand pl mem seen k = k [] mem (reverse seen)
+  reconcileChildren raw p ((n , sleeping sh _) ∷ ks) = settleChild true raw p ks n sh
+  reconcileChildren raw p ((n , awake) ∷ ks) task old cand pl mem seen k
+    with wanted cand n ∧ not (impactsChild old cand pl q ∨ routesFrom cand pl q ∨ receivesNotes pl q)
+    where q = moduleQName n
+  ... | true = reconcileChildren raw (push (n , Chan ChildS) p) ks task old cand pl mem seen λ next → k ((n , awake) ∷ next)
+  ... | false = stopHead p λ sh → settleChild false raw p ks n sh task old cand pl mem seen k
+  reconcileChildren raw p ((n , finished) ∷ ks) task old cand pl mem seen k
+    with wanted cand n ∧ not (impactsChild old cand pl q ∨ routesFrom cand pl q ∨ receivesNotes pl q)
+    where q = moduleQName n
+  ... | true = reconcileChildren raw (push (n , Chan ChildS) p) ks task old cand pl mem seen λ next → k ((n , finished) ∷ next)
+  ... | false = stopHead p λ sh → settleChild true raw p ks n sh task old cand pl mem seen k
+
+  settleChild {S} canReuse raw p ks n sh task old cand pl mem seen k =
+    run (focusSame (at p (here refl)) (subst (λ s → Prog NodeΨ s s _) (sym (at-state p (here refl))) (snapshotHome sh))) decide
+    where
+      q = moduleQName n
+      t = childTaskWithRaw raw task cand pl n
+      seen′ = λ h → (q , memoryOf sh h) ∷ seen
+      decide : Model (HomeSt sh) → Proc NodeΨ (plug p ((n , HomeSt sh) ∷ liveCtx ks)) S
+      decide h with NT.findKeep (transports task) q | wanted cand n
+      ... | just _ | _ = dropHead p (homeDroppable sh) (reconcileChildren raw p ks task old cand pl mem (seen′ h) k)
+      ... | nothing | false = dropHead p (homeDroppable sh) (reconcileChildren raw p ks task old cand pl graveyard (seen′ h) k)
+        where graveyard = absorbDeadMemory q (unmappedChildMemory pl (map imod (childImports cand)) q (memoryOf sh h)) mem
+      ... | nothing | true with receivesNotes pl q
+      ...   | true = reconcileChildren raw (push (n , HomeSt sh) p) ks task old cand pl mem (seen′ h) λ slots m sources →
+        useSaved p sh h canReuse t (crossChildMemory pl sources q)
+          (k ((n , sleeping sh true) ∷ slots) m sources) (k ((n , awake) ∷ slots) m sources)
+      ...   | false = useSaved p sh h canReuse t []
+        (reconcileChildren raw (push (n , HomeSt sh) p) ks task old cand pl mem (seen′ h) λ next → k ((n , sleeping sh true) ∷ next))
+        (reconcileChildren raw (push (n , Chan ChildS) p) ks task old cand pl mem (seen′ h) λ next → k ((n , awake) ∷ next))
+
 reconcileWithRaw : ∀ {S} → List (Name × String) → (pfx : Prefix) (ks : Slots) → NodeTask → Code → Code → Plan → Memory
                  → ((next : Slots) → Memory → Proc NodeΨ (plug pfx (liveCtx next)) S)
                  → Proc NodeΨ (plug pfx (liveCtx ks)) S
+reconcileWithRaw raw p ks t old cand pl m k = reconcileChildren raw p ks t old cand pl m [] λ slots mem _ → k slots mem
+
 settleWithRaw : ∀ {S} → List (Name × String) → (pfx : Prefix) (ks : Slots) (n : Name) (sh : HomeShape)
               → NodeTask → Code → Code → Plan → Memory
               → ((next : Slots) → Memory → Proc NodeΨ (plug pfx (liveCtx next)) S)
               → Proc NodeΨ (plug pfx ((n , HomeSt sh) ∷ liveCtx ks)) S
-
-reconcileWithRaw rawSubs pfx [] task old cand pl mem k = k [] mem
-reconcileWithRaw rawSubs pfx ((n , sleeping sh b) ∷ ks) task old cand pl mem k = settleWithRaw rawSubs pfx ks n sh task old cand pl mem k
-reconcileWithRaw rawSubs pfx ((n , awake) ∷ ks) task old cand pl mem k with wanted cand n | impactsChild old cand pl (child (δ (childTaskWithRaw rawSubs task cand pl n)))
-... | true | false = reconcileWithRaw rawSubs (push (n , Chan ChildS) pfx) ks task old cand pl mem λ next m → k ((n , awake) ∷ next) m
-... | _ | _ = stopHead pfx λ sh → settleWithRaw rawSubs pfx ks n sh task old cand pl mem k
-reconcileWithRaw rawSubs pfx ((n , finished) ∷ ks) task old cand pl mem k with wanted cand n | impactsChild old cand pl (child (δ (childTaskWithRaw rawSubs task cand pl n)))
-... | true | false = reconcileWithRaw rawSubs (push (n , Chan ChildS) pfx) ks task old cand pl mem λ next m → k ((n , finished) ∷ next) m
-... | _ | _ = stopHead pfx λ sh → settleWithRaw rawSubs pfx ks n sh task old cand pl mem k
-
-settleWithRaw rawSubs pfx ks n sh@(node kids) task old cand pl mem k with NT.findKeep (transports task) (moduleQName n)
-... | just _ = dropHead pfx (homeDroppable sh) (reconcileWithRaw rawSubs pfx ks task old cand pl mem k)
-... | nothing =
-  run (focusSame (at pfx (here refl))
-    (subst (λ s → Prog NodeΨ s s (Model (HomeSt sh))) (sym (at-state pfx (here refl))) (snapshotHome sh))) λ h →
-    let oldSpec = proj₁ (proj₂ (proj₂ (leavesOf kids h))) in
-    if wanted cand n
-    then run (wakeChild pfx sh (record t { δ = alignSpecΔ (codeOf sh h) oldSpec (δ t) })) (λ _ →
-      reconcileWithRaw rawSubs (push (n , Chan ChildS) pfx) ks task old cand pl mem λ next m → k ((n , awake) ∷ next) m)
-    else dropHead pfx (homeDroppable sh)
-      (reconcileWithRaw rawSubs pfx ks task old cand pl (absorbDeadMemory (child (δ t)) (memoryOf sh h) mem) k)
-  where t = childTaskWithRaw rawSubs task cand pl n
+settleWithRaw raw p ks n sh t old cand pl m k = settleChild true raw p ks n sh t old cand pl m [] λ slots mem _ → k slots mem
 
 reconcile : ∀ {S} (pfx : Prefix) (ks : Slots) → NodeTask → Code → Code → Plan → Memory
           → ((next : Slots) → Memory → Proc NodeΨ (plug pfx (liveCtx next)) S)
@@ -192,29 +287,34 @@ settle : ∀ {S} (pfx : Prefix) (ks : Slots) (n : Name) (sh : HomeShape)
        → Proc NodeΨ (plug pfx ((n , HomeSt sh) ∷ liveCtx ks)) S
 settle = settleWithRaw []
 
-birthWithRaw : ∀ {S} → List (Name × String) → List Import → (ks : Slots) → NodeTask → Code → Plan → Memory
+birthChildren : ∀ {S} → ChildMemories → List (Name × String) → List Import → (ks : Slots) → NodeTask → Code → Plan → Memory
              → ((next : Slots) → Maybe String → Proc NodeΨ (Work next) S)
              → Proc NodeΨ (Work ks) S
-birthWithRaw rawSubs [] ks task cand pl mem k = k ks nothing
-birthWithRaw rawSubs (i ∷ is) ks task cand pl mem k with anyᵇ (λ e → proj₁ e ==ˢ childName i) ks
-... | true = birthWithRaw rawSubs is ks task cand pl mem k
+birthChildren sources rawSubs [] ks task cand pl mem k = k ks nothing
+birthChildren sources rawSubs (i ∷ is) ks task cand pl mem k with anyᵇ (λ e → proj₁ e ==ˢ childName i) ks
+... | true = birthChildren sources rawSubs is ks task cand pl mem k
 ... | false with NT.findKeep (transports task) (imod i)
 ...   | just h with thawHome h
 ...     | sh , m with certify sh
 ...       | nothing = k ks (just "keepChild: invalid sealed ownership shape")
 ...       | just clean = insertDir toolPrefix (childName i)
           (run (plantFrozenAt toolPrefix sh clean m) λ _ →
-           birthWithRaw rawSubs is ((childName i , sleeping sh true) ∷ ks) task cand pl mem k)
+           birthChildren sources rawSubs is ((childName i , sleeping sh true) ∷ ks) task cand pl mem k)
           (k ks (just "keepChild: slot collision"))
-birthWithRaw rawSubs (i ∷ is) ks task cand pl mem k | false | nothing = run (askAI (forkNode (childName i))) λ forked → insertDir toolPrefix (childName i)
-  (run (plantAt toolPrefix empty (restrictMemory (imod i) mem) []) λ _ →
+birthChildren sources rawSubs (i ∷ is) ks task cand pl mem k | false | nothing = run (askAI (forkNode (childName i))) λ forked → insertDir toolPrefix (childName i)
+  (run (plantAt toolPrefix empty (mergeMemory (restrictMemory (imod i) mem) (crossChildMemory pl sources (imod i))) []) λ _ →
    run (wakeChild toolPrefix (node []) (record t
      { δ = alignSpecΔ empty [] (δ t) ; inheritedThread = just (AIReply.threadId forked) })) λ _ →
-   birthWithRaw rawSubs is ((childName i , awake) ∷ ks) task cand pl mem k)
+   birthChildren sources rawSubs is ((childName i , awake) ∷ ks) task cand pl mem k)
   (k ks (just "child name collides with an owned resource"))
   where
     empty = code (imod i) [] []
     t = childTaskWithRaw rawSubs task cand pl (childName i)
+
+birthWithRaw : ∀ {S} → List (Name × String) → List Import → (ks : Slots) → NodeTask → Code → Plan → Memory
+             → ((next : Slots) → Maybe String → Proc NodeΨ (Work next) S)
+             → Proc NodeΨ (Work ks) S
+birthWithRaw = birthChildren []
 
 birth : ∀ {S} → List Import → (ks : Slots) → NodeTask → Code → Plan → Memory
       → ((next : Slots) → Maybe String → Proc NodeΨ (Work next) S)
@@ -420,7 +520,32 @@ handle ks s (just (refute src)) = checkEvidence ks s src ordinaryCheck "validRef
     validateContradiction : QName → List String → Code → List RefuteProblem
     validateContradiction spec allowed c = witnessNamespaceProblems spec c ++ validRefutation spec allowed c
 handle ks s (just (submitIndependent why src)) = checkEvidence ks s src
-  (independenceCheck (child (δ (task s))) (parentFlags (task s)) (rawSpecSource (task s)) src) "validIndependence" validIndependence (independent why)
+  (independenceCheck (child (δ (task s))) (parentFlags (task s)) (rawSpecSource (task s)) src) "validIndependence"
+  (λ spec → validIndependenceWithBases spec (map modName (baseModules (task s)))) (independent why)
+handle ks s (just (submitCountermodel why modelSrc refuteSrc)) =
+  let t      = task s
+      spec   = child (δ t)
+      flags  = parentFlags t
+      bases  = baseModules t
+      stub   = refuteStubOf (δ t)
+  in run (dumpSource (dumpSubmission modelSrc [] (CM.countermodelLib ∷ []))) λ where
+    (dumpFailed e) → respond ks (retry s ("countermodel (@model): " ++ˢ e)) nothing
+    (dumped modelC) → case CM.validCountermodel flags modelC of λ where
+      ps@(_ ∷ _) → respond ks (retry s ("validCountermodel:\n" ++ˢ unlines (map showRefuteProblem ps))) nothing
+      [] → case CM.firstBundleUnit modelC of λ where
+        nothing → respond ks (retry s ("validCountermodel:\n" ++ˢ showRefuteProblem missingCountermodelBundle)) nothing
+        (just bName) → run (checkAgda (agdaCheck modelC (CM.countermodelLib ∷ []))) λ where
+          (fail e) → respond ks (retry s ("countermodel (@model):\n" ++ˢ e)) nothing
+          pass →
+            let bridge  = CM.countermodelBridge (modName modelC) bName
+                allDeps = stub ∷ bases ++ (CM.countermodelLib ∷ modelC ∷ bridge ∷ [])
+            in run (dumpSource (dumpSubmission refuteSrc [] allDeps)) λ where
+              (dumpFailed e) → respond ks (retry s ("countermodel (@refute): " ++ˢ e)) nothing
+              (dumped refuteC) → case CM.validCountermodelRefute spec (map modName bases) (modName modelC) flags refuteC of λ where
+                ps@(_ ∷ _) → respond ks (retry s ("validCountermodelRefute:\n" ++ˢ unlines (map showRefuteProblem ps))) nothing
+                [] → run (checkAgda (checkRequest refuteC allDeps (independenceCheck spec flags (rawSpecSource t) refuteSrc))) λ where
+                  (fail e) → respond ks (retry s ("countermodel (@refute):\n" ++ˢ e)) nothing
+                  pass → respond ks (record s { phase = Done (independent why refuteC) }) (just (independent why refuteC))
 handle ks s (just (refuteLift why src)) with baseModules (task s)
 ... | [] = respond ks (retry s "refute-lift: node has no base modules to refute; use (kind contradiction) if SPECIFICATION is inconsistent") nothing
 ... | bases@(_ ∷ _) = checkEvidence ks s src ordinaryCheck "validLiftRefutation"
@@ -467,8 +592,8 @@ checkPlan ks s p with planError s p (apply p (oldCode s))
     proceed next@(_ ∷ _) mem nothing = respond next (record s { pending = just p ; oldMemory = mem ; runningCode = cand ; diagnostic = "" ; phase = WaitingKids }) nothing
     checkedGlue : CheckResult → Proc NodeΨ (Work ks) StepReply
     checkedGlue (fail e) = respond ks (record (retry s ("glue 2.3:\n" ++ˢ e)) { pending = just p }) nothing
-    checkedGlue pass = reconcileWithRaw (pendingRawSubs s) toolPrefix ks (task s) (runningCode s) cand p (oldMemory s) λ next mem →
-      birthWithRaw (pendingRawSubs s) (childImports cand) next (task s) cand p mem λ next′ err → proceed next′ mem err
+    checkedGlue pass = reconcileChildren (pendingRawSubs s) toolPrefix ks (task s) (runningCode s) cand p (oldMemory s) [] λ next mem sources →
+      birthChildren sources (pendingRawSubs s) (childImports cand) next (task s) cand p mem λ next′ err → proceed next′ mem err
 
 finish ks s p = freeze toolPrefix ks λ ss →
   run (snapshotKids toolPrefix ss) λ snapshot →

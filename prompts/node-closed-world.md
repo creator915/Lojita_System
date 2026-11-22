@@ -15,7 +15,7 @@
 每次只返回一个 `(submission ...)`，可附命名源码围栏。用 Agda 2.6.3 源码，协议会解析成 Code。所有提交代码（`main`、`refute` 以及每一份 `subspec`）在跨边界或唤醒孩子前都必须通过编译检查。实现和反驳须闭合，禁止 `postulate`、洞、终止性绕过和越权 OPTIONS。给孩子的 subspec 可以用命名的 postulate 表达待实现的函数与定律。
 
 - `plan` 要求 `why`、`main`、`moves`，可带 `subspecs`。why 用一句话写清语义或架构理由。源码字段可用转义字符串或指向同一回复的 `@块名`。
-- 能构造实现时交 `plan`；规约能推出 ⊥（例如某一具体输入上的要求互相矛盾）时交 `contradiction`；规约在标准模型中可以成立，却要求 Agda 2.6.3 `--safe` 中无法证明的已知定律时，用 `independent` 交回依赖该规约的形式见证。
+- 能构造实现时交 `plan`；规约能推出 ⊥（例如某一具体输入上的要求互相矛盾）时交 `contradiction`；规约在标准模型中可以成立，却要求 Agda 2.6.3 `--safe` 中无法证明的原语或外延定律时，全局定律用 `independent` 导出 `SafeTaboo`，受限于特定前缀或子域的原语定律用 `countermodel` 提交阶段反模型与推导。
 - `bot → unit` 引入本模块私有单元，`unit → bot` 删除单元，同名单元之间的箭头确认保留。一个源指向多个目标表示拆分，多个源指向一个目标表示合并。子包端口用 `ext`，新增端口从 bot 来，同名端口变更用旧 ext 指向新 ext。
 - 提交前，把完整的 `(submission (kind plan) ...)` 作为 `submission` 传给只读工具 `check_plan`。它用当前节点的基线、规约和锁定箭头预检搬运，列出未覆盖的 frontier 对象、缺少或改变的签名，以及 SweetMod / ExoMod 和共享基底 M₀。按返回的 `[KIND]`、`[WITNESS]`、`[CAUSE]`、`[DETOUR]` 定位并修正草稿；预检不会提交计划或唤醒孩子。
 - 若 validate 列出 frontier / unsettled，沿被改接口检查依赖者。有 PENDING DRAFT 时可用 `add-moves`，必填 `moves`，可附 `main` 和 `why`。没有草案时提交完整 plan。
@@ -328,4 +328,68 @@ import PrimStrSpec as Spec
 
 witness : SafeTaboo
 witness = taboo-primStrRefl Spec.sameKey
+```
+
+## countermodel
+
+当规约只在特定前缀或子域上假定了开放原语等式（如仅对 `"--"` 前缀要求 `primStringEquality` 自反，或仅在 BOM 字节前缀后假定 `toList (fromList cs)` 保留首字符）而不足以推出全局 `SafeTaboo` 时，沿原语代数接口做切分并提交 `(submission (kind countermodel) (why "...") (model @model) (refute @refute))`：
+
+- `@model` 声明 `{-# OPTIONS --safe #-}`，只导入 `Countermodel` 与不含字符串原语的基础标准库，导出公开的 `bundle : CountermodelBundle`：给出纯代数接口命题 `Claim : StringAlg → Set`（或 `CharAlg → Set`）、满足有限阶段一致律与单射律的 `SoundStringModel` / `SoundCharModel`（可直接复用内置 `breakStrEqModel`、`swapStringModel a b`、`phantomCharModel`，也可按记录字段自行构造新模型），以及阶段反驳 `(k : ℕ) → Claim (atStage M k) → ⊥`。
+- `@refute` 原样导入当前 `{{SPEC_MOD}}`（及所需已封存祖先）与生成的 `CountermodelCheck`，从规约推出 `RealTarget` 并导出 `witness : VerifiedClaim`。自测时先调 `check_agda` 测 `@model`，再带 `dep_blocks: ["@model"]` 测 `@refute`。
+
+```agda
+module DashSpec where
+
+open import Agda.Builtin.String using (String; primStringEquality; primStringAppend)
+open import Data.Bool using (true)
+open import Relation.Binary.PropositionalEquality using (_≡_)
+
+postulate
+  sameDashes : (s : String) → primStringEquality (primStringAppend "--" s) (primStringAppend "--" s) ≡ true
+```
+
+```sexp
+(submission (kind countermodel)
+  (why "sameDashes 要求字符串原语在双连字符前缀的开放变量上自反")
+  (model @dashModel)
+  (refute @dashRefute))
+```
+```agda dashModel
+{-# OPTIONS --safe #-}
+module DashModel where
+
+open import Countermodel using
+  ( StringAlg; CountermodelBundle; stringCountermodel
+  ; breakStrEqModel; strEqBroken; within; eqChars; false≢true )
+open import Data.Bool.Base using (true; false; _∧_; if_then_else_)
+open import Data.List.Base using ([]; _∷_; replicate)
+open import Data.Nat.Base using (ℕ; zero; suc)
+open import Relation.Binary.PropositionalEquality.Core using (_≡_; refl; cong; sym; trans)
+
+Claim : StringAlg → Set
+Claim S = (n : ℕ) →
+  let s = StringAlg.append S (StringAlg.fromList S ('-' ∷ '-' ∷ [])) (StringAlg.fromList S (replicate n '-'))
+  in StringAlg.strEq S s s ≡ true
+
+over : (k : ℕ) → within k ('-' ∷ '-' ∷ replicate k '-') ≡ false
+over zero = refl
+over (suc k) = over k
+
+broken : (k : ℕ) → strEqBroken k ('-' ∷ '-' ∷ replicate k '-') ('-' ∷ '-' ∷ replicate k '-') ≡ false
+broken k = cong (λ b → if b ∧ b then eqChars xs xs else false) (over k)
+  where xs = '-' ∷ '-' ∷ replicate k '-'
+
+bundle : CountermodelBundle
+bundle = stringCountermodel Claim breakStrEqModel (λ k h → false≢true (trans (sym (broken k)) (h k)))
+```
+```agda dashRefute
+module DashRefute where
+
+import DashSpec as Spec
+open import CountermodelCheck using (VerifiedClaim; verifiedClaim)
+open import Agda.Builtin.String using (primStringFromList)
+open import Data.List.Base using (replicate)
+
+witness : VerifiedClaim
+witness = verifiedClaim (λ n → Spec.sameDashes (primStringFromList (replicate n '-')))
 ```

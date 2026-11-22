@@ -5,7 +5,7 @@ open import Data.Bool using (Bool; true; false; _∧_; not; if_then_else_)
 open import Data.List using (List; []; _∷_; length; map; reverse)
 open import Data.Maybe using (Maybe; just; nothing; maybe′)
 open import Data.Nat using (_≡ᵇ_)
-open import Data.Product using (_,_)
+open import Data.Product using (_×_; _,_)
 open import Data.String using (String; intersperse; unlines) renaming (_++_ to _++ˢ_)
 import Data.Unit as Unit
 open import Data.Unit.Polymorphic using (⊤; tt)
@@ -29,9 +29,10 @@ open import Code.Encode using (encodeCanonical)
 open import Code.Parse using (parse; parsePlan; parseLift; decodeQ; decodeCode)
 open import Code.Render using (render)
 import Code.Namespace as NS
+import Code.Countermodel as CM
 import Code.PolyTransport as PT
 import Code.NodeTransport as NT
-open import Code.Submission using (Submission; parseSubmission; refuteLift)
+open import Code.Submission using (Submission; parseSubmission; submitCountermodel; refuteLift)
 open import Code.SessionProtocol using (parseSessionAction)
 open import Code.Prompt using (nodePrompt; showRefuteProblem; showImplProblem)
 open import Code.HarnessCore
@@ -59,16 +60,58 @@ private
   ... | nothing = "-- parse error (spec)"
   ... | just c = render (refuteStubOf (specΔ (modName c) (decls c) []))
 
-  checkWitnesses : List String → Code → QName → String
-  checkWitnesses allowed c spec with validIndependence spec allowed c
+  checkWitnesses : List String → List Code → Code → QName → String
+  checkWitnesses allowed bases c spec with validIndependenceWithBases spec (map modName bases) allowed c
   ... | ps@(_ ∷ _) = unlines ("REFUTE_GATE_ERROR" ∷ map showRefuteProblem ps)
-  ... | [] = if nullᵇ (validRefutation spec allowed c)
+  ... | [] = if not (allᵇ (λ b → nullᵇ (closedImplOK [] b)) bases)
+    then "REFUTE_GATE_ERROR\nbase module is not closed"
+    else if nullᵇ (validRefutation spec allowed c)
     then "OK:contradiction" else "OK:independent"
 
+  checkCountermodelBundle : QName → List String → List Code → Code → Code → String
+  checkCountermodelBundle spec allowed bases modelC cand with CM.validCountermodel allowed modelC
+  ... | ps@(_ ∷ _) = unlines ("REFUTE_GATE_ERROR" ∷ map showRefuteProblem ps)
+  ... | [] with CM.validCountermodelRefute spec (map modName bases) (modName modelC) allowed cand
+  ...   | ps@(_ ∷ _) = unlines ("REFUTE_GATE_ERROR" ∷ map showRefuteProblem ps)
+  ...   | [] = if allᵇ (λ b → nullᵇ (closedImplOK [] b)) bases
+               then "OK:countermodel" else "REFUTE_GATE_ERROR\nbase module is not closed"
+
+  checkRefuteSExpr : QName → List String → SExpr → String
+  checkRefuteSExpr spec allowed (list (sym "bundle" ∷ modules)) = collect [] modules
+    where
+      finish : List Code → Code → String
+      finish prev cand with CM.usesCountermodelBridge cand | prev
+      ... | true  | [] = "REFUTE_GATE_ERROR\nmissing countermodel module"
+      ... | true  | (modelC ∷ revBases) = checkCountermodelBundle spec allowed (reverse revBases) modelC cand
+      ... | false | revBases = checkWitnesses allowed (reverse revBases) cand spec
+
+      collect : List Code → List SExpr → String
+      collect _ [] = "REFUTE_GATE_ERROR\nmissing candidate"
+      collect acc (x ∷ []) = maybe′ (finish acc) "REFUTE_GATE_ERROR\ninvalid candidate" (decodeCode x)
+      collect acc (x ∷ y ∷ ys) = maybe′ (λ b → collect (b ∷ acc) (y ∷ ys)) "REFUTE_GATE_ERROR\ninvalid dependency" (decodeCode x)
+  checkRefuteSExpr spec allowed x =
+    maybe′ (λ c → checkWitnesses allowed [] c spec) "REFUTE_GATE_ERROR\ninvalid candidate" (decodeCode x)
+
   checkRefuteText : String → List String → String → String
-  checkRefuteText specName allowed txt = maybe′
-    (λ c → maybe′ (checkWitnesses allowed c) "REFUTE_GATE_ERROR\ninvalid spec name" (decodeQ (str specName)))
-    "REFUTE_GATE_ERROR\ninvalid candidate" (parse txt)
+  checkRefuteText specName allowed txt with parseSExpr txt | decodeQ (str specName)
+  ... | nothing | _ = "REFUTE_GATE_ERROR\ninvalid candidate"
+  ... | just _  | nothing = "REFUTE_GATE_ERROR\ninvalid spec name"
+  ... | just sx | just spec = checkRefuteSExpr spec allowed sx
+
+  checkModelText : List String → String → String
+  checkModelText allowed txt with parse txt
+  ... | nothing = "REFUTE_GATE_ERROR\ninvalid countermodel"
+  ... | just m with CM.validCountermodel allowed m
+  ...   | [] = "OK:countermodel-bundle"
+  ...   | ps@(_ ∷ _) = unlines ("REFUTE_GATE_ERROR" ∷ map showRefuteProblem ps)
+
+  bridgeText : List String → String → Bool × String
+  bridgeText allowed txt with parse txt
+  ... | nothing = false , "REFUTE_GATE_ERROR\ninvalid countermodel"
+  ... | just m with CM.validCountermodel allowed m | CM.firstBundleUnit m
+  ...   | ps@(_ ∷ _) | _ = false , unlines ("REFUTE_GATE_ERROR" ∷ map showRefuteProblem ps)
+  ...   | [] | nothing = false , ("REFUTE_GATE_ERROR\n" ++ˢ showRefuteProblem missingCountermodelBundle)
+  ...   | [] | just bName = true , render (CM.countermodelBridge (modName m) bName)
 
   -- check-lift-refute SPEC FILE [FLAG ...] reads (bundle BASE ... CANDIDATE).
   checkLiftBundle : QName → List String → SExpr → String
@@ -109,6 +152,12 @@ private
         subOK      = maybe′ (λ _ → true) false
                        (parseSubmission "(submission (kind contradiction) (refute \"module R where\"))")
         refuteOK   = parsedRefute (parseSubmission "(submission (kind refute-lift) (why \"unliftable\") (refute \"module R where\"))")
+        cmSubOK    = parsedCM (parseSubmission "(submission (kind countermodel) (why \"open str\") (model \"module M where\") (refute \"module R where\"))")
+        cmLibOK    = (modName CM.countermodelLib ==ᴺ CM.countermodelMod)
+                   ∧ not (nullᵇ (decls CM.countermodelLib))
+                   ∧ nullᵇ (closedImplOK ("--safe" ∷ []) CM.countermodelLib)
+        cmBridgeOK = let b = CM.countermodelBridge (mkQ ("DemoModel" ∷ [])) "bundle"
+                     in (modName b ==ᴺ CM.bridgeMod) ∧ nullᵇ (closedImplOK ("--safe" ∷ []) b)
         liftOK     = maybe′ (λ _ → true) false (parseLift "(lift \"A\" \"B\" () ())")
         multiOK    = maybe′ parsedMulti false (parseLift "(lift \"A\" \"B\" () (((\"A.x\" \"A.y\") (\"B.x\" \"B.y\") \"B.square\")))")
         polyOK     = maybe′ (λ _ → true) false (PT.parsePolyTransport "(poly-transport \"A\" \"B\" () ())")
@@ -121,11 +170,14 @@ private
         nsOK       = NS.validSegment "Engine" ∧ not (NS.validSegment "module")
         ntOK       = length (NT.exported (NT.frozen emptyC [] [] [])) ≡ᵇ 1
         shOK       = caseShape (node [])
-    in rtOK ∧ modeOK ∧ termOK ∧ filtOK ∧ actOK ∧ subOK ∧ refuteOK ∧ liftOK ∧ multiOK ∧ polyOK ∧ bpOK ∧ cptOK ∧ promptOK ∧ gatesOK ∧ nsOK ∧ ntOK ∧ shOK
+    in rtOK ∧ modeOK ∧ termOK ∧ filtOK ∧ actOK ∧ subOK ∧ refuteOK ∧ cmSubOK ∧ cmLibOK ∧ cmBridgeOK ∧ liftOK ∧ multiOK ∧ polyOK ∧ bpOK ∧ cptOK ∧ promptOK ∧ gatesOK ∧ nsOK ∧ ntOK ∧ shOK
     where
       parsedRefute : Maybe Submission → Bool
       parsedRefute (just (refuteLift why src)) = (why ==ˢ "unliftable") ∧ (src ==ˢ "module R where")
       parsedRefute _ = false
+      parsedCM : Maybe Submission → Bool
+      parsedCM (just (submitCountermodel why m r)) = (why ==ˢ "open str") ∧ (m ==ˢ "module M where") ∧ (r ==ˢ "module R where")
+      parsedCM _ = false
       parsedMulti : LiftSpec → Bool
       parsedMulti l with endpoints l
       ... | e ∷ [] = (length (baseUnits e) ≡ᵇ 2) ∧ (length (upperUnits e) ≡ᵇ 2)
@@ -144,6 +196,16 @@ private
     readFile f >>= λ sp → readFile g >>= λ ca → putStrLn (checkInterfaceTexts sp ca)
   runArgs ("refute-stub" ∷ f ∷ []) =
     readFile f >>= λ sp → putStrLn (refuteStubText sp)
+  runArgs ("countermodel-lib" ∷ []) =
+    putStrLn (render CM.countermodelLib)
+  runArgs ("check-countermodel" ∷ f ∷ allowed) =
+    readFile f >>= λ txt → putStrLn (checkModelText allowed txt)
+  runArgs ("countermodel-bridge" ∷ f ∷ allowed) =
+    readFile f >>= λ txt → caseBridge (bridgeText allowed txt)
+    where
+      caseBridge : Bool × String → IO ⊤
+      caseBridge (true , out) = putStrLn out
+      caseBridge (false , err) = putStrLn err >> liftUnit exitFailure
   runArgs ("check-refute" ∷ spec ∷ f ∷ allowed) =
     readFile f >>= λ c → putStrLn (checkRefuteText spec allowed c)
   runArgs ("check-lift-refute" ∷ spec ∷ f ∷ allowed) =

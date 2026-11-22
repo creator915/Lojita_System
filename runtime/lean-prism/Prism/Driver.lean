@@ -498,8 +498,9 @@ private def confirmIndependence (lib work spec : String) (deps : List SlicedModu
     if ← dir.pathExists then IO.FS.removeDirAll dir
 
 private def witnessType : Expr → Bool
-  | .def_ q => [["Context", "Taboo", "SafeTaboo"], ["Data", "Empty", "⊥"],
-                ["Agda", "Builtin", "Empty", "⊥"]].contains q.full
+  | .def_ q => q.canonAlts.isEmpty &&
+               [["Context", "Taboo", "SafeTaboo"], ["CountermodelCheck", "VerifiedClaim"],
+                ["Data", "Empty", "⊥"], ["Agda", "Builtin", "Empty", "⊥"]].contains q.full
   | _ => false
 
 private def independenceAudit (specName : String) (deps : List SlicedModule)

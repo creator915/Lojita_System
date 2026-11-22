@@ -23,9 +23,9 @@ T0 以前可用的是选定的工具 `SessionΨ`、标准库和内置 `--safe` �
 
 全称 `postulate` 定律严禁在开放变量上要求 `primStringEquality` 或 `primCharEquality` 的行为。字符串比较用 `Context.Tools.FsSandbox.eqStr` 或 `Data.String.Properties._≟_`，字符比较用 `Data.Char.Properties._≟_` 或 `toℕ c ≡ᵇ toℕ d`，不相等的前提可写 `_≢_`。内部使用 `List Char` 或 `Bytes` 可避开 `fromList (toList s) ≡ s` 的假设。用逐点等式 `∀ x → f x ≡ g x` 表述函数行为。
 
-若 `drive-tree` 返回 `independent <treeName>`，阅读孩子从 `specSrc` 推出 `Context.Taboo.SafeTaboo` 的证明。保留业务语义和测试，把见证指出的原语或外延等式替换成可反射的运算或逐点定律，再提交修订的 `specSrc`。
+若 `drive-tree` 返回 `independent <treeName>`，阅读孩子从 `specSrc` 推出 `Context.Taboo.SafeTaboo` 或反模型见证 `CountermodelCheck.VerifiedClaim` 的证明。保留业务语义和测试，把见证指出的原语或外延等式替换成可反射的运算或字符/字节级定律（如用 `decodeUtf8Chars` 替代对 `decodeUtf8` 结果做开放 `toList`），再提交修订的 `specSrc`。
 
-若收到 `lift-obstruction <treeName>`，阅读证明和 `CULPRIT_BASE_UNITS`。先驱动新底树 T₀′ 修复这些单元，用 `keep` 复用不受影响的 T₀ 子包。再以 T₀′ 为 `baseTrees` 驱动新上层树 T₁′，将 `maybeTransportSrc` 的源模块设为受阻的旧上层根，对 `PRESERVED_CHILDREN` 中每个可复用的孩子声明 `(keep "<OldChild>" "<NewChild>")`。系统从部分封存提交挂回这些已验证子树，每个孩子需要 0 轮 AI 调用。相同底树闭包、规约和 LiftSpec 会直接触发重试护栏。
+若收到 `lift-obstruction <treeName>`，阅读证明和 `CULPRIT_BASE_UNITS`。用原 treeName 原位修复底树，再按层用原 treeName、当前 baseTrees 和相应 LiftSpec 重新驱动上层。省略 maybeTransportSrc 即可恢复本树的 `PRESERVED_CHILDREN`，包括只在上层创建的子包。接口、提升义务和当前依赖都通过复检的孩子无需唤醒。若需要两棵树共存，也可用新 treeName 和 `maybeTransportSrc` 的 `keep` 从部分封存提交复用孩子。相同底树闭包、规约和 LiftSpec 会直接触发重试护栏。
 
 函子化 `LiftSpec` 的端点可写为 `(("b1" "b2") ("u1" "u2") "sq")`，交换图须引用列出的全部单元。child-map 可重复同一源子包以拆分，也可用 `(move ("B1" "B2") ("U1" "U2") (sub...))` 合并或重组子包，最后一个表包含嵌套的 lift 描述符，可以为空。
 

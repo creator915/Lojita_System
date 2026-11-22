@@ -192,10 +192,12 @@ private
   readMany read [] = IO.return (just [])
   readMany read (k ∷ ks) = read k CAS.>>=? λ xs → readMany read ks CAS.>>=? λ ys → IO.return (just (xs ++ ys))
 
-  -- Follow pinned commits. A previous revision of the same named tree is
-  -- historical provenance, not an additional module search path.
-  ancestry : (CAS.CommitObj → IO.IO (Maybe HomeValue)) → String → CAS.Reader (List SealedTree) → CAS.Reader (List SealedTree)
-  ancestry readHome dir read key = CAS.getCommit dir key CAS.>>=? λ c →
+  ParentTip = CAS.Hash → CAS.CommitObj → IO.IO (Maybe CAS.Hash)
+
+  -- Same-epoch parents record history. Only a vertical edge contributes
+  -- modules, and a partial transport always follows its pinned provenance.
+  ancestry : ParentTip → (CAS.CommitObj → IO.IO (Maybe HomeValue)) → String → CAS.Reader (List SealedTree) → CAS.Reader (List SealedTree)
+  ancestry select readHome dir read key = CAS.getCommit dir key CAS.>>=? λ c →
     readHome c CAS.>>=? λ { (sh , h) →
       readMany (parent (CAS.epoch c)) (CAS.parents c) CAS.>>=? λ ancestors →
       IO.return (just (sealedTree (CAS.epoch c) key (freezeHome sh (dropModel (homeNoChan sh) h))
@@ -203,12 +205,12 @@ private
     where
       parent : String → CAS.Reader (List SealedTree)
       parent e k = CAS.getCommit dir k CAS.>>=? λ c →
-        if CAS.epoch c ==ˢ e then IO.return (just []) else read k
+        if CAS.epoch c ==ˢ e then IO.return (just []) else select k c CAS.>>=? read
 
-  verifiedReader : String → IO.IO (CAS.Reader (List SealedTree))
-  verifiedReader dir = do
+  verifiedReader : ParentTip → String → IO.IO (CAS.Reader (List SealedTree))
+  verifiedReader select dir = do
     readHome ← CAS.newCommitHomeReader dir
-    read ← CAS.newDAGReader dir CAS.commitK (ancestry readHome dir)
+    read ← CAS.newDAGReader dir CAS.commitK (ancestry select readHome dir)
     IO.return λ key → verifyCommitDAG dir key >>= λ valid → if valid then read key else IO.return nothing
 
   closureEntries : String → List SealedTree → IO.IO (List SealedTree × List Code)
@@ -219,7 +221,7 @@ private
       else (complete , preservedCodes (snapshot t) ++ cs)) }
 
 loadPartialBases : String → IO.IO (List PartialSealed)
-loadPartialBases ws = verifiedReader dir >>= λ read → entries (dir ++ˢ "/refs/partial") >>= collect read
+loadPartialBases ws = verifiedReader (λ k _ → IO.return (just k)) dir >>= λ read → entries (dir ++ˢ "/refs/partial") >>= collect read
   where
     dir = ws ++ˢ "/store"
     safe : Code → Bool
@@ -247,14 +249,36 @@ record BaseClosure : Set where
     baseCodes : List Code
 open BaseClosure public
 
-loadClosure : String → List String → IO.IO (Maybe BaseClosure)
-loadClosure ws names = entries (ws ++ˢ "/trees") >>= λ trees →
-  resolveTips ws (suc (length trees)) names CAS.>>=? λ ps →
-  verifiedReader dir >>= λ read → readMany read ps CAS.>>=? λ all →
+-- Resolve vertical edges of complete workspace trees to live tips. A partial
+-- parent pins only its preserved children, even if its epoch later succeeds.
+loadCurrentClosure : String → List String → IO.IO (Maybe (BaseClosure × Bool))
+loadCurrentClosure ws names = entries (ws ++ˢ "/trees") >>= λ trees →
+  resolveTips ws (suc (length trees)) names CAS.>>=? λ ps → newIORef false >>= λ moved →
+  verifiedReader (liveParent moved) dir >>= λ read → readMany read ps CAS.>>=? λ all →
   closureEntries ws (nubᵇ (λ a b → tip a ==ˢ tip b) all) >>= λ { (bs , cs) →
-    IO.return (Data.Maybe.when (consistentCodes cs) (closure ps bs (uniqueCodes cs))) }
+    readIORef moved >>= λ changed →
+    IO.return (Data.Maybe.when (consistentCodes cs) (closure ps bs (uniqueCodes cs) , changed)) }
   where
     dir = ws ++ˢ "/store"
+    liveParent : IORef Bool → ParentTip
+    liveParent moved k c = if safeTree name then
+      (readIfExists (ws ++ˢ "/trees/" ++ˢ name ++ˢ "/verdict") >>= λ verdict →
+       if verdict ==ˢ "ok" then (entries (obstructionDir ws k) >>= λ receipts →
+         if nullᵇ receipts then current else pinned) else pinned)
+      else pinned
+      where
+        name = CAS.epoch c
+        pinned = IO.return (just k)
+        current = fileExists (dir ++ˢ "/refs/" ++ˢ treeRef name) >>= λ present →
+          if present then (CAS.readRef dir (treeRef name) CAS.>>=? λ tip′ →
+            if tip′ ==ˢ k then pinned else
+              (CAS.getCommit dir tip′ CAS.>>=? λ latest → verifyCommitDAG dir tip′ >>= λ valid →
+               if valid ∧ (CAS.epoch latest ==ˢ name)
+               then writeIORef moved true >> IO.return (just tip′) else IO.return nothing))
+          else pinned
+
+loadClosure : String → List String → IO.IO (Maybe BaseClosure)
+loadClosure ws names = loadCurrentClosure ws names >>= λ result → IO.return (Data.Maybe.map proj₁ result)
 
 loadBases : String → List String → IO.IO BaseResult
 loadBases ws bases = loadClosure ws bases >>= λ loaded →

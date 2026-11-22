@@ -16,11 +16,13 @@ open import OwnershipIO.FFI using (failIO)
 open import Code using (Code; modName; decls; _==ˢ_; _==ᴺ_; closedImplOK; validRefutation; validIndependence)
 open import Code.Transport using (nullᵇ; specProblem; satisfies; specΔ)
 open import Code.Parse using (parse; parseLift)
+open import Code.Render using (render)
+import Code.Countermodel as CM
 import Code.Lift as L
 import Code.PolyTransport as P
 open import Code.SessionProtocol
 open import Code.SessionRunner using (sessionEnvSource)
-open import Code.Submission using (parseSubmission; submitPlan; addMoves; refute; independent; refuteLift)
+open import Code.Submission using (parseSubmission; submitPlan; addMoves; refute; independent; submitCountermodel; refuteLift)
 open import Code.Prompt public using
   ( PromptHeader; nativeHeader; closedWorldTemplate; sessionTemplate; sessionTransportHelp
   ; refuteExtraText; nodePrompt; showProblem; showImplProblem; showLiftProblem; showRefuteProblem )
@@ -53,6 +55,7 @@ private
         save dir ("subspec-" ++ˢ show n) code >>= λ _ → children (suc n) rest
   ... | just (refute src) = save dir "refute" src
   ... | just (independent _ src) = save dir "refute" src
+  ... | just (submitCountermodel _ m r) = save dir "model" m >>= λ _ → save dir "refute" r
   ... | just (refuteLift _ src) = save dir "refute" src
   ... | just (addMoves _ nothing) = return tt
   ... | just (addMoves _ (just src)) = save dir "main" src
@@ -111,6 +114,19 @@ private
   cli ("independence" ∷ spec ∷ proof ∷ []) =
     readCode spec >>= λ s → readCode proof >>= λ p →
     assert (nullᵇ (validIndependence (modName s) [] p)) "invalid independence witness"
+  cli ("countermodel-lib" ∷ []) =
+    F.putStr (render CM.countermodelLib)
+  cli ("countermodel-bridge" ∷ model ∷ []) =
+    readCode model >>= λ m → assert (nullᵇ (CM.validCountermodel [] m)) "invalid countermodel" >>= λ _ →
+    fromBundle m (CM.firstBundleUnit m)
+    where
+      fromBundle : Code → Maybe String → IO ⊤
+      fromBundle _ nothing = failIO "missing CountermodelBundle"
+      fromBundle m (just b) = F.putStr (render (CM.countermodelBridge (modName m) b))
+  cli ("countermodel" ∷ spec ∷ model ∷ proof ∷ []) =
+    readCode spec >>= λ s → readCode model >>= λ m → readCode proof >>= λ p →
+    assert (nullᵇ (CM.validCountermodel [] m) ∧ nullᵇ (CM.validCountermodelRefute (modName s) [] (modName m) [] p))
+           "invalid countermodel witness"
   cli ("squares" ∷ envelope ∷ old ∷ impl ∷ spec ∷ []) =
     F.readFile envelope >>= λ txt → readCode old >>= λ o → readCode impl >>= λ i →
     readCode spec >>= squares txt o i
