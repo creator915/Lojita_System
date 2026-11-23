@@ -88,137 +88,37 @@ theorem liftWorldBindRun {Δ₁ Δ₂ : List Cap} {A B : Type} (sub : CapSub Δ�
               (liftWorldPreservesRun sub m w))
             (liftWorldPreservesRun sub (k (runWorldPure m w).1) (runWorldPure m w).2)))))
 
-theorem stepPreservesClock {c : Cap} (neq : c = .clockCap → False) :
-    (op : Op c) → (w : SimWorld) → (stepWorldPure op w).2.clock = w.clock
-  | .opNowMono, _ => False.elim (neq rfl)
-  | .opNowWall, _ => False.elim (neq rfl)
-  | .opSleepMs _, _ => False.elim (neq rfl)
-  | .opGetProgName, _ => rfl
-  | .opGetArgs, _ => rfl
-  | .opLookupEnv _, _ => rfl
-  | .opReadStdinAll, _ => rfl
-  | .opReadStdinLine, _ => rfl
-  | .opIsTTYStdin, _ => rfl
-  | .opIsTTYStdout, _ => rfl
-  | .opIsTTYStderr, _ => rfl
-  | .opTermSize, _ => rfl
-  | .opWriteStdout _, _ => rfl
-  | .opWriteStderr _, _ => rfl
-  | .opReadTTYByte, _ => rfl
-  | .opReadFile _, _ => rfl
-  | .opWriteFile _ _, _ => rfl
-  | .opMkdir _ _, _ => rfl
-  | .opSymlink _ _, _ => rfl
-  | .opUnlink _, _ => rfl
-  | .opStat _, _ => rfl
-  | .opTcpExchange _ _ _ _ _, _ => rfl
-  | .opTlsExchange _ _ _ _ _ _ _, _ => rfl
-  | .opGitStep _, _ => rfl
-  | .opGitSummary, _ => rfl
-  | .opWebViewport, _ => rfl
-  | .opWebSetTitle _, _ => rfl
-  | .opWebDrawScene _, _ => rfl
-  | .opWebHitTest _ _, _ => rfl
-  | .opWebPollInput, _ => rfl
+theorem stepPreservesClock {c : Cap} (neq : c = .clockCap → False) (op : Op c) (w : SimWorld) :
+    (stepWorldPure op w).2.clock = w.clock := by
+  cases op <;> first | rfl | exact (neq rfl).elim
 
-theorem stepPreservesFs {c : Cap} (neq : c = .fsCap → False) :
-    (op : Op c) → (w : SimWorld) → (stepWorldPure op w).2.fs = w.fs
-  | .opNowMono, _ => rfl
-  | .opNowWall, _ => rfl
-  | .opSleepMs _, _ => rfl
-  | .opGetProgName, _ => rfl
-  | .opGetArgs, _ => rfl
-  | .opLookupEnv _, _ => rfl
-  | .opReadStdinAll, _ => rfl
-  | .opReadStdinLine, _ => rfl
-  | .opIsTTYStdin, _ => rfl
-  | .opIsTTYStdout, _ => rfl
-  | .opIsTTYStderr, _ => rfl
-  | .opTermSize, _ => rfl
-  | .opWriteStdout _, _ => rfl
-  | .opWriteStderr _, _ => rfl
-  | .opReadTTYByte, _ => rfl
-  | .opReadFile _, _ => False.elim (neq rfl)
-  | .opWriteFile _ _, _ => False.elim (neq rfl)
-  | .opMkdir _ _, _ => False.elim (neq rfl)
-  | .opSymlink _ _, _ => False.elim (neq rfl)
-  | .opUnlink _, _ => False.elim (neq rfl)
-  | .opStat _, _ => False.elim (neq rfl)
-  | .opTcpExchange _ _ _ _ _, _ => rfl
-  | .opTlsExchange _ _ _ _ _ _ _, _ => rfl
-  | .opGitStep _, _ => rfl
-  | .opGitSummary, _ => rfl
-  | .opWebViewport, _ => rfl
-  | .opWebSetTitle _, _ => rfl
-  | .opWebDrawScene _, _ => rfl
-  | .opWebHitTest _ _, _ => rfl
-  | .opWebPollInput, _ => rfl
+theorem stepPreservesEnv {c : Cap} (op : Op c) (w : SimWorld) :
+    (stepWorldPure op w).2.env = w.env := by
+  cases op <;> rfl
 
-theorem stepPreservesNet {c : Cap} (neq : c = .netCap → False) :
-    (op : Op c) → (w : SimWorld) → (stepWorldPure op w).2.net = w.net
-  | .opNowMono, _ => rfl
-  | .opNowWall, _ => rfl
-  | .opSleepMs _, _ => rfl
-  | .opGetProgName, _ => rfl
-  | .opGetArgs, _ => rfl
-  | .opLookupEnv _, _ => rfl
-  | .opReadStdinAll, _ => rfl
-  | .opReadStdinLine, _ => rfl
-  | .opIsTTYStdin, _ => rfl
-  | .opIsTTYStdout, _ => rfl
-  | .opIsTTYStderr, _ => rfl
-  | .opTermSize, _ => rfl
-  | .opWriteStdout _, _ => rfl
-  | .opWriteStderr _, _ => rfl
-  | .opReadTTYByte, _ => rfl
-  | .opReadFile _, _ => rfl
-  | .opWriteFile _ _, _ => rfl
-  | .opMkdir _ _, _ => rfl
-  | .opSymlink _ _, _ => rfl
-  | .opUnlink _, _ => rfl
-  | .opStat _, _ => rfl
-  | .opTcpExchange _ _ _ _ _, _ => False.elim (neq rfl)
-  | .opTlsExchange _ _ _ _ _ _ _, _ => False.elim (neq rfl)
-  | .opGitStep _, _ => rfl
-  | .opGitSummary, _ => rfl
-  | .opWebViewport, _ => rfl
-  | .opWebSetTitle _, _ => rfl
-  | .opWebDrawScene _, _ => rfl
-  | .opWebHitTest _ _, _ => rfl
-  | .opWebPollInput, _ => rfl
+theorem stepPreservesStdio {c : Cap} (neq : c = .stdioCap → False) (op : Op c) (w : SimWorld) :
+    (stepWorldPure op w).2.stdio = w.stdio := by
+  cases op <;> first | rfl | exact (neq rfl).elim
 
-theorem stepPreservesTty {c : Cap} (neq : c = .ttyCap → False) :
-    (op : Op c) → (w : SimWorld) → (stepWorldPure op w).2.tty = w.tty
-  | .opNowMono, _ => rfl
-  | .opNowWall, _ => rfl
-  | .opSleepMs _, _ => rfl
-  | .opGetProgName, _ => rfl
-  | .opGetArgs, _ => rfl
-  | .opLookupEnv _, _ => rfl
-  | .opReadStdinAll, _ => rfl
-  | .opReadStdinLine, _ => rfl
-  | .opIsTTYStdin, _ => False.elim (neq rfl)
-  | .opIsTTYStdout, _ => False.elim (neq rfl)
-  | .opIsTTYStderr, _ => False.elim (neq rfl)
-  | .opTermSize, _ => False.elim (neq rfl)
-  | .opWriteStdout _, _ => False.elim (neq rfl)
-  | .opWriteStderr _, _ => False.elim (neq rfl)
-  | .opReadTTYByte, _ => False.elim (neq rfl)
-  | .opReadFile _, _ => rfl
-  | .opWriteFile _ _, _ => rfl
-  | .opMkdir _ _, _ => rfl
-  | .opSymlink _ _, _ => rfl
-  | .opUnlink _, _ => rfl
-  | .opStat _, _ => rfl
-  | .opTcpExchange _ _ _ _ _, _ => rfl
-  | .opTlsExchange _ _ _ _ _ _ _, _ => rfl
-  | .opGitStep _, _ => rfl
-  | .opGitSummary, _ => rfl
-  | .opWebViewport, _ => rfl
-  | .opWebSetTitle _, _ => rfl
-  | .opWebDrawScene _, _ => rfl
-  | .opWebHitTest _ _, _ => rfl
-  | .opWebPollInput, _ => rfl
+theorem stepPreservesTty {c : Cap} (neq : c = .ttyCap → False) (op : Op c) (w : SimWorld) :
+    (stepWorldPure op w).2.tty = w.tty := by
+  cases op <;> first | rfl | exact (neq rfl).elim
+
+theorem stepPreservesFs {c : Cap} (neq : c = .fsCap → False) (op : Op c) (w : SimWorld) :
+    (stepWorldPure op w).2.fs = w.fs := by
+  cases op <;> first | rfl | exact (neq rfl).elim
+
+theorem stepPreservesNet {c : Cap} (neq : c = .netCap → False) (op : Op c) (w : SimWorld) :
+    (stepWorldPure op w).2.net = w.net := by
+  cases op <;> first | rfl | exact (neq rfl).elim
+
+theorem stepPreservesGit {c : Cap} (neq : c = .gitCap → False) (op : Op c) (w : SimWorld) :
+    (stepWorldPure op w).2.git = w.git := by
+  cases op <;> first | rfl | exact (neq rfl).elim
+
+theorem stepPreservesWeb {c : Cap} (neq : c = .webCap → False) (op : Op c) (w : SimWorld) :
+    (stepWorldPure op w).2.web = w.web := by
+  cases op <;> first | rfl | exact (neq rfl).elim
 
 private def substMem {x y : Cap} {cs : List Cap} : (x = y) → CapMem x cs → CapMem y cs
   | rfl, m => m
@@ -226,6 +126,7 @@ private def substMem {x y : Cap} {cs : List Cap} : (x = y) → CapMem x cs → C
 theorem eqCapRefl : (c : Cap) → eqCap c c = true
   | .clockCap => rfl
   | .envCap => rfl
+  | .stdioCap => rfl
   | .ttyCap => rfl
   | .fsCap => rfl
   | .netCap => rfl
@@ -246,41 +147,47 @@ theorem notHasCapNotIn : {c : Cap} → {Δ : List Cap} → hasCap c Δ = false �
   | c, d :: ds, eq, .there m => notHasCapNotIn (orFalseRight (eqCap c d) (hasCap c ds) eq) m
 termination_by structural _ x _ _ => x
 
-theorem progPreservesClock {Δ : List Cap} {A : Type} (absent : CapMem .clockCap Δ → False) :
-    (m : WorldProg Δ A) → (w : SimWorld) → (runWorldPure m w).2.clock = w.clock
+private theorem progPreservesField {Δ : List Cap} {A F : Type} (field : SimWorld → F)
+    (preserved : ∀ {c : Cap}, CapMem c Δ → (op : Op c) → (w : SimWorld) →
+      field (stepWorldPure op w).2 = field w) :
+    (m : WorldProg Δ A) → (w : SimWorld) → field (runWorldPure m w).2 = field w
   | .pure _, _ => rfl
   | .step h op k, w =>
-    let rw := stepWorldPure op w
-    Eq.trans (progPreservesClock absent (k rw.1) rw.2)
-      (stepPreservesClock (fun eq => absent (substMem eq h)) op w)
-termination_by structural x _ => x
+    let r := stepWorldPure op w
+    Eq.trans (progPreservesField field preserved (k r.1) r.2) (preserved h op w)
+termination_by structural m _ => m
 
-theorem progPreservesFs {Δ : List Cap} {A : Type} (absent : CapMem .fsCap Δ → False) :
-    (m : WorldProg Δ A) → (w : SimWorld) → (runWorldPure m w).2.fs = w.fs
-  | .pure _, _ => rfl
-  | .step h op k, w =>
-    let rw := stepWorldPure op w
-    Eq.trans (progPreservesFs absent (k rw.1) rw.2)
-      (stepPreservesFs (fun eq => absent (substMem eq h)) op w)
-termination_by structural x _ => x
+theorem progPreservesClock {Δ : List Cap} {A : Type} (absent : CapMem .clockCap Δ → False)
+    (m : WorldProg Δ A) (w : SimWorld) : (runWorldPure m w).2.clock = w.clock :=
+  progPreservesField SimWorld.clock (fun h => stepPreservesClock (fun eq => absent (substMem eq h))) m w
 
-theorem progPreservesNet {Δ : List Cap} {A : Type} (absent : CapMem .netCap Δ → False) :
-    (m : WorldProg Δ A) → (w : SimWorld) → (runWorldPure m w).2.net = w.net
-  | .pure _, _ => rfl
-  | .step h op k, w =>
-    let rw := stepWorldPure op w
-    Eq.trans (progPreservesNet absent (k rw.1) rw.2)
-      (stepPreservesNet (fun eq => absent (substMem eq h)) op w)
-termination_by structural x _ => x
+theorem progPreservesEnv {Δ : List Cap} {A : Type}
+    (m : WorldProg Δ A) (w : SimWorld) : (runWorldPure m w).2.env = w.env :=
+  progPreservesField SimWorld.env (fun _ => stepPreservesEnv) m w
 
-theorem progPreservesTty {Δ : List Cap} {A : Type} (absent : CapMem .ttyCap Δ → False) :
-    (m : WorldProg Δ A) → (w : SimWorld) → (runWorldPure m w).2.tty = w.tty
-  | .pure _, _ => rfl
-  | .step h op k, w =>
-    let rw := stepWorldPure op w
-    Eq.trans (progPreservesTty absent (k rw.1) rw.2)
-      (stepPreservesTty (fun eq => absent (substMem eq h)) op w)
-termination_by structural x _ => x
+theorem progPreservesStdio {Δ : List Cap} {A : Type} (absent : CapMem .stdioCap Δ → False)
+    (m : WorldProg Δ A) (w : SimWorld) : (runWorldPure m w).2.stdio = w.stdio :=
+  progPreservesField SimWorld.stdio (fun h => stepPreservesStdio (fun eq => absent (substMem eq h))) m w
+
+theorem progPreservesTty {Δ : List Cap} {A : Type} (absent : CapMem .ttyCap Δ → False)
+    (m : WorldProg Δ A) (w : SimWorld) : (runWorldPure m w).2.tty = w.tty :=
+  progPreservesField SimWorld.tty (fun h => stepPreservesTty (fun eq => absent (substMem eq h))) m w
+
+theorem progPreservesFs {Δ : List Cap} {A : Type} (absent : CapMem .fsCap Δ → False)
+    (m : WorldProg Δ A) (w : SimWorld) : (runWorldPure m w).2.fs = w.fs :=
+  progPreservesField SimWorld.fs (fun h => stepPreservesFs (fun eq => absent (substMem eq h))) m w
+
+theorem progPreservesNet {Δ : List Cap} {A : Type} (absent : CapMem .netCap Δ → False)
+    (m : WorldProg Δ A) (w : SimWorld) : (runWorldPure m w).2.net = w.net :=
+  progPreservesField SimWorld.net (fun h => stepPreservesNet (fun eq => absent (substMem eq h))) m w
+
+theorem progPreservesGit {Δ : List Cap} {A : Type} (absent : CapMem .gitCap Δ → False)
+    (m : WorldProg Δ A) (w : SimWorld) : (runWorldPure m w).2.git = w.git :=
+  progPreservesField SimWorld.git (fun h => stepPreservesGit (fun eq => absent (substMem eq h))) m w
+
+theorem progPreservesWeb {Δ : List Cap} {A : Type} (absent : CapMem .webCap Δ → False)
+    (m : WorldProg Δ A) (w : SimWorld) : (runWorldPure m w).2.web = w.web :=
+  progPreservesField SimWorld.web (fun h => stepPreservesWeb (fun eq => absent (substMem eq h))) m w
 
 def continueReactiveAfter {Δ : List Cap} {S : Type} (a : ReactiveApp Δ S) (es : List (Event Δ)) :
     Sum S ExitCode → SimWorld → Sum S ExitCode × SimWorld

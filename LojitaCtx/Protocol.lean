@@ -270,6 +270,17 @@ theorem couple_preserves_clock {Tag : Type} {Δ : List Cap} {Payload : Tag → T
     (runWorldPure (coupleEndpoints epA epB) w).2.clock = w.clock :=
   progPreservesClock absent (coupleEndpoints epA epB) w
 
+theorem couple_preserves_env {Tag : Type} {Δ : List Cap} {Payload : Tag → Type} {P : Proto Tag}
+    {A B : Type} (epA : Endpoint Δ Payload P A) (epB : Endpoint Δ Payload (dual P) B) (w : SimWorld) :
+    (runWorldPure (coupleEndpoints epA epB) w).2.env = w.env :=
+  progPreservesEnv (coupleEndpoints epA epB) w
+
+theorem couple_preserves_stdio {Tag : Type} {Δ : List Cap} {Payload : Tag → Type} {P : Proto Tag}
+    {A B : Type} (absent : CapMem .stdioCap Δ → False) (epA : Endpoint Δ Payload P A)
+    (epB : Endpoint Δ Payload (dual P) B) (w : SimWorld) :
+    (runWorldPure (coupleEndpoints epA epB) w).2.stdio = w.stdio :=
+  progPreservesStdio absent (coupleEndpoints epA epB) w
+
 theorem couple_preserves_fs {Tag : Type} {Δ : List Cap} {Payload : Tag → Type} {P : Proto Tag}
     {A B : Type} (absent : CapMem .fsCap Δ → False) (epA : Endpoint Δ Payload P A)
     (epB : Endpoint Δ Payload (dual P) B) (w : SimWorld) :

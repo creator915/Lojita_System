@@ -1,4 +1,5 @@
 import LojitaCtx.Clock
+import LojitaCtx.PosixChannel
 import LojitaCtx.NetSandbox
 import LojitaCtx.GitSandbox
 import LojitaCtx.WebOperad
@@ -8,6 +9,8 @@ namespace LojitaCtx.World
 open LojitaCtx.Terminal
 
 export Clock (SimClock)
+export PosixChannel (InChan OutChan StdioChannels CtrlTTY ScanDecision ReadOutcome ByteScanner
+  closedPipe openPipe pipeStdio interactiveStdio noCtrlTTY mkCtrlTTY)
 export FsSandbox (eqStr)
 export NetSandbox (showDec)
 open Clock
@@ -19,30 +22,30 @@ open WebOperad (Point Size Rect QPoint Scene DrawCmd HostInput)
 inductive Cap : Type where
   | clockCap : Cap
   | envCap   : Cap
+  | stdioCap : Cap
   | ttyCap   : Cap
   | fsCap    : Cap
   | netCap   : Cap
   | gitCap   : Cap
   | webCap   : Cap
 
-/-- Standard streams use the terminal capability of the world runner. -/
-abbrev Cap.stdioCap : Cap := .ttyCap
-
 -- Lean's deriving handler uses constructor indices for finite enumerations.
 def Cap.ctorIdx : Cap → Nat
   | .clockCap => 0
   | .envCap => 1
-  | .ttyCap => 2
-  | .fsCap => 3
-  | .netCap => 4
-  | .gitCap => 5
-  | .webCap => 6
+  | .stdioCap => 2
+  | .ttyCap => 3
+  | .fsCap => 4
+  | .netCap => 5
+  | .gitCap => 6
+  | .webCap => 7
 
 deriving instance DecidableEq for Cap
 
 def eqCap : Cap → Cap → Bool
   | .clockCap, .clockCap => true
   | .envCap,   .envCap   => true
+  | .stdioCap, .stdioCap => true
   | .ttyCap,   .ttyCap   => true
   | .fsCap,    .fsCap    => true
   | .netCap,   .netCap   => true
@@ -85,28 +88,44 @@ termination_by structural ds => ds
 
 def PureCaps : List Cap := []
 
+def CliStreamCaps : List Cap :=
+  [.clockCap, .envCap, .stdioCap, .fsCap, .netCap]
+
 def CliCaps : List Cap :=
-  [.clockCap, .envCap, .ttyCap, .fsCap, .netCap]
+  [.clockCap, .envCap, .stdioCap, .ttyCap, .fsCap, .netCap]
 
 def AllCaps : List Cap :=
-  [.clockCap, .envCap, .ttyCap, .fsCap, .netCap, .gitCap, .webCap]
+  [.clockCap, .envCap, .stdioCap, .ttyCap, .fsCap, .netCap, .gitCap, .webCap]
+
+def clockInStream : CapMem .clockCap CliStreamCaps := .here
+def envInStream   : CapMem .envCap   CliStreamCaps := .there .here
+def stdioInStream : CapMem .stdioCap CliStreamCaps := .there (.there .here)
+def fsInStream    : CapMem .fsCap    CliStreamCaps := .there (.there (.there .here))
+def netInStream   : CapMem .netCap   CliStreamCaps := .there (.there (.there (.there .here)))
 
 def clockInCli : CapMem .clockCap CliCaps := .here
 def envInCli   : CapMem .envCap   CliCaps := .there .here
-def ttyInCli   : CapMem .ttyCap   CliCaps := .there (.there .here)
-def fsInCli    : CapMem .fsCap    CliCaps := .there (.there (.there .here))
-def netInCli   : CapMem .netCap   CliCaps := .there (.there (.there (.there .here)))
+def stdioInCli : CapMem .stdioCap CliCaps := .there (.there .here)
+def ttyInCli   : CapMem .ttyCap   CliCaps := .there (.there (.there .here))
+def fsInCli    : CapMem .fsCap    CliCaps := .there (.there (.there (.there .here)))
+def netInCli   : CapMem .netCap   CliCaps := .there (.there (.there (.there (.there .here))))
 
 def clockInAll : CapMem .clockCap AllCaps := .here
 def envInAll   : CapMem .envCap   AllCaps := .there .here
-def ttyInAll   : CapMem .ttyCap   AllCaps := .there (.there .here)
-def fsInAll    : CapMem .fsCap    AllCaps := .there (.there (.there .here))
-def netInAll   : CapMem .netCap   AllCaps := .there (.there (.there (.there .here)))
-def gitInAll   : CapMem .gitCap   AllCaps := .there (.there (.there (.there (.there .here))))
-def webInAll   : CapMem .webCap   AllCaps := .there (.there (.there (.there (.there (.there .here)))))
+def stdioInAll : CapMem .stdioCap AllCaps := .there (.there .here)
+def ttyInAll   : CapMem .ttyCap   AllCaps := .there (.there (.there .here))
+def fsInAll    : CapMem .fsCap    AllCaps := .there (.there (.there (.there .here)))
+def netInAll   : CapMem .netCap   AllCaps := .there (.there (.there (.there (.there .here))))
+def gitInAll   : CapMem .gitCap   AllCaps := .there (.there (.there (.there (.there (.there .here)))))
+def webInAll   : CapMem .webCap   AllCaps := .there (.there (.there (.there (.there (.there (.there .here))))))
+
+def streamSubCli : CapSub CliStreamCaps CliCaps :=
+  capSubCons clockInCli (capSubCons envInCli (capSubCons stdioInCli
+    (capSubCons fsInCli (capSubCons netInCli capSubNil))))
 
 def cliSubAll : CapSub CliCaps AllCaps :=
-  capSubCons clockInAll (capSubCons envInAll (capSubCons ttyInAll (capSubCons fsInAll (capSubCons netInAll capSubNil))))
+  capSubCons clockInAll (capSubCons envInAll (capSubCons stdioInAll
+    (capSubCons ttyInAll (capSubCons fsInAll (capSubCons netInAll capSubNil)))))
 
 private def isUtf8Cont (x : Nat) : Bool :=
   128 ≤ x && x < 192
@@ -255,29 +274,15 @@ structure SimProcessEnv : Type where simProcessEnv ::
   progName : String
   args : List String
   envVars : List (String × String)
-  stdinBytes : Bytes
 
 def emptyProcessEnv : SimProcessEnv :=
-  SimProcessEnv.simProcessEnv "cand" [] [] []
+  SimProcessEnv.simProcessEnv "cand" [] []
 
-def cliProcessEnv (prog : String) (as : List String) (inp : Bytes) : SimProcessEnv :=
-  SimProcessEnv.simProcessEnv prog as [] inp
+def cliProcessEnv (prog : String) (as : List String) (vars : List (String × String) := []) : SimProcessEnv :=
+  SimProcessEnv.simProcessEnv prog as vars
 
-structure SimTTY : Type where
-  simTTY ::
-  ttyStdin  : Bool
-  ttyStdout : Bool
-  ttyStderr : Bool
-  stdoutBuf : ByteArray
-  stderrBuf : ByteArray
-  ttyInput  : Bytes
-  ttyScreen : Screen
-
-def pipeTTY : SimTTY :=
-  SimTTY.simTTY false false false .empty .empty [] (blankScreen 24 80)
-
-def interactiveTTY (rows cols : Nat) (keys : Bytes) : SimTTY :=
-  SimTTY.simTTY true true true .empty .empty keys (blankScreen rows cols)
+abbrev SimStdio : Type := PosixChannel.StdioChannels
+abbrev SimTTY : Type := PosixChannel.CtrlTTY
 
 structure NetEndpoint : Type where
   netEndpoint ::
@@ -312,6 +317,7 @@ structure SimWorld : Type where
   simWorld ::
   clock : SimClock
   env   : SimProcessEnv
+  stdio : SimStdio
   tty   : SimTTY
   fs    : VirtualFs
   net   : SimNet
@@ -321,18 +327,39 @@ structure SimWorld : Type where
 def defaultGitRepo : PureGitRepo :=
   GitSandbox.initPureGit (GitConfig.gitConfig .localSandbox "main" "CodeTransport" "ct@local" 0 [] []) []
 
-def defaultSimWorld : SimWorld :=
-  SimWorld.simWorld zeroClock emptyProcessEnv pipeTTY (VirtualFs.virtualFs []) emptyNet defaultGitRepo emptyCanvasDOM
+def defaultSimWorld : SimWorld where
+  clock := zeroClock
+  env := emptyProcessEnv
+  stdio := pipeStdio [] true false
+  tty := noCtrlTTY 24 80
+  fs := VirtualFs.virtualFs []
+  net := emptyNet
+  git := defaultGitRepo
+  web := emptyCanvasDOM
+
+def pipeSimWorld (prog : String) (as : List String) (stdinB : Bytes) (closed : Bool := true)
+    (vfs : VirtualFs := VirtualFs.virtualFs []) : SimWorld :=
+  { defaultSimWorld with env := cliProcessEnv prog as, stdio := pipeStdio stdinB closed false, fs := vfs }
+
+def pipeWithTTYSimWorld (prog : String) (as : List String) (stdinB : Bytes) (closed : Bool := true)
+    (rows : Nat := 24) (cols : Nat := 80) (ttyKeys : Bytes := []) (ttyClosed : Bool := false)
+    (vfs : VirtualFs := VirtualFs.virtualFs []) : SimWorld :=
+  { pipeSimWorld prog as stdinB closed vfs with tty := mkCtrlTTY rows cols ttyKeys ttyClosed true }
+
+def interactiveSimWorld (prog : String) (as : List String) (rows : Nat := 24) (cols : Nat := 80)
+    (ttyKeys : Bytes := []) (ttyClosed : Bool := false) (vfs : VirtualFs := VirtualFs.virtualFs []) : SimWorld :=
+  { defaultSimWorld with
+    env := cliProcessEnv prog as
+    stdio := interactiveStdio [] false
+    tty := mkCtrlTTY rows cols ttyKeys ttyClosed true
+    fs := vfs }
 
 def cliSimWorld (prog : String) (as : List String) (stdinB : Bytes) (isTtyOut : Bool) (vfs : VirtualFs) : SimWorld :=
-  SimWorld.simWorld
-    zeroClock
-    (SimProcessEnv.simProcessEnv prog as [] stdinB)
-    (SimTTY.simTTY false isTtyOut false .empty .empty [] (blankScreen 24 80))
-    vfs
-    emptyNet
-    defaultGitRepo
-    emptyCanvasDOM
+  { defaultSimWorld with
+    env := cliProcessEnv prog as
+    stdio := pipeStdio stdinB true isTtyOut
+    tty := if isTtyOut then mkCtrlTTY 24 80 [] true true else noCtrlTTY 24 80
+    fs := vfs }
 
 inductive Op : Cap → Type where
   | opNowMono     : Op .clockCap
@@ -341,15 +368,19 @@ inductive Op : Cap → Type where
   | opGetProgName : Op .envCap
   | opGetArgs     : Op .envCap
   | opLookupEnv   : String → Op .envCap
-  | opReadStdinAll  : Op .envCap
-  | opReadStdinLine : Op .envCap
-  | opIsTTYStdin  : Op .ttyCap
-  | opIsTTYStdout : Op .ttyCap
-  | opIsTTYStderr : Op .ttyCap
+  | opReadStdinByte : Op .stdioCap
+  | opReadStdinLine : Op .stdioCap
+  | opReadStdinAll  : Op .stdioCap
+  | opWriteStdout : Bytes → Op .stdioCap
+  | opWriteStderr : Bytes → Op .stdioCap
+  | opIsTTYStdin  : Op .stdioCap
+  | opIsTTYStdout : Op .stdioCap
+  | opIsTTYStderr : Op .stdioCap
+  | opHasTTY      : Op .ttyCap
+  | opSetTTYRaw   : Bool → Op .ttyCap
   | opTermSize    : Op .ttyCap
-  | opWriteStdout : Bytes → Op .ttyCap
-  | opWriteStderr : Bytes → Op .ttyCap
   | opReadTTYByte : Op .ttyCap
+  | opWriteTTY    : Bytes → Op .ttyCap
   | opReadFile    : String → Op .fsCap
   | opWriteFile   : String → Bytes → Op .fsCap
   | opMkdir       : String → Nat → Op .fsCap
@@ -373,15 +404,19 @@ def Ret : {c : Cap} → Op c → Type
   | _, .opGetProgName             => String
   | _, .opGetArgs                 => List String
   | _, .opLookupEnv _             => Option String
-  | _, .opReadStdinAll            => Bytes
+  | _, .opReadStdinByte           => Option Byte
   | _, .opReadStdinLine           => Option Bytes
+  | _, .opReadStdinAll            => Bytes
+  | _, .opWriteStdout _           => Unit
+  | _, .opWriteStderr _           => Unit
   | _, .opIsTTYStdin              => Bool
   | _, .opIsTTYStdout             => Bool
   | _, .opIsTTYStderr             => Bool
+  | _, .opHasTTY                  => Bool
+  | _, .opSetTTYRaw _             => Bool
   | _, .opTermSize                => (Nat × Nat)
-  | _, .opWriteStdout _           => Unit
-  | _, .opWriteStderr _           => Unit
   | _, .opReadTTYByte             => Option Byte
+  | _, .opWriteTTY _              => Bool
   | _, .opReadFile _              => Sum FsError Bytes
   | _, .opWriteFile _ _           => Sum FsError Unit
   | _, .opMkdir _ _               => Sum FsError Unit
@@ -430,17 +465,27 @@ def sleepW {Δ : List Cap} (h : CapMem .clockCap Δ) (ms : Nat) : WorldProg Δ U
 def getProgNameW {Δ : List Cap} (h : CapMem .envCap Δ) : WorldProg Δ String := .step h .opGetProgName .pure
 def getArgsW {Δ : List Cap} (h : CapMem .envCap Δ) : WorldProg Δ (List String) := .step h .opGetArgs .pure
 def lookupEnvW {Δ : List Cap} (h : CapMem .envCap Δ) (k : String) : WorldProg Δ (Option String) := .step h (.opLookupEnv k) .pure
-def readStdinAllW {Δ : List Cap} (h : CapMem .envCap Δ) : WorldProg Δ Bytes := .step h .opReadStdinAll .pure
-def readStdinLineW {Δ : List Cap} (h : CapMem .envCap Δ) : WorldProg Δ (Option Bytes) := .step h .opReadStdinLine .pure
-def isTTYStdinW {Δ : List Cap} (h : CapMem .ttyCap Δ) : WorldProg Δ Bool := .step h .opIsTTYStdin .pure
-def isTTYStdoutW {Δ : List Cap} (h : CapMem .ttyCap Δ) : WorldProg Δ Bool := .step h .opIsTTYStdout .pure
-def isTTYStderrW {Δ : List Cap} (h : CapMem .ttyCap Δ) : WorldProg Δ Bool := .step h .opIsTTYStderr .pure
-def termSizeW {Δ : List Cap} (h : CapMem .ttyCap Δ) : WorldProg Δ ((Nat × Nat)) := .step h .opTermSize .pure
-def writeStdoutW {Δ : List Cap} (h : CapMem .ttyCap Δ) (bs : Bytes) : WorldProg Δ Unit := .step h (.opWriteStdout bs) .pure
-def writeStdoutStrW {Δ : List Cap} (h : CapMem .ttyCap Δ) (s : String) : WorldProg Δ Unit := writeStdoutW h (bytes s)
-def writeStderrW {Δ : List Cap} (h : CapMem .ttyCap Δ) (bs : Bytes) : WorldProg Δ Unit := .step h (.opWriteStderr bs) .pure
-def writeStderrStrW {Δ : List Cap} (h : CapMem .ttyCap Δ) (s : String) : WorldProg Δ Unit := writeStderrW h (bytes s)
+
+def readStdinByteW {Δ : List Cap} (h : CapMem .stdioCap Δ) : WorldProg Δ (Option Byte) := .step h .opReadStdinByte .pure
+def readStdinLineW {Δ : List Cap} (h : CapMem .stdioCap Δ) : WorldProg Δ (Option Bytes) := .step h .opReadStdinLine .pure
+def readStdinAllW {Δ : List Cap} (h : CapMem .stdioCap Δ) : WorldProg Δ Bytes := .step h .opReadStdinAll .pure
+def writeStdoutW {Δ : List Cap} (h : CapMem .stdioCap Δ) (bs : Bytes) : WorldProg Δ Unit := .step h (.opWriteStdout bs) .pure
+def writeStdoutStrW {Δ : List Cap} (h : CapMem .stdioCap Δ) (s : String) : WorldProg Δ Unit := writeStdoutW h (bytes s)
+def writeStderrW {Δ : List Cap} (h : CapMem .stdioCap Δ) (bs : Bytes) : WorldProg Δ Unit := .step h (.opWriteStderr bs) .pure
+def writeStderrStrW {Δ : List Cap} (h : CapMem .stdioCap Δ) (s : String) : WorldProg Δ Unit := writeStderrW h (bytes s)
+def isTTYStdinW {Δ : List Cap} (h : CapMem .stdioCap Δ) : WorldProg Δ Bool := .step h .opIsTTYStdin .pure
+def isTTYStdoutW {Δ : List Cap} (h : CapMem .stdioCap Δ) : WorldProg Δ Bool := .step h .opIsTTYStdout .pure
+def isTTYStderrW {Δ : List Cap} (h : CapMem .stdioCap Δ) : WorldProg Δ Bool := .step h .opIsTTYStderr .pure
+
+def hasTTYW {Δ : List Cap} (h : CapMem .ttyCap Δ) : WorldProg Δ Bool := .step h .opHasTTY .pure
+def setTTYRawW {Δ : List Cap} (h : CapMem .ttyCap Δ) (raw : Bool) : WorldProg Δ Bool := .step h (.opSetTTYRaw raw) .pure
+def termSizeW {Δ : List Cap} (h : CapMem .ttyCap Δ) : WorldProg Δ (Nat × Nat) := .step h .opTermSize .pure
 def readTTYByteW {Δ : List Cap} (h : CapMem .ttyCap Δ) : WorldProg Δ (Option Byte) := .step h .opReadTTYByte .pure
+def writeTTYW {Δ : List Cap} (h : CapMem .ttyCap Δ) (bs : Bytes) : WorldProg Δ Bool := .step h (.opWriteTTY bs) .pure
+def writeTTYStrW {Δ : List Cap} (h : CapMem .ttyCap Δ) (s : String) : WorldProg Δ Bool := writeTTYW h (bytes s)
+def writeTTYW_ {Δ : List Cap} (h : CapMem .ttyCap Δ) (bs : Bytes) : WorldProg Δ Unit := mapWorld (fun _ => ()) (writeTTYW h bs)
+def writeTTYStrW_ {Δ : List Cap} (h : CapMem .ttyCap Δ) (s : String) : WorldProg Δ Unit := writeTTYW_ h (bytes s)
+
 def readFileW {Δ : List Cap} (h : CapMem .fsCap Δ) (p : String) : WorldProg Δ (Sum FsError Bytes) := .step h (.opReadFile p) .pure
 def writeFileW {Δ : List Cap} (h : CapMem .fsCap Δ) (p : String) (bs : Bytes) : WorldProg Δ (Sum FsError Unit) := .step h (.opWriteFile p bs) .pure
 def mkdirW {Δ : List Cap} (h : CapMem .fsCap Δ) (p : String) (mode : Nat) : WorldProg Δ (Sum FsError Unit) := .step h (.opMkdir p mode) .pure
@@ -465,9 +510,12 @@ abbrev CliApp (Δ : List Cap) : Type := WorldProg Δ ExitCode
 inductive EventPayload : Cap → Type where
   | evTickMs   : Nat → EventPayload .clockCap
   | evSignal   : TermSignal → EventPayload .envCap
+  | evStdinBytes : Bytes → EventPayload .stdioCap
+  | evStdinEOF   : EventPayload .stdioCap
   | evKey      : Key → EventPayload .ttyCap
   | evResize   : Nat → Nat → EventPayload .ttyCap
   | evTTYBytes : Bytes → EventPayload .ttyCap
+  | evTTYEOF   : EventPayload .ttyCap
   | evFsWatch  : String → EventPayload .fsCap
   | evNetConn  : Bytes → EventPayload .netCap
   | evGitHook  : String → EventPayload .gitCap
@@ -695,28 +743,33 @@ def stepWorldPure {c : Cap} : (op : Op c) → SimWorld → ((Ret op) × SimWorld
       Prod.mk w.env.args w
   | .opLookupEnv k, w =>
       Prod.mk (lookupEnvVar k w.env.envVars) w
-  | .opReadStdinAll, w =>
-      Prod.mk w.env.stdinBytes { w with env := { w.env with stdinBytes := [] } }
+  | .opReadStdinByte, w =>
+      let r := PosixChannel.popChanByte w.stdio.stdin
+      (r.1, { w with stdio := { w.stdio with stdin := r.2 } })
   | .opReadStdinLine, w =>
-      let r := takeLineBytes w.env.stdinBytes
-      Prod.mk r.1 { w with env := { w.env with stdinBytes := r.2 } }
-  | .opIsTTYStdin, w  => Prod.mk w.tty.ttyStdin w
-  | .opIsTTYStdout, w => Prod.mk w.tty.ttyStdout w
-  | .opIsTTYStderr, w => Prod.mk w.tty.ttyStderr w
-  | .opTermSize, w =>
-      Prod.mk (Prod.mk w.tty.ttyScreen.height w.tty.ttyScreen.width) w
+      let r := PosixChannel.readChanLine w.stdio.stdin
+      (r.1, { w with stdio := { w.stdio with stdin := r.2 } })
+  | .opReadStdinAll, w =>
+      let r := PosixChannel.readChanAll w.stdio.stdin
+      (r.1, { w with stdio := { w.stdio with stdin := r.2 } })
   | .opWriteStdout bs, w =>
-      let t := w.tty
-      let nextScr := (if t.ttyStdout then (stepANSI t.ttyScreen bs) else t.ttyScreen)
-      Prod.mk () { w with tty := { t with stdoutBuf := (bs.foldl ByteArray.push t.stdoutBuf), ttyScreen := nextScr } }
+      ((), { w with stdio := { w.stdio with stdout := PosixChannel.writeOut bs w.stdio.stdout } })
   | .opWriteStderr bs, w =>
-      let t := w.tty
-      let nextScr := (if t.ttyStderr then (stepANSI t.ttyScreen bs) else t.ttyScreen)
-      Prod.mk () { w with tty := { t with stderrBuf := (bs.foldl ByteArray.push t.stderrBuf), ttyScreen := nextScr } }
+      ((), { w with stdio := { w.stdio with stderr := PosixChannel.writeOut bs w.stdio.stderr } })
+  | .opIsTTYStdin, w  => (w.stdio.stdinIsTTY, w)
+  | .opIsTTYStdout, w => (w.stdio.stdout.isTTY, w)
+  | .opIsTTYStderr, w => (w.stdio.stderr.isTTY, w)
+  | .opHasTTY, w => (w.tty.hasTTY, w)
+  | .opSetTTYRaw raw, w =>
+      let r := PosixChannel.setCtrlTTYRaw raw w.tty
+      (r.1, { w with tty := r.2 })
+  | .opTermSize, w => ((w.tty.ttyScreen.height, w.tty.ttyScreen.width), w)
   | .opReadTTYByte, w =>
-      let t := w.tty
-      let r := popByte t.ttyInput
-      Prod.mk r.1 { w with tty := { t with ttyInput := r.2 } }
+      let r := PosixChannel.popCtrlTTYByte w.tty
+      (r.1, { w with tty := r.2 })
+  | .opWriteTTY bs, w =>
+      let r := PosixChannel.writeCtrlTTY bs w.tty
+      (r.1, { w with tty := r.2 })
   | .opReadFile p, w =>
       Prod.mk (readVirtualFile p w.fs) w
   | .opWriteFile p bs, w =>
