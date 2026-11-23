@@ -1,109 +1,41 @@
-# Autonomous open-world sessions
+# Autonomous sessions
 
-From the repository root, build the CLI and start a session:
+Run `./build.sh` in the repository root. A session takes a state directory, a UTF-8 goal and a reference descriptor. The descriptor may name a local executable relative to the descriptor file, or an executable in a locally installed Docker image. The optional `args` field prefixes the reference argv.
 
 ```sh
-./build.sh
-./Main session /absolute/workspace goal.txt reference.sexp
-```
-
-`reference.sexp` contains one configuration, for example:
-
-```sexp
-(ref-target (local "/bin/cat"))
+./lojita session "$PWD/workspace" goal.md reference.sexp
 ```
 
 ```sexp
-(ref-target (docker "codetransport/pandoc-cleanroom:3.1.3" "/usr/bin/pandoc")
-  (args "--from=markdown" "--to=html") (timeoutMs 30000))
+(ref-target (docker "programbench/tomnomnom_1776_gron.88a6234:task_cleanroom_v6"
+                    "/workspace/executable") (timeoutMs 30000))
 ```
 
-```sexp
-(ref-target
-  (docker "programbench/junegunn_1776_fzf.b56d614:task_cleanroom_v6" "/workspace/executable"))
-```
+## Proposals and actions
 
-Docker images must already be installed. Batch requests use fresh directories,
-a clean environment, a read-only container and no network. Local targets run
-directly on the host in a fresh working directory with a clean environment;
-they are useful for offline fixtures. `args` precedes per-request arguments.
-`timeoutMs` defaults to 30000; zero disables the batch timeout. Terminal timing,
-environment, geometry and topology belong to each `TermConfig`.
+Each owner has a durable Codex thread. A proposal starts on a new scratch fork. During a mechanical retry, the owner resumes that scratch thread and its draft store. The host prints the owner and thread ID before requesting a proposal and flushes stdout. `latest-prompt` and `latest-reply` in the owner's context directory hold the most recent proposal exchange. The durable thread receives the verified semantic result upon acceptance. [Backend](../Lojita/Session/AI.lean)
 
-The root uses `CodexCLIBackend` with `gpt-6.1-sol` and reasoning effort `max`.
-Its durable thread is `threads/SESSION_ROOT.id`. Proposals run on ephemeral
-forks; only checked actions are sent through `accept` and appended atomically
-to `session-memory.sexp`. Compiler failures and malformed proposals are passed
-as transient diagnostics. Resuming the same command reuses the root thread,
-memory and saved trees. `SessionConfig` also accepts custom session and tree
-backends; the offline test uses `ScriptedBackend`.
+The executable comes from `CODETRANSPORT_CODEX_BIN`, the installed `/root/.local/bin/codex`, or `codex` on PATH, in that order. The model, reasoning effort and service tier use `CODETRANSPORT_MODEL`, `CODETRANSPORT_EFFORT` and `CODETRANSPORT_SERVICE_TIER`. An explicitly empty tier omits the CLI override. The hosted gate uses `gpt-6.2-astra`, `medium` and `fast`. The backend selects read-only sandboxing and enables unattended tool calls specifically on its mode-scoped Lojita MCP server. [OpenAI Docs on MCP server policy](https://learn.chatgpt.com/docs/config-file/config-reference)
 
-[`sessionTemplate` in Code/Prompt.agda](../Code/Prompt.agda) is the protocol guide,
-with complete examples of the four actions: `run-script`, `drive-tree`,
-`build-exe`, and `finish`. It covers batch probes, parameterized terminal probes,
-successive lifts, and real replay. Every fenced action example is checked by
-`parseSessionAction` in `Test/SessionProtocol.agda`.
-
-There is no pre-T0 task context directory. Fixed context before T0 consists
-solely of Ψ (selected tools), Agda stdlib, and the built-in Harness formal modules
-`Context.Blueprint` and `Context.Terminal`. Task-specific finite base categories
-belong directly in T0's `specSrc` (Σ_T0). Upper stages T1, T2, ... import ancestor
-trees via `baseTrees` and define their concrete types and descent projections
-directly in their own `specSrc`; `stubOf` preserves concrete helpers referenced
-by laws or signatures. In the identity walkthrough, T0 defines `Tag` and `item`,
-T1 defines `classify : String → Tag`, and T2 imports both ancestor modules.
-
-Each script receives a generated `SessionEnv.agda` exporting `SessionΨ` and
-`sessionEnv`. Process and terminal tools resolve `"ref"` to the configured
-target and `"cand"` to `bin/candidate`. The script, generated environment,
-compiler products and tool workspaces are bracketed by one temporary directory
-and removed on success, compilation failure or execution failure. Script
-execution is limited to 120 seconds. `run-script` and `build-exe` permit the
-`--guardedness` option needed to import the ownership IO interpreter; every
-other `closedImplOK []` problem remains fatal.
-
-Scripts and executable builds include `generated/<tree>/` for successful trees,
-the repository, and `/usr/share/agda-stdlib`. Tree checking includes only the
-repository and stdlib; ancestor code is supplied explicitly via `baseModules`.
-
-Terminal FFI declarations live exclusively in `OwnershipIO/TermFFI.agda`.
-`Code/TermTool.agda` has no postulates. Modules that do not import the terminal
-tool do not link `TermTransport`. Script compilation passes both
-`--ghc-flag=-iruntime` and the absolute runtime include path. The session runner
-uses `runtime/term-relay` when installed, otherwise builds and uses
-`tmp/term-build/term-relay`. See [terminal details](TERMINAL.md).
-
-Persistent artifacts:
-
-| Path | Contents |
+| Action | Accepted effect |
 | --- | --- |
-| `trees/<name>/current` | Atomic pointer to an immutable complete tree generation |
-| `trees/<name>/bases.sexp` | Direct ancestor names; loading follows their transitive closure |
-| `trees/<name>/modules.tsv` | Canonical and source hashes for exported modules |
-| `generated/<name>/` | Verified root and child modules from `codesOf` |
-| `store/objects/<sha>.sexp` | Canonical code objects addressed by SHA-256 |
-| `bin/candidate` | Compiled executable |
-| `bin/candidate.sha256` | Executable SHA-256 |
-| `bin/inputs.sha256` | Fingerprint of all `.agda` sources under `generated/` and `trees/*/modules.tsv` at build time |
-| `threads/` | Session and per-tree node thread IDs |
-| `MANIFEST.tsv` | Tree canonical/source hashes, executable hash, thread IDs |
-| `SUMMARY.md` | Accepted final summary |
+| `run-script` | Run a kernel-audited `SessionEnv.Probe`. A successful `SessionEnv.replay` compares raw stdout, stderr, timeout and process status for both targets. |
+| `drive-tree` | Check a specification, drive node proposals and record a verdict. A verified tree publishes generated Lean modules and a sealed tip. |
+| `build-exe` | Check a sealed qualified entry and link a static executable. Building invalidates an earlier replay receipt. |
+| `finish` | Re-audit sealed trees, generated sources, build identity and replay receipt, then write the submitted summary. |
 
-There is no stage-count restriction. T2 can name only T1 in `baseTrees`; all
-T1 children and all modules from T0 remain available. Duplicate ancestor paths
-are deduplicated; conflicting module versions are rejected. `LiftSpec.baseMod`
-must occur in the loaded closure and `upperMod` must match the new specification.
+Session tools can inspect sealed source and run probes. Node tools can inspect public context and authorized ancestors, test Lean drafts and preview plans. Isolated owners use `read_context` with an empty object to discover module names or with an exact module name and inclusive line numbers to read a declaration. The two manuals contain the complete schemas in use and executable examples. [Session manual](../prompts/session-open-world.md) · [Node manual](../prompts/node-closed-world.md)
 
-`finish` requires at least one successful tree and an existing candidate. It
-also checks executable/build-input hashes and re-typechecks every exported tree
-module. The root prompt requires real candidate/reference replay after the last
-build; the harness does not infer behavioral equivalence merely from an exit
-code or from the existence of a binary. The offline test actually compares
-both processes and fails on any differing exit code, stdout or stderr.
+## Workspace records
 
-Run `./test-session.sh` for the offline probe → rejected syntax/type errors →
-terminal probe → T0 → T1 → T2 → executable → replay
-→ finish scenario. It checks transitive ancestry, candidate behavior, artifact
-creation, thread records, empty script directories, clean semantic memory, and
-the absence of a task context directory. It also checks successful-tree include
-paths and generated-source/module-manifest fingerprint invalidation.
+| Path within the workspace | Meaning |
+| --- | --- |
+| `threads/<owner>.id` | Durable Codex thread ID |
+| `ai/SESSION_ROOT/`, `trees/<tree>/ai/<owner>/` | Latest proposal exchange and scratch drafts |
+| `store/objects/`, `store/refs/` | SHA-256 objects, sealed and partial refs |
+| `generated/<tree>/Gen/…` | Source published from the sealed home |
+| `session-memory.sexp`, `narrowing-events.jsonl` | Accepted outcomes and structured diagnostics |
+| `bin/candidate`, `bin/build.sexp` | Native executable and identity of its input trees |
+| `replay-receipt.sexp`, `SUMMARY.md` | Evidence for the current build and accepted finish summary |
+
+To run one probe directly, use `./lojita session-probe WS REFERENCE FILE.lean`. The live gate records actual Codex JSONL in a temporary directory selected by `CODETRANSPORT_CODEX_TRACE_DIR`. It checks successful MCP tool completions on scratch forks, verifies the build receipt and runs the candidate independently on byte streams. Its workspace and private Codex home are cleaned up at exit. [Live gate](../test-live-e2e.sh)

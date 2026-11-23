@@ -1,9 +1,0 @@
-module Gen.T2.JsonInput.Comparison.Primitive.Reflection.NativeAgreement.NativeLaws.Agreement.NativeChar where
-
-open import Agda.Builtin.Char using (Char; primCharEquality)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
-open import Data.Bool using (true)
-import Relation.Nullary.Decidable
-
-char-complete : (c d : Char) → (c ≡ d) → primCharEquality c d ≡ true
-char-complete c .c refl = refl

@@ -1,14 +1,5 @@
-*.agdai
-*.hi
 *.o
-/MAlonzo/
 /tmp/
-/roundtrip/
 /scratch/
-/Main
-/EvalIO
-/Session
-/SessionIO
-/dump/dump
-/runtime/lean-prism/.lake/
 __pycache__/
+/.lake/

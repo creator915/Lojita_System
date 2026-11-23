@@ -1,1 +1,0 @@
-(lift "Gen.T0.Gron" "Gen.T1.GronText" () (("Gen.T0.Gron.keyNotation" "Gen.T1.GronText.renderKey" "Gen.T1.GronText.keySquare")))

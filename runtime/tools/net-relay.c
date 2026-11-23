@@ -1,6 +1,6 @@
 /* Loopback-only network relay. Control tokens are hex ('-' is empty).
  * Responses: O stdout stderr wire status timed captureCount, then C hex.
- * HTTP responses, including the fallback, are supplied verbatim by Agda. */
+ * HTTP responses, including the fallback, are supplied verbatim by the Lean host. */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <dirent.h>

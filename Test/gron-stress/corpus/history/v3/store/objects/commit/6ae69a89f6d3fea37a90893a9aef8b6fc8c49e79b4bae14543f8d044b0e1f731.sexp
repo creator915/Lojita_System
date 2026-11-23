@@ -1,1 +1,0 @@
-(commit (parents) "5648be690322e0e4e3b36dabb307f0b276996f482d87ce550820ea93e6d16cda" "T0" "为后续 CLI 文本端口固定已观测的模式优先级、终端着色选择和 JSON 路径语句语义。" (presentation "40ea6ba01aa059687725f18459a4cced67b93b0b0498bed3e54cdbd96f0451d9"))
