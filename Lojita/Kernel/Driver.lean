@@ -335,9 +335,9 @@ inductive SatisfactionMode where
     namespace. Otherwise a private matcher of the same name in the candidate
     could silently change the meaning of a spec body. -/
 private def projectExpr (spec impl : Snapshot) (owned : NameSet) (e : Expr) : MetaM Expr := do
-  let e ← withEnv spec.env <| Meta.deltaExpand e fun n =>
-    owned.contains n && (spec.env.find? n).any (fun i =>
-      i matches .defnInfo _ || (isPrivateName n && i matches .thmInfo _))
+  let concrete (n : Name) := owned.contains n && (spec.env.find? n).any fun i =>
+    i matches .defnInfo _ || (isPrivateName n && i matches .thmInfo _)
+  let e ← withEnv spec.env <| Meta.deltaExpand e concrete (allowOpaque := true)
   let rename (n : Name) := if owned.contains n && !isPrivateName n then
       n.replacePrefix spec.env.mainModule impl.env.mainModule else n
   return ← Core.transform e (post := fun e => pure <| .done <| match e with
@@ -349,17 +349,24 @@ private def counterpart (spec impl : Snapshot) (n : Name) : Name :=
   let name := (privateToUserName n).replacePrefix spec.env.mainModule impl.env.mainModule
   if isPrivateName n then mkPrivateNameCore impl.env.mainModule name else name
 
-private def convertible (actual expected : Expr) : MetaM Bool := do
-  if actual.hasMVar || expected.hasMVar || !(Lean.Kernel.check (← getEnv) {} expected).isOk then
+private def convertible (levelParams : List Name) (actual expected : Expr) : CoreM Bool := do
+  if actual.hasMVar || expected.hasMVar then return false
+  -- Kernel.check accepts free universe parameters. Restrict the projection to
+  -- the declaration's own parameters, which also instantiate the candidate.
+  if expected.hasLevelParam && !(collectLevelParams {} expected).params.all levelParams.contains then
     return false
-  Meta.withTransparency .all <| Meta.isDefEq expected actual
+  let env ← getEnv
+  unless (Lean.Kernel.check env {} expected).isOk do return false
+  -- The candidate was checked in its snapshot. Kernel conversion unfolds either
+  -- side, including structural recursors applied to neutral arguments.
+  return Lean.Kernel.isDefEq env {} expected actual matches .ok true
 
 /-- Private inductives are nominal too. If conversion needs their correspondence,
     enqueue their signatures and constructors as additional proof obligations. -/
-private def compareExpr (a b : Snapshot) (owned : NameSet) (description : String)
+private def compareExpr (a b : Snapshot) (owned : NameSet) (levelParams : List Name) (description : String)
     (actual original : Expr) : MetaM (List Name) := do
   let expected ← projectExpr a b owned original
-  if ← convertible actual expected then return []
+  if ← convertible levelParams actual expected then return []
   let mut pairs : NameMap Name := {}
   for n in expected.getUsedConstantsAsSet do
     if isPrivateName n && owned.contains n then
@@ -370,7 +377,7 @@ private def compareExpr (a b : Snapshot) (owned : NameSet) (description : String
       | .const n us => .const ((pairs.find? n).getD n) us
       | .proj n i val => .proj ((pairs.find? n).getD n) i val
       | _ => e)
-    if ← convertible actual translated then return pairs.toList.map Prod.fst
+    if ← convertible levelParams actual translated then return pairs.toList.map Prod.fst
   throwError "INTERFACE_MISMATCH: {description}\nexpected {expected}\nreceived {actual}"
 
 private def compareInterface (spec impl : Snapshot) (mode : SatisfactionMode) : MetaM Unit := do
@@ -394,7 +401,8 @@ private def compareInterface (spec impl : Snapshot) (mode : SatisfactionMode) : 
       throwError "INTERFACE_MISMATCH: {target} universe arity {a.numLevelParams} != {b.numLevelParams}"
     let levels := a.levelParams.map Level.param
     let inst := fun (e : Expr) => e.instantiateLevelParams b.levelParams levels
-    todo := (← compareExpr spec impl owned s!"type of {target}" (inst b.type) a.type) ++ todo
+    let compare := compareExpr spec impl owned a.levelParams
+    todo := (← compare s!"type of {target}" (inst b.type) a.type) ++ todo
     match a, b with
     | .axiomInfo _, .axiomInfo _ =>
       unless mode == .subspec do throwError "DISALLOWED_AXIOM_VIOLATION: {target}"
@@ -402,7 +410,7 @@ private def compareInterface (spec impl : Snapshot) (mode : SatisfactionMode) : 
     | .thmInfo _, .thmInfo _ | .thmInfo _, .defnInfo _ => pure ()
     | .defnInfo av, .defnInfo bv =>
       unless ← Meta.isProp b.type do
-        todo := (← compareExpr spec impl owned s!"body of {target}" (inst bv.value) av.value) ++ todo
+        todo := (← compare s!"body of {target}" (inst bv.value) av.value) ++ todo
     | .defnInfo _, .thmInfo _ => pure () -- The type comparison established proof irrelevance.
     | .inductInfo av, .inductInfo bv =>
       unless av.numParams == bv.numParams && av.numIndices == bv.numIndices &&
@@ -429,7 +437,8 @@ def satisfies (spec impl : LeanMod) (deps : List LeanMod := [])
     let copy ← ioChecked (relocateInterface a.mod (QName.ofName newName))
     checked deps childStubs copy true
   else pure a
-  let joint ← parentEnv #[a, b]
+  -- Conversion may inspect the private matchers of either checked module.
+  let joint := (← parentEnv #[a, b]).setExporting false
   (compareInterface a b mode).run' |>.toIO' (coreCtx joint) {env := joint}
 
 def eqIface (a b : LeanMod) (deps : List LeanMod := []) : IO Unit := do

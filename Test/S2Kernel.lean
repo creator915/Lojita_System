@@ -139,6 +139,55 @@ theorem answer : computed = 0 := atZero" ["Gen.T1.Root.Child"]
   ensure ((← checkClosedModule [t0, side, t1] joinMod).id == diamond.id) "lost original diamond version"
   IO.println "2  Conditional child, closed implementation and sealed link"
 
+private def concreteInterfaces : IO Unit := do
+  let fetch := fun (port decoder : String) => object "Gen.Fetch" ("structure UserInfo where
+  portText : Option String
+  name : List UInt8
+  password : Option (List UInt8)
+def thePort (info : UserInfo) : Nat :=
+  " ++ port ++ "
+def base64 : List UInt8 → List Nat
+  | [] => []
+  | [a] => [a.toNat]
+  | [a, b] => [a.toNat, b.toNat]
+  | a :: b :: c :: rest => [a.toNat, b.toNat, c.toNat] ++ base64 rest
+termination_by structural raw => raw
+def basic (info : UserInfo) := base64 (info.name ++ [58] ++ info.password.getD [])
+def quotedRune (c : Char) : Nat :=
+  match c.toNat with
+  | 7 => 0 | 8 => 1 | 9 => 2 | 34 => 3 | 92 => 4 | n => n
+def quoted (s : String) := s.toList.map quotedRune
+def prepare (target : Option (String × UserInfo)) : List Nat :=
+  match target with
+  | none => []
+  | some (s, info) => thePort info :: (quoted s ++ basic info)
+" ++ decoder ++ "
+def urlPiece (raw : List UInt8) : Except String (List Nat) := do
+  let decoded ← unescape raw
+  return base64 decoded
+def idPoly.{u} {α : Type u} (x : α) : α := match some x with | some y => y | none => x")
+  let port := "match info.portText.bind String.toNat? with | some n => n | none => 80"
+  let decoder := "private def unescapeInto : List UInt8 → List UInt8 → Except String (List UInt8)
+  | [], acc => .ok acc.reverse
+  | b :: rest, acc => unescapeInto rest (b :: acc)
+def unescape (raw : List UInt8) := unescapeInto raw []"
+  let spec ← fetch port "axiom unescape : List UInt8 → Except String (List UInt8)"
+  let impl ← fetch port decoder
+  satisfies spec impl
+  let cases ← fetch "Option.casesOn (motive := fun _ => Nat)
+    (info.portText.bind String.toNat?) 80 (fun n => n)" decoder
+  satisfies spec cases
+  let client ← object "Gen.Client" "def leak := Gen.Fetch.unescapeInto [] []" ["Gen.Fetch"]
+  expectCode "ELABORATION_ERROR" (checkClosedModule [impl] client)
+  expectCode "ELABORATION_ERROR" (checkConditionalGlue [impl] [] client)
+  let cert := fun (helper proof : String) => object "Certified" ("structure Box where
+  n : Nat
+" ++ helper ++ "
+def tag (x : Box) : { y : Box // y = x } := ⟨x, " ++ proof ++ "⟩")
+  let named ← cert "private theorem certifies (x : Box) : x = x := rfl" "certifies x"
+  let inlined ← cert "" "rfl"
+  eqIface named inlined
+
 private def quotient : IO Unit := do
   let spec ← object "Specification" "axiom rev_involutive : ∀ {α : Type} (xs : List α), List.reverse (List.reverse xs) = xs
 axiom add_comm_law : ∀ (a b : Nat), a + b = b + a"
@@ -150,6 +199,9 @@ theorem add_comm_law (x y : Nat) : x + y = y + x := by omega"
   satisfies poly bare
   let mono ← object "Monomorphic" "axiom rev_involutive : ∀ {α : Type} (xs : List α), xs.reverse.reverse = xs"
   expectCode "INTERFACE_MISMATCH" (satisfies mono bare)
+  let first ← object "Universes" "axiom carrier.{u,v} : Type u → Type v → Type u"
+  let second ← object "Universes" "def carrier.{a,b} (_ : Type a) (β : Type b) : Type b := β"
+  expectCode "INTERFACE_MISMATCH" (satisfies first second)
   let untyped ← object "NoBinderType" "axiom add_comm_law : ∀ a b, a + b = b + a"
   expectCode "ELABORATION_ERROR" (checkConditionalGlue [] [] untyped true)
   expectCode "INTERFACE_MISMATCH" (satisfies poly impl)
@@ -186,6 +238,7 @@ example : True := by trivial"
   let extended := withTests blank tests
   ensure ((withTests extended tests).units == extended.units && extended.units.length == 2) "withTests"
   discard <| checkClosedModule [] extended
+  concreteInterfaces
   IO.println "3  Kernel quotient, polymorphism, helper bodies and specification tests"
 
 private def security : IO Unit := do
