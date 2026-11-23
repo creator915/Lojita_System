@@ -1,6 +1,6 @@
-#include <lean/lean.h>
 #define CT_HAVE_OPENSSL 1
 #include "../cli_host.c"
+#include <lean/lean.h>
 #if __has_include(<openssl/sha.h>)
 #include <openssl/sha.h>
 #else
@@ -37,6 +37,13 @@ static lean_object *ct_mk_byte_array(const uint8_t *buf, size_t len) {
     return ba;
 }
 
+static lean_object *ct_mk_pair(lean_object *fst, lean_object *snd) {
+    lean_object *pair = lean_alloc_ctor(0, 2, 0);
+    lean_ctor_set(pair, 0, fst);
+    lean_ctor_set(pair, 1, snd);
+    return pair;
+}
+
 static lean_object *ct_mk_except_nat_err(size_t code) {
     lean_object *res = lean_alloc_ctor(0, 1, 0); /* Except.error */
     lean_ctor_set(res, 0, lean_box(code));
@@ -65,7 +72,7 @@ LEAN_EXPORT lean_obj_res ct_lean_sleep_ms(uint32_t ms) {
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-/* Process Env & Stateful Raw Stdin */
+/* Process environment */
 LEAN_EXPORT lean_obj_res ct_lean_prog_name(void) {
     const char *p = ct_get_prog_name();
     return lean_io_result_mk_ok(lean_mk_string(p ? p : ""));
@@ -93,44 +100,40 @@ LEAN_EXPORT lean_obj_res ct_lean_lookup_env(b_lean_obj_arg key_obj) {
     return lean_io_result_mk_ok(some_v);
 }
 
-LEAN_EXPORT lean_obj_res ct_lean_read_stdin_all(void) {
-    uint8_t *buf = NULL;
-    size_t len = 0;
-    (void)ct_read_stdin_all(&buf, &len);
-    lean_object *ba = ct_mk_byte_array(buf, len);
-    ct_free_buf(buf);
-    return lean_io_result_mk_ok(ba);
+/* Standard streams and controlling terminal */
+static lean_obj_res ct_lean_byte_result(int got, uint8_t byte) {
+    if (!got) return lean_io_result_mk_ok(lean_box(0)); /* Option.none */
+    lean_object *some = lean_alloc_ctor(1, 1, 0);
+    lean_ctor_set(some, 0, lean_box(byte));
+    return lean_io_result_mk_ok(some);
 }
 
-LEAN_EXPORT lean_obj_res ct_lean_read_stdin_line(void) {
+LEAN_EXPORT lean_obj_res ct_lean_read_stdin_byte(void) {
     int got = 0;
-    uint8_t *buf = NULL;
-    size_t len = 0;
-    (void)ct_read_stdin_line(&got, &buf, &len);
-    if (!got) {
-        ct_free_buf(buf);
-        return lean_io_result_mk_ok(lean_box(0)); /* Option.none */
+    uint8_t byte = 0;
+    if (ct_read_stdin_byte(&got, &byte) < 0) {
+        return lean_io_result_mk_error(lean_decode_io_error(errno, NULL));
     }
-    lean_object *ba = ct_mk_byte_array(buf, len);
-    ct_free_buf(buf);
-    lean_object *some_ba = lean_alloc_ctor(1, 1, 0); /* Option.some */
-    lean_ctor_set(some_ba, 0, ba);
-    return lean_io_result_mk_ok(some_ba);
+    return ct_lean_byte_result(got, byte);
 }
 
-/* Terminal / Stdio & Reactive Poll */
 LEAN_EXPORT lean_obj_res ct_lean_is_tty(uint32_t fd) {
     int r = ct_is_tty((int)fd);
     return lean_io_result_mk_ok(lean_box(r ? 1 : 0));
 }
 
+LEAN_EXPORT lean_obj_res ct_lean_has_tty(void) {
+    return lean_io_result_mk_ok(lean_box(ct_has_tty()));
+}
+
+LEAN_EXPORT lean_obj_res ct_lean_set_tty_raw(uint8_t raw) {
+    return lean_io_result_mk_ok(lean_box(ct_set_tty_raw(raw)));
+}
+
 LEAN_EXPORT lean_obj_res ct_lean_term_size(void) {
     uint32_t rows = 24, cols = 80;
     ct_term_size(&rows, &cols);
-    lean_object *pair = lean_alloc_ctor(0, 2, 0);
-    lean_ctor_set(pair, 0, lean_box((size_t)rows));
-    lean_ctor_set(pair, 1, lean_box((size_t)cols));
-    return lean_io_result_mk_ok(pair);
+    return lean_io_result_mk_ok(ct_mk_pair(lean_uint32_to_nat(rows), lean_uint32_to_nat(cols)));
 }
 
 LEAN_EXPORT lean_obj_res ct_lean_write_fd(uint32_t fd, b_lean_obj_arg ba_obj) {
@@ -144,24 +147,25 @@ LEAN_EXPORT lean_obj_res ct_lean_read_tty_byte(void) {
     int got = 0;
     uint8_t b = 0;
     (void)ct_read_tty_byte(&got, &b);
-    if (!got) {
-        return lean_io_result_mk_ok(lean_box(0)); /* Option.none */
-    }
-    lean_object *some_b = lean_alloc_ctor(1, 1, 0); /* Option.some (Nat) */
-    lean_ctor_set(some_b, 0, lean_box((size_t)b));
-    return lean_io_result_mk_ok(some_b);
+    return ct_lean_byte_result(got, b);
 }
 
-LEAN_EXPORT lean_obj_res ct_lean_poll_reactive_event(uint32_t wait_ms) {
+LEAN_EXPORT lean_obj_res ct_lean_write_tty(b_lean_obj_arg ba) {
+    int ok = ct_write_tty_all(lean_sarray_cptr(ba), lean_sarray_size(ba));
+    return lean_io_result_mk_ok(lean_box(ok));
+}
+
+LEAN_EXPORT lean_obj_res ct_lean_poll_reactive_event(uint32_t poll_mask, uint32_t wait_ms) {
     uint32_t a = 0, b = 0;
-    int kind = ct_poll_reactive_event(wait_ms, &a, &b);
-    lean_object *inner = lean_alloc_ctor(0, 2, 0);
-    lean_ctor_set(inner, 0, lean_box((size_t)a));
-    lean_ctor_set(inner, 1, lean_box((size_t)b));
-    lean_object *outer = lean_alloc_ctor(0, 2, 0);
-    lean_ctor_set(outer, 0, lean_box((size_t)(kind < 0 ? 1 : kind)));
-    lean_ctor_set(outer, 1, inner);
-    return lean_io_result_mk_ok(outer);
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    int kind = ct_poll_reactive_event(poll_mask, wait_ms, &a, &b, &buf, &len);
+    if (kind < 0) return lean_io_result_mk_error(lean_decode_io_error(errno, NULL));
+    lean_object *ba = ct_mk_byte_array(buf, len);
+    ct_free_buf(buf);
+    lean_object *payload = ct_mk_pair(lean_uint32_to_nat(b), ba);
+    lean_object *fields = ct_mk_pair(lean_uint32_to_nat(a), payload);
+    return lean_io_result_mk_ok(ct_mk_pair(lean_box((size_t)kind), fields));
 }
 
 /* Filesystem */

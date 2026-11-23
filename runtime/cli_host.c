@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -202,7 +203,7 @@ void ct_sleep_ms(uint32_t ms) {
 }
 
 /* --------------------------------------------------------------------------
- * §2 Process Env & Stateful Raw Stdin (`envCap`)
+ * §2 Process environment (`envCap`)
  * -------------------------------------------------------------------------- */
 
 const char *ct_get_prog_name(void) {
@@ -243,151 +244,142 @@ const char *ct_lookup_env_n(const char *key, size_t key_len) {
     return val;
 }
 
-static uint8_t *stdin_stash = NULL;
+/* --------------------------------------------------------------------------
+ * §3 Standard streams, controlling terminal and reactive polling
+ * -------------------------------------------------------------------------- */
+
+/* Refill only when empty. Byte reads and reactive polling consume the same prefix. */
+static uint8_t stdin_stash[8192];
 static size_t stdin_stash_pos = 0;
 static size_t stdin_stash_len = 0;
-static size_t stdin_stash_cap = 0;
 static int stdin_eof = 0;
 
 static int stdin_fill_chunk(void) {
     if (stdin_eof) return 0;
-    uint8_t tmp[8192];
-    for (;;) {
-        ssize_t n = read(STDIN_FILENO, tmp, sizeof(tmp));
-        if (n > 0) {
-            size_t unread = stdin_stash_len - stdin_stash_pos;
-            if (stdin_stash_pos > 0 && unread == 0) {
-                stdin_stash_pos = 0;
-                stdin_stash_len = 0;
-            }
-            if (stdin_stash_len + (size_t)n > stdin_stash_cap) {
-                if (stdin_stash_pos > 0 && unread > 0) {
-                    memmove(stdin_stash, stdin_stash + stdin_stash_pos, unread);
-                    stdin_stash_pos = 0;
-                    stdin_stash_len = unread;
-                }
-                size_t need = stdin_stash_len + (size_t)n;
-                size_t ncap = stdin_stash_cap ? stdin_stash_cap * 2 : 16384;
-                while (ncap < need) ncap *= 2;
-                uint8_t *nb = (uint8_t *)realloc(stdin_stash, ncap);
-                if (!nb) return -1;
-                stdin_stash = nb;
-                stdin_stash_cap = ncap;
-            }
-            memcpy(stdin_stash + stdin_stash_len, tmp, (size_t)n);
-            stdin_stash_len += (size_t)n;
-            return 1;
-        } else if (n == 0) {
-            stdin_eof = 1;
-            return 0;
-        } else if (errno == EINTR) {
-            continue;
-        } else {
-            stdin_eof = 1;
-            return 0;
-        }
-    }
-}
-
-int ct_read_stdin_all(uint8_t **out_buf, size_t *out_len) {
-    if (out_buf) *out_buf = NULL;
-    if (out_len) *out_len = 0;
-    while (!stdin_eof) {
-        if (stdin_fill_chunk() < 0) return -1;
-    }
-    size_t avail = stdin_stash_len - stdin_stash_pos;
-    uint8_t *res = (uint8_t *)malloc(avail ? avail : 1);
-    if (!res) return -1;
-    if (avail > 0) {
-        memcpy(res, stdin_stash + stdin_stash_pos, avail);
-    }
-    stdin_stash_pos = 0;
-    stdin_stash_len = 0;
-    if (out_buf) *out_buf = res; else free(res);
-    if (out_len) *out_len = avail;
-    return 0;
-}
-
-int ct_read_stdin_line(int *out_got_line, uint8_t **out_buf, size_t *out_len) {
-    if (out_got_line) *out_got_line = 0;
-    if (out_buf) *out_buf = NULL;
-    if (out_len) *out_len = 0;
-
-    for (;;) {
-        for (size_t i = stdin_stash_pos; i < stdin_stash_len; ++i) {
-            if (stdin_stash[i] == 10) {
-                size_t line_len = (i - stdin_stash_pos) + 1;
-                uint8_t *res = (uint8_t *)malloc(line_len);
-                if (!res) return -1;
-                memcpy(res, stdin_stash + stdin_stash_pos, line_len);
-                stdin_stash_pos += line_len;
-                if (stdin_stash_pos == stdin_stash_len) {
-                    stdin_stash_pos = 0;
-                    stdin_stash_len = 0;
-                }
-                if (out_got_line) *out_got_line = 1;
-                if (out_buf) *out_buf = res; else free(res);
-                if (out_len) *out_len = line_len;
-                return 0;
-            }
-        }
-        int r = stdin_fill_chunk();
-        if (r < 0) return -1;
-        if (r == 0) break;
-    }
-
-    size_t rem = stdin_stash_len - stdin_stash_pos;
-    if (rem == 0) {
-        if (out_got_line) *out_got_line = 0;
+    ssize_t n = read(STDIN_FILENO, stdin_stash, sizeof(stdin_stash));
+    if (n < 0) return -1;
+    if (n == 0) {
+        stdin_eof = 1;
         return 0;
     }
-    uint8_t *res = (uint8_t *)malloc(rem);
-    if (!res) return -1;
-    memcpy(res, stdin_stash + stdin_stash_pos, rem);
     stdin_stash_pos = 0;
-    stdin_stash_len = 0;
-    if (out_got_line) *out_got_line = 1;
-    if (out_buf) *out_buf = res; else free(res);
-    if (out_len) *out_len = rem;
-    return 0;
+    stdin_stash_len = (size_t)n;
+    return 1;
 }
 
-/* --------------------------------------------------------------------------
- * §3 Terminal / Stdio & Reactive Poll (`ttyCap`)
- * -------------------------------------------------------------------------- */
+static void stdin_consume(size_t count) {
+    stdin_stash_pos += count;
+    if (stdin_stash_pos == stdin_stash_len) {
+        stdin_stash_pos = 0;
+        stdin_stash_len = 0;
+    }
+}
+
+int ct_read_stdin_byte(int *out_got_byte, uint8_t *out_byte) {
+    *out_got_byte = 0;
+    *out_byte = 0;
+    if (stdin_stash_pos >= stdin_stash_len && !stdin_eof) {
+        if (stdin_fill_chunk() < 0) return -1;
+    }
+    if (stdin_stash_pos < stdin_stash_len) {
+        *out_byte = stdin_stash[stdin_stash_pos];
+        *out_got_byte = 1;
+        stdin_consume(1);
+    }
+    return 0;
+}
 
 int ct_is_tty(int fd) {
     return isatty(fd) ? 1 : 0;
 }
 
-static int tty_read_fd = -2;
+static int tty_initialized = 0;
+static int tty_rfd = -1;
+static int tty_wfd = -1;
+static int tty_eof = 0;
+static struct termios saved_termios;
+static int saved_termios_valid = 0;
 
-static int get_tty_input_fd(void) {
-    if (tty_read_fd == -2) {
-        int fd = open("/dev/tty", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd >= 0) {
-            tty_read_fd = fd;
-        } else if (isatty(STDIN_FILENO)) {
-            tty_read_fd = STDIN_FILENO;
-        } else {
-            tty_read_fd = -1;
+static int same_chr_dev(int fd1, int fd2) {
+    struct stat a, b;
+    return fd1 >= 0 && fd2 >= 0 && fstat(fd1, &a) == 0 && fstat(fd2, &b) == 0 &&
+           S_ISCHR(a.st_mode) && S_ISCHR(b.st_mode) && a.st_rdev == b.st_rdev;
+}
+
+static int open_tty(int mode) {
+    int fd = open("/dev/tty", mode | O_NOCTTY | O_CLOEXEC);
+    if (fd < 0 || fd > STDERR_FILENO) return fd;
+    /* Keep a closed standard stream closed even if open() picked its number. */
+    int tty_fd = fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+    int err = errno;
+    close(fd);
+    if (tty_fd < 0) errno = err;
+    return tty_fd;
+}
+
+static int tty_missing(int err) {
+    return err == ENOENT || err == ENXIO;
+}
+
+static void init_tty(void) {
+    if (tty_initialized) return;
+    tty_initialized = 1;
+    tty_rfd = open_tty(O_RDWR);
+    if (tty_rfd >= 0) {
+        tty_wfd = tty_rfd;
+        return;
+    }
+    int missing = tty_missing(errno);
+    tty_rfd = open_tty(O_RDONLY);
+    missing = missing && tty_rfd < 0 && tty_missing(errno);
+    tty_wfd = open_tty(O_WRONLY);
+    if (missing && tty_wfd < 0 && tty_missing(errno) && isatty(STDIN_FILENO)) {
+        tty_rfd = STDIN_FILENO;
+        if (isatty(STDOUT_FILENO) && same_chr_dev(STDIN_FILENO, STDOUT_FILENO)) {
+            tty_wfd = STDOUT_FILENO;
         }
     }
-    return tty_read_fd;
+}
+
+int ct_has_tty(void) {
+    init_tty();
+    return tty_rfd >= 0 || tty_wfd >= 0;
+}
+
+static void ct_restore_tty_termios(void) {
+    if (saved_termios_valid) {
+        int fd = tty_rfd >= 0 ? tty_rfd : tty_wfd;
+        (void)tcsetattr(fd, TCSANOW, &saved_termios);
+    }
+}
+
+int ct_set_tty_raw(int enable) {
+    init_tty();
+    int fd = tty_rfd >= 0 ? tty_rfd : tty_wfd;
+    if (fd < 0) return 0;
+    if (!saved_termios_valid) {
+        if (tcgetattr(fd, &saved_termios) != 0 || atexit(ct_restore_tty_termios) != 0) return 0;
+        saved_termios_valid = 1;
+    }
+    if (enable) {
+        struct termios raw = saved_termios;
+        cfmakeraw(&raw);
+        return tcsetattr(fd, TCSANOW, &raw) == 0;
+    }
+    return tcsetattr(fd, TCSANOW, &saved_termios) == 0;
 }
 
 void ct_term_size(uint32_t *out_rows, uint32_t *out_cols) {
+    init_tty();
+    int fds[] = {tty_rfd, tty_wfd, STDOUT_FILENO, STDIN_FILENO, STDERR_FILENO};
     uint32_t rows = 24, cols = 80;
-    struct winsize ws;
-    memset(&ws, 0, sizeof(ws));
-    int ctty = get_tty_input_fd();
-    if ((ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 ||
-         ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0 ||
-         ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 ||
-         (ctty >= 0 && ioctl(ctty, TIOCGWINSZ, &ws) == 0)) &&
-        ws.ws_row > 0 && ws.ws_col > 0) {
-        rows = (uint32_t)ws.ws_row;
-        cols = (uint32_t)ws.ws_col;
+    for (size_t i = 0; i < sizeof(fds) / sizeof(fds[0]); ++i) {
+        struct winsize ws;
+        if (fds[i] >= 0 && ioctl(fds[i], TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0) {
+            rows = ws.ws_row;
+            cols = ws.ws_col;
+            break;
+        }
     }
     if (out_rows) *out_rows = rows;
     if (out_cols) *out_cols = cols;
@@ -411,16 +403,23 @@ int ct_write_fd_all(int fd, const uint8_t *buf, size_t len) {
     return 0;
 }
 
+int ct_write_tty_all(const uint8_t *buf, size_t len) {
+    init_tty();
+    if (tty_wfd < 0) return 0;
+    if (len == 0) return 1;
+    return ct_write_fd_all(tty_wfd, buf, len) == 0;
+}
+
 int ct_read_tty_byte(int *out_got_byte, uint8_t *out_byte) {
     if (out_got_byte) *out_got_byte = 0;
     if (out_byte) *out_byte = 0;
-    int fd = get_tty_input_fd();
-    if (fd < 0) return 0;
-    struct pollfd pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
+    init_tty();
+    if (tty_rfd < 0 || tty_eof) return 0;
+    struct pollfd pfd = { .fd = tty_rfd, .events = POLLIN };
     int pr = poll(&pfd, 1, 0);
     if (pr > 0 && (pfd.revents & POLLIN)) {
         uint8_t b = 0;
-        ssize_t n = read(fd, &b, 1);
+        ssize_t n = read(tty_rfd, &b, 1);
         if (n == 1) {
             if (out_got_byte) *out_got_byte = 1;
             if (out_byte) *out_byte = b;
@@ -447,13 +446,53 @@ static void ct_sig_handler(int sig) {
     }
 }
 
-/* Returns: 1 = tick (out_a = elapsed_ms), 2 = signal (out_a = 1..4),
- *          3 = resize (out_a = rows, out_b = cols), 4 = ttyByte (out_a = byte) */
-int ct_poll_reactive_event(uint32_t wait_ms, uint32_t *out_a, uint32_t *out_b) {
+static int take_pending_event(uint32_t mask, uint32_t *out_a, uint32_t *out_b) {
+    if ((mask & CT_POLL_SIG) && pending_sig != 0) {
+        uint32_t s = (uint32_t)pending_sig;
+        pending_sig = 0;
+        if (out_a) *out_a = s;
+        return 2;
+    }
+    if ((mask & CT_POLL_TTY) && pending_winch != 0) {
+        pending_winch = 0;
+        ct_term_size(out_a, out_b);
+        return 3;
+    }
+    return 0;
+}
+
+enum { TTY_EVENT_MAX = 256, STDIN_EVENT_MAX = 4096 };
+
+static int copy_event_bytes(const uint8_t *src, size_t len, uint8_t **out_buf, size_t *out_len) {
+    uint8_t *buf = malloc(len);
+    if (!buf) return -1;
+    memcpy(buf, src, len);
+    *out_buf = buf;
+    *out_len = len;
+    return 0;
+}
+
+static int read_polled_channel(int fd, int is_tty, uint8_t **out_buf, size_t *out_len) {
+    uint8_t tmp[STDIN_EVENT_MAX];
+    ssize_t n = read(fd, tmp, is_tty ? TTY_EVENT_MAX : sizeof(tmp));
+    if (n > 0) {
+        if (copy_event_bytes(tmp, (size_t)n, out_buf, out_len) < 0) return -1;
+        return is_tty ? 4 : 6;
+    }
+    if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+    if (is_tty) {
+        tty_eof = 1;
+        return 5;
+    }
+    stdin_eof = 1;
+    return 7;
+}
+
+int ct_poll_reactive_event(uint32_t poll_mask, uint32_t wait_ms,
+                           uint32_t *out_a, uint32_t *out_b,
+                           uint8_t **out_buf, size_t *out_len) {
     if (!reactive_sigs_installed) {
-        reactive_sigs_installed = 1;
-        struct sigaction sa;
-        memset(&sa, 0, sizeof(sa));
+        struct sigaction sa = {0};
         sa.sa_handler = ct_sig_handler;
         sigemptyset(&sa.sa_mask);
         (void)sigaction(SIGWINCH, &sa, NULL);
@@ -461,63 +500,54 @@ int ct_poll_reactive_event(uint32_t wait_ms, uint32_t *out_a, uint32_t *out_b) {
         (void)sigaction(SIGTERM, &sa, NULL);
         (void)sigaction(SIGHUP, &sa, NULL);
         (void)sigaction(SIGQUIT, &sa, NULL);
+        reactive_sigs_installed = 1;
     }
     if (out_a) *out_a = 0;
     if (out_b) *out_b = 0;
+    *out_buf = NULL;
+    *out_len = 0;
 
-    if (pending_sig != 0) {
-        uint32_t s = (uint32_t)pending_sig;
-        pending_sig = 0;
-        if (out_a) *out_a = s;
-        return 2;
-    }
-    if (pending_winch != 0) {
-        pending_winch = 0;
-        uint32_t r = 24, c = 80;
-        ct_term_size(&r, &c);
-        if (out_a) *out_a = r;
-        if (out_b) *out_b = c;
-        return 3;
+    int kind = take_pending_event(poll_mask, out_a, out_b);
+    if (kind) return kind;
+    if ((poll_mask & CT_POLL_STDIO) && stdin_stash_pos < stdin_stash_len) {
+        size_t len = stdin_stash_len - stdin_stash_pos;
+        if (len > STDIN_EVENT_MAX) len = STDIN_EVENT_MAX;
+        if (copy_event_bytes(stdin_stash + stdin_stash_pos, len, out_buf, out_len) < 0) return -1;
+        stdin_consume(len);
+        return 6;
     }
 
-    int fd = get_tty_input_fd();
+    struct pollfd pfds[2];
+    nfds_t nfds = 0;
+    if (poll_mask & CT_POLL_TTY) init_tty();
+    int poll_tty = (poll_mask & CT_POLL_TTY) && tty_rfd >= 0 && !tty_eof;
+    /* A simultaneous readiness notification dispatches the terminal first. */
+    if (poll_tty) {
+        pfds[nfds++] = (struct pollfd){ .fd = tty_rfd, .events = POLLIN };
+    }
+    if ((poll_mask & CT_POLL_STDIO) && !stdin_eof &&
+        !((poll_mask & CT_POLL_TTY) && same_chr_dev(STDIN_FILENO, tty_rfd))) {
+        pfds[nfds++] = (struct pollfd){ .fd = STDIN_FILENO, .events = POLLIN };
+    }
+
     int64_t t0 = ct_raw_mono_ms();
-    if (fd >= 0) {
-        struct pollfd pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
-        int pr = poll(&pfd, 1, (int)(wait_ms > 1000 ? 1000 : wait_ms));
-        if (pending_sig != 0) {
-            uint32_t s = (uint32_t)pending_sig;
-            pending_sig = 0;
-            if (out_a) *out_a = s;
-            return 2;
-        }
-        if (pending_winch != 0) {
-            pending_winch = 0;
-            uint32_t r = 24, c = 80;
-            ct_term_size(&r, &c);
-            if (out_a) *out_a = r;
-            if (out_b) *out_b = c;
-            return 3;
-        }
-        if (pr > 0 && (pfd.revents & POLLIN)) {
-            uint8_t b = 0;
-            ssize_t n = read(fd, &b, 1);
-            if (n == 1) {
-                if (out_a) *out_a = (uint32_t)b;
-                return 4;
+    if (nfds > 0) {
+        int ready = poll(pfds, nfds, (int)(wait_ms > 1000 ? 1000 : wait_ms));
+        kind = take_pending_event(poll_mask, out_a, out_b);
+        if (kind) return kind;
+        for (nfds_t i = 0; ready > 0 && i < nfds; ++i) {
+            if (pfds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+                kind = read_polled_channel(pfds[i].fd, poll_tty && i == 0, out_buf, out_len);
+                if (kind) return kind;
             }
         }
     } else {
         ct_sleep_ms(wait_ms > 50 ? 50 : wait_ms);
-        if (pending_sig != 0) {
-            uint32_t s = (uint32_t)pending_sig;
-            pending_sig = 0;
-            if (out_a) *out_a = s;
-            return 2;
-        }
+        kind = take_pending_event(poll_mask & CT_POLL_SIG, out_a, out_b);
+        if (kind) return kind;
     }
     int64_t dt = ct_raw_mono_ms() - t0;
-    if (out_a) *out_a = dt > 0 ? (uint32_t)dt : wait_ms;
+    if (out_a) *out_a = dt > 0 ? (uint32_t)dt : 0;
     return 1;
 }
 
@@ -1588,5 +1618,6 @@ void ct_free_buf(void *p) {
 
 void ct_exit_code(uint32_t code) {
     fflush(NULL);
+    ct_restore_tty_termios();
     _exit((int)(code & 0xFFu));
 }
