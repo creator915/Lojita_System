@@ -26,7 +26,6 @@ struct buffer { unsigned char *data; size_t size, capacity; } output[3];
 static int channels[3] = {-1, -1, -1}, input_fd = -1, exit_code = -1;
 static int slave_keeper = -1;
 static pid_t child = -1;
-static int pipe_mode;
 
 static void die(const char *what) { perror(what); exit(125); }
 static int64_t millis(void) {
@@ -156,28 +155,36 @@ static long number(const char *s, long max) {
 int main(int argc, char **argv) {
     /* relay topology rows cols env-count [NAME=VALUE ...] command [args ...] */
     if (argc < 6) return 125;
-    pipe_mode = !strcmp(argv[1], "pipe");
-    if (!pipe_mode && strcmp(argv[1], "tty")) return 125;
+    int tty_mode = !strcmp(argv[1], "tty");
+    int pipe_tty_mode = !strcmp(argv[1], "pipe");
+    int stdio_only_mode = !strcmp(argv[1], "stdio");
+    if (!tty_mode && !pipe_tty_mode && !stdio_only_mode) return 125;
+    int pipe_mode = pipe_tty_mode || stdio_only_mode;
+    int has_pty = tty_mode || pipe_tty_mode;
     long rows = number(argv[2], 65535), cols = number(argv[3], 65535);
+    int min_dimension = has_pty ? 1 : 0;
     long envc = number(argv[4], argc);
-    if (rows <= 0 || cols <= 0 || envc < 0 || argc <= 5 + envc) return 125;
+    if (rows < min_dimension || cols < min_dimension || envc < 0 || argc <= 5 + envc) return 125;
     char **child_env = calloc((size_t)envc + 1, sizeof(char *));
     if (!child_env) die("calloc");
     for (long i = 0; i < envc; ++i) child_env[i] = argv[5+i];
     signal(SIGPIPE, SIG_IGN);
     if (prctl(PR_SET_CHILD_SUBREAPER, 1)) die("subreaper");
-    int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
-    if (master < 0 || grantpt(master) || unlockpt(master)) die("openpt");
-    char *slave_name = ptsname(master);
-    if (!slave_name) die("ptsname");
-    int slave = open(slave_name, O_RDWR | O_NOCTTY | O_CLOEXEC);
-    if (slave < 0) die("open slave");
-    struct termios attr;
-    if (tcgetattr(slave, &attr)) die("tcgetattr");
-    cfmakeraw(&attr);
-    if (tcsetattr(slave, TCSANOW, &attr)) die("tcsetattr");
+    int master = -1, slave = -1;
     struct winsize size = {.ws_row = (unsigned short)rows, .ws_col = (unsigned short)cols};
-    if (ioctl(slave, TIOCSWINSZ, &size)) die("initial winsize");
+    if (has_pty) {
+        master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+        if (master < 0 || grantpt(master) || unlockpt(master)) die("openpt");
+        char *slave_name = ptsname(master);
+        if (!slave_name) die("ptsname");
+        slave = open(slave_name, O_RDWR | O_NOCTTY | O_CLOEXEC);
+        if (slave < 0) die("open slave");
+        struct termios attr;
+        if (tcgetattr(slave, &attr)) die("tcgetattr");
+        cfmakeraw(&attr);
+        if (tcsetattr(slave, TCSANOW, &attr)) die("tcsetattr");
+        if (ioctl(slave, TIOCSWINSZ, &size)) die("initial winsize");
+    }
     int in[2], out[2], err[2], ready[2];
     if (pipe2(ready, O_CLOEXEC)) die("ready pipe");
     if (pipe_mode && (pipe2(in, O_CLOEXEC) || pipe2(out, O_CLOEXEC) || pipe2(err, O_CLOEXEC))) die("stdio pipes");
@@ -185,11 +192,11 @@ int main(int argc, char **argv) {
     if (child < 0) die("fork");
     if (!child) {
         close(ready[0]);
-        if (prctl(PR_SET_PDEATHSIG, SIGKILL) || setsid() < 0 || ioctl(slave, TIOCSCTTY, 0)) goto child_fail;
-        if (ioctl(slave, TIOCSWINSZ, &size)) goto child_fail;
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) || setsid() < 0) goto child_fail;
+        if (has_pty && (ioctl(slave, TIOCSCTTY, 0) || ioctl(slave, TIOCSWINSZ, &size))) goto child_fail;
         if (dup2(pipe_mode ? in[0] : slave, 0) < 0 || dup2(pipe_mode ? out[1] : slave, 1) < 0 ||
             dup2(pipe_mode ? err[1] : slave, 2) < 0) goto child_fail;
-        close(master); close(slave);
+        if (has_pty) { close(master); close(slave); }
         if (pipe_mode) { close(in[0]); close(in[1]); close(out[0]); close(out[1]); close(err[0]); close(err[1]); }
         signal(SIGPIPE, SIG_DFL);
         /* execvpe uses PATH from the caller environment, so replace environ too.
@@ -201,10 +208,11 @@ child_fail: {
         }
     }
     atexit(stop_child);
-    /* In pipe mode the child temporarily has no open slave descriptor between
+    /* With piped stdio and a controlling PTY, the child has no open slave between
      * exec and opening /dev/tty. Keep one in the relay to prevent master EIO
      * and hangup during that interval. It is released when the child exits. */
-    if (pipe_mode) slave_keeper = slave; else close(slave);
+    if (pipe_tty_mode) slave_keeper = slave;
+    else if (tty_mode) close(slave);
     close(ready[1]);
     channels[0] = master;
     if (pipe_mode) {
@@ -229,7 +237,7 @@ child_fail: {
         if (getline(&line, &cap, stdin) < 0) break;
         int bad = 0, quitting = 0;
         if (line[0] == 'W' && line[1] == ' ') bad = write_hex(input_fd, line+2);
-        else if (line[0] == 'T' && line[1] == ' ') bad = write_hex(channels[0], line+2);
+        else if (line[0] == 'T' && line[1] == ' ') bad = has_pty ? write_hex(channels[0], line+2) : -1;
         else if (!strcmp(line, "C\n")) {
             /* A PTY has no independent write-half EOF. Do not invent an EOF key. */
             if (!pipe_mode) bad = -1;
@@ -239,7 +247,8 @@ child_fail: {
             if (ms < 0) bad = -1; else pump(ms, 0);
         } else if (line[0] == 'R' && line[1] == ' ') {
             unsigned int r, c; char extra;
-            if (sscanf(line+2, "%u %u %c", &r, &c, &extra) != 2 || !r || !c || r > 65535 || c > 65535) bad = -1;
+            if (!has_pty || sscanf(line+2, "%u %u %c", &r, &c, &extra) != 2 ||
+                !r || !c || r > 65535 || c > 65535) bad = -1;
             else { size.ws_row = (unsigned short)r; size.ws_col = (unsigned short)c;
                 bad = ioctl(channels[0], TIOCSWINSZ, &size); }
         } else if (line[0] == 'K' && line[1] == ' ') {

@@ -23,7 +23,10 @@ def ptyToolWithMount (bin scratch : System.FilePath) (candidate : Option System.
   checkEnv cfg.envVars
   requireWire (!cfg.executable.isEmpty && !(cfg.executable :: cfg.arguments).any (fun s : String => s.toList.any (fun c => c.toNat == 0)))
     "invalid terminal process arguments"
-  let mode := match cfg.topology with | .allTTY => "tty" | .pipeStdioWithTTY => "pipe"
+  let mode := match cfg.topology with
+    | .allTTY           => "tty"
+    | .pipeStdioWithTTY => "pipe"
+    | .pipesNoTTY       => "stdio"
   let env := cfg.envVars.map fun (k,v) => k ++ "=" ++ v
   let args := [mode, toString cfg.rows, toString cfg.cols, toString env.length] ++ env ++ cfg.executable :: cfg.arguments
   openRelay bin scratch cfg.target cfg.files owned String.toUTF8

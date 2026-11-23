@@ -40,6 +40,12 @@ def encodeKey : Key → Bytes
 inductive TermTopology : Type where
   | allTTY           : TermTopology
   | pipeStdioWithTTY : TermTopology
+  | pipesNoTTY       : TermTopology
+
+def TermTopology.ctorIdx : TermTopology → Nat
+  | .allTTY           => 0
+  | .pipeStdioWithTTY => 1
+  | .pipesNoTTY       => 2
 
 inductive SandboxTarget : Type where
   | localSandbox  : SandboxTarget

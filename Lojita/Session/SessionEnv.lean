@@ -53,6 +53,10 @@ def terminal (alias : String) (args : List String) (steps : List TermStep)
   (trace steps (.mk [] [] [] none)).bind fun obs =>
   .step (.stop (.here rfl) rfl) fun _ => .step (.rmdir (.here rfl) rfl) fun _ => .done obs
 
+/-- Run an incremental streaming pipe session with fd 0/1/2 on pipes and no /dev/tty. -/
+def stdio (alias : String) (args : List String) (steps : List TermStep) : Script RawTermObs :=
+  terminal alias args steps .pipesNoTTY
+
 def text (bs : Bytes) := String.fromUTF8! bs.toByteArray
 
 def replay (args : List String) (input : String) : Probe := do
