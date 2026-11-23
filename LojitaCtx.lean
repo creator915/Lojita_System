@@ -8,3 +8,4 @@ import LojitaCtx.Countermodel
 import LojitaCtx.Protocol
 import LojitaCtx.Taboo
 import LojitaCtx.TranscodeCategory
+import LojitaCtx.PosixChannel
