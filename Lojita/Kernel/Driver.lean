@@ -2,7 +2,7 @@ import Lojita.Kernel.ResidentImport
 import Lojita.Kernel.LeanCode
 import Lojita.Kernel.AxiomGuard
 import Lean.Compiler.LCNF.EmitC
-import Lean.Meta.Tactic.Delta
+import Lean.Meta.Transform
 
 namespace Lojita.Kernel
 open Lean Elab
@@ -10,7 +10,6 @@ open Lean Elab
 private def options : Options := ({} : Options)
   |>.setBool `Elab.async false
   |>.setBool `autoImplicit true
-  |>.setBool `genCtorIdx false
   |>.setBool `linter.all false
   |>.setBool `compiler.postponeCompile false
   |>.set `maxRecDepth (32768 : Nat)
@@ -35,8 +34,8 @@ structure Snapshot where
   constants : Array Name
   /-- Ownership of kernel auxiliaries, including private matchers and recursors. -/
   owners : NameMap QName
-  /-- Unit signatures with object definitions unfolded in their defining snapshot. -/
-  signatures : NameMap Expr
+  /-- Exact versions of this module and its transitive object imports. -/
+  versions : NameMap Nat
   contextModules : NameSet
   images : Array (Name × ModuleData)
   deriving Nonempty
@@ -53,10 +52,10 @@ private structure Resident where
   modules : Std.HashMap ModuleKey Snapshot := {}
   parents : Std.HashMap (Array Nat) Environment := {}
   preludeAudit : PreludeAudit := default
-  nextId : Nat := 1
 
 private initialize session : IO.Ref (Option Resident) ← IO.mkRef none
 private initialize driverLock : Std.Mutex Unit ← Std.Mutex.new ()
+private initialize nextSnapshotId : IO.Ref Nat ← IO.mkRef 1
 
 private def contextImports : Array Import := #[{module := `LojitaCtx}]
 
@@ -184,7 +183,7 @@ private def commandIndex (steps : Array Environment) (n : Name) : Nat := Id.run 
 
 private def extractGraph (env : Environment) (m : LeanMod) (constants : Array Name)
     (steps : Array Environment) (deps : Array Snapshot) (ctxMods : NameSet) :
-    MetaM (SemGraph × NameMap QName × NameMap Expr) := do
+    MetaM (SemGraph × NameMap QName) := do
   let firstUnit := m.opens.length + 1
   let units := m.units.toArray
   let mut owners : NameMap QName := {}
@@ -194,15 +193,12 @@ private def extractGraph (env : Environment) (m : LeanMod) (constants : Array Na
     owners := owners.insert n ((unit.map (·.uname)).getD (QName.ofName (privateToUserName n)))
   let external := deps.foldl (fun acc d => acc.union d.owners) ({} : NameMap QName)
   let allOwners := owners.union external
-  let mut signatures := deps.foldl (fun acc d => acc.union d.signatures) ({} : NameMap Expr)
   let mut sorts := #[]
   let mut edges : Std.HashSet (Obj × Obj) := {}
   for n in constants do
     let info ← getConstInfo n
     let owner := (owners.find? n).get!
     if !isPrivateName n && !n.isInternal then
-      signatures := signatures.insert n (← Meta.deltaExpand info.type fun d =>
-        allOwners.contains d && (env.find? d).any (· matches .defnInfo _))
       sorts := sorts.push (QName.ofName n, if ← Meta.isProp info.type then .law else .carrier)
     for used in info.getUsedConstantsAsSet do
       if let some origin := moduleOf? env used then
@@ -213,7 +209,7 @@ private def extractGraph (env : Environment) (m : LeanMod) (constants : Array Na
         else if (moduleOf? env used).any (·.getRoot == `LojitaCtx) then some (.ext (QName.ofName used))
         else none
       if let some t := target then edges := edges.insert (.unit owner, t)
-  return (⟨edges.toList, sorts.toList⟩, allOwners, signatures)
+  return (⟨edges.toList, sorts.toList⟩, allOwners)
 
 private def explicitAxioms (m : LeanMod) (cmds : Array Syntax) : NameSet := Id.run do
   let mut names := {}
@@ -257,13 +253,15 @@ private def elaborate (m : LeanMod) (deps : Array Snapshot) : IO Snapshot := do
   let declared := constants.foldl (init := ({} : NameSet)) fun acc n =>
     if explicit.contains (privateToUserName n) && (env.find? n).any (· matches .axiomInfo _)
       then acc.insert n else acc
-  let (graph, owners, signatures) ← (extractGraph env parsed constants steps deps ctxMods).run' |>.toIO' (coreCtx env) {env}
+  let (graph, owners) ← (extractGraph env parsed constants steps deps ctxMods).run' |>.toIO' (coreCtx env) {env}
   let r ← resident
   let images := (importedImages deps).push (env.mainModule, ← mkModuleData env)
+  let id ← nextSnapshotId.modifyGet fun i => (i, i + 1)
+  let versions := deps.foldl (fun acc d => acc.union d.versions) ({} : NameMap Nat)
   let snap : Snapshot := {
-    id := r.nextId, mod := parsed, env, graph, axioms := axs, declaredAxioms := declared
-    constants, owners, signatures, contextModules := ctxMods, images}
-  session.set (some {r with preludeAudit, nextId := r.nextId + 1, modules := r.modules.insert key snap})
+    id, mod := parsed, env, graph, axioms := axs, declaredAxioms := declared
+    constants, owners, versions := versions.insert env.mainModule id, contextModules := ctxMods, images}
+  session.set (some {r with preludeAudit, modules := r.modules.insert key snap})
   return snap
 
 private abbrev Bundle := NameMap Snapshot
@@ -331,19 +329,31 @@ inductive SatisfactionMode where
   | closedImplOK | subspec
   deriving BEq
 
-/-- Interpret concrete spec helpers in their *own* environment before changing
-    namespace. Otherwise a private matcher of the same name in the candidate
-    could silently change the meaning of a spec body. -/
-private def projectExpr (spec impl : Snapshot) (owned : NameSet) (e : Expr) : MetaM Expr := do
-  let concrete (n : Name) := owned.contains n && (spec.env.find? n).any fun i =>
-    i matches .defnInfo _ || (isPrivateName n && i matches .thmInfo _)
-  let e ← withEnv spec.env <| Meta.deltaExpand e concrete (allowOpaque := true)
-  let rename (n : Name) := if owned.contains n && !isPrivateName n then
-      n.replacePrefix spec.env.mainModule impl.env.mainModule else n
-  return ← Core.transform e (post := fun e => pure <| .done <| match e with
-    | .const n us => .const (rename n) us
-    | .proj n i val => .proj (rename n) i val
-    | _ => e)
+/-- Substitute selected constant bodies from their defining environment and relocate
+    the remaining names. Visiting the constant alone leaves applications, including
+    recursors on closed numerals, unevaluated. -/
+def Snapshot.mapConstants (s : Snapshot) (e : Expr) (unfold : Name → Bool)
+    (rename : Name → Name) (unfoldProofs := false) : CoreM Expr :=
+  Core.transform e (post := fun
+    | .const n us => do
+      if unfold n then
+        if let some info := s.env.find? n then
+          if info.isDefinition || (unfoldProofs && info matches .thmInfo _) then
+            return .visit (info.instantiateValueLevelParams! us (allowOpaque := unfoldProofs))
+      return .done (.const (rename n) us)
+    | .proj n i val => return .done (.proj (rename n) i val)
+    | e => return .done e)
+
+private def hiddenConstants (s : Snapshot) : NameSet :=
+  let explicit := NameSet.ofList (s.mod.units.flatMap (·.definedNames) |>.map QName.toLeanName)
+  NameSet.ofArray <| s.constants.filter fun n => isPrivateName n || (n.isInternalDetail && !explicit.contains n)
+
+private def projectExpr (spec impl : Snapshot) (hidden exports : NameSet) (e : Expr) : CoreM Expr :=
+  -- Each exported declaration is compared separately. A generated match_1 can
+  -- have a public kernel name while still being an implementation detail.
+  spec.mapConstants e hidden.contains
+    (fun n => if exports.contains n then
+      n.replacePrefix spec.env.mainModule impl.env.mainModule else n) (unfoldProofs := true)
 
 private def counterpart (spec impl : Snapshot) (n : Name) : Name :=
   let name := (privateToUserName n).replacePrefix spec.env.mainModule impl.env.mainModule
@@ -355,6 +365,7 @@ private def convertible (levelParams : List Name) (actual expected : Expr) : Cor
   -- the declaration's own parameters, which also instantiate the candidate.
   if expected.hasLevelParam && !(collectLevelParams {} expected).params.all levelParams.contains then
     return false
+  if expected == actual then return true
   let env ← getEnv
   unless (Lean.Kernel.check env {} expected).isOk do return false
   -- The candidate was checked in its snapshot. Kernel conversion unfolds either
@@ -363,13 +374,16 @@ private def convertible (levelParams : List Name) (actual expected : Expr) : Cor
 
 /-- Private inductives are nominal too. If conversion needs their correspondence,
     enqueue their signatures and constructors as additional proof obligations. -/
-private def compareExpr (a b : Snapshot) (owned : NameSet) (levelParams : List Name) (description : String)
+private def compareExpr (a b : Snapshot) (hidden exports implHidden : NameSet) (levelParams : List Name) (description : String)
     (actual original : Expr) : MetaM (List Name) := do
-  let expected ← projectExpr a b owned original
+  let expected ← projectExpr a b hidden exports original
+  -- A private structural function can itself be applied to a huge numeral.
+  -- Expose the same syntax on both sides before asking for conversion.
+  let actual ← b.mapConstants actual implHidden.contains id (unfoldProofs := true)
   if ← convertible levelParams actual expected then return []
   let mut pairs : NameMap Name := {}
   for n in expected.getUsedConstantsAsSet do
-    if isPrivateName n && owned.contains n then
+    if hidden.contains n then
       let target := counterpart a b n
       if b.env.contains target then pairs := pairs.insert n target
   unless pairs.isEmpty do
@@ -381,11 +395,11 @@ private def compareExpr (a b : Snapshot) (owned : NameSet) (levelParams : List N
   throwError "INTERFACE_MISMATCH: {description}\nexpected {expected}\nreceived {actual}"
 
 private def compareInterface (spec impl : Snapshot) (mode : SatisfactionMode) : MetaM Unit := do
-  let owned := NameSet.ofArray spec.constants
   let provided := NameSet.ofArray impl.constants
-  let explicitNames := spec.mod.units.flatMap (·.definedNames) |>.map QName.toLeanName
-  let mut todo := spec.constants.toList.filter fun n =>
-    !isPrivateName n && (!n.isInternalDetail || explicitNames.contains n)
+  let hidden := hiddenConstants spec
+  let implHidden := hiddenConstants impl
+  let mut todo := spec.constants.toList.filter (!hidden.contains ·)
+  let exports := NameSet.ofList todo
   let mut visited : NameSet := {}
   repeat
     let n :: rest := todo | break
@@ -401,7 +415,7 @@ private def compareInterface (spec impl : Snapshot) (mode : SatisfactionMode) : 
       throwError "INTERFACE_MISMATCH: {target} universe arity {a.numLevelParams} != {b.numLevelParams}"
     let levels := a.levelParams.map Level.param
     let inst := fun (e : Expr) => e.instantiateLevelParams b.levelParams levels
-    let compare := compareExpr spec impl owned a.levelParams
+    let compare := compareExpr spec impl hidden exports implHidden a.levelParams
     todo := (← compare s!"type of {target}" (inst b.type) a.type) ++ todo
     match a, b with
     | .axiomInfo _, .axiomInfo _ =>

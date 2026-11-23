@@ -12,7 +12,8 @@ private def usesOperation : Nat := operation 1
 
 -- Exercise the kernel inspector independently of the surface scanner.
 run_meta
-  for (n, code) in [(``unchecked, "UNSAFE_VIOLATION"), (``usesOperation, "NATIVE_OVERRIDE_VIOLATION")] do
+  for (n, code) in [(``unchecked, "UNSAFE_VIOLATION"), (``getObjTagNat, "UNSAFE_VIOLATION"),
+      (``usesOperation, "NATIVE_OVERRIDE_VIOLATION")] do
     match collectRootAxioms (← getEnv) #[n] with
     | .ok _ => throwError "guard accepted {n}"
     | .error e => unless (e.splitOn ":").head! == code do throwError "expected {code}, got {e}"
@@ -187,6 +188,49 @@ def tag (x : Box) : { y : Box // y = x } := ⟨x, " ++ proof ++ "⟩")
   let named ← cert "private theorem certifies (x : Box) : x = x := rfl" "certifies x"
   let inlined ← cert "" "rfl"
   eqIface named inlined
+  let helpers ← object "Helpers" "def helper := 1\ndef answer := helper"
+  let inlineAnswer ← object "Helpers" "def helper := 1\ndef answer := 1"
+  satisfies helpers inlineAnswer
+
+private def largeFuel : IO Unit := do
+  let src ← IO.FS.readFile "Test/S2/LargeFuel.lean"
+  let impl ← parse src
+  let spec ← parse (src.replace "theorem runLaw" "axiom runLaw" |>.replace " := rfl" "")
+  let start ← IO.monoNanosNow
+  let snap ← checkClosedModule [] impl
+  let closed := ((← IO.monoNanosNow) - start) / 1000000
+  ensure (closed < 200) s!"checkClosedModule on large fuel took {closed} ms"
+  let some (.defnInfo scan) := snap.env.find? `Gen.LargeFuel.scan | throw (IO.userError "missing scan")
+  ensure (scan.value.getUsedConstantsAsSet.contains ``Nat.brecOn) "large-fuel fixture lost structural recursion"
+  let start ← IO.monoNanosNow
+  satisfies spec impl
+  let sat := ((← IO.monoNanosNow) - start) / 1000000
+  ensure (sat < 200) s!"satisfies on large fuel took {sat} ms"
+  let hidden ← parse (src.replace "def run (xs : List UInt8) := scan bigBudget xs"
+    "private def observe := scan bigBudget\ndef run (xs : List UInt8) := observe xs")
+  satisfies hidden impl
+  let privateScan := src.replace "def scan" "private def scan" |>.replace "def bigBudget" "private def bigBudget"
+  let start ← IO.monoNanosNow
+  satisfies (← parse (privateScan.replace " := rfl" " := by rfl")) (← parse privateScan)
+  let hiddenMs := ((← IO.monoNanosNow) - start) / 1000000
+  ensure (hiddenMs < 200) s!"satisfies on private structural fuel took {hiddenMs} ms"
+  IO.println s!"   Large structural fuel took {closed} ms for checkClosedModule, {sat} ms for satisfies, {hiddenMs} ms with a private scan"
+
+private def constructorIndices : IO Unit := do
+  let base ← object "Gen.Base" "inductive Command where
+  | start | stop | read (n : Nat) | write (n : Nat) | help"
+  let upper ← object "Gen.Upper" "open Gen.Base
+def count (cmd : Command) : Nat := by
+  cases cmd with
+  | start | stop | help => exact 0
+  | read n | write n => exact n
+theorem distinct (h : Command.read x = .write y) : False := by contradiction
+theorem injective (h : Command.read x = .read y) : x = y := by injection h" ["Gen.Base"]
+  let snap ← checkClosedModule [base] upper
+  ensure (snap.owners.find? `Gen.Base.Command.ctorIdx == some (q "Gen.Base.Command"))
+    "generated constructor index lost its inductive owner"
+  satisfies base (requalify base.modName (q "Gen.BaseCopy") base)
+  discard <| checkClosedModule [] (← object "Gen.Empty" "inductive Command : Type where")
 
 private def quotient : IO Unit := do
   let spec ← object "Specification" "axiom rev_involutive : ∀ {α : Type} (xs : List α), List.reverse (List.reverse xs) = xs
@@ -239,6 +283,8 @@ example : True := by trivial"
   ensure ((withTests extended tests).units == extended.units && extended.units.length == 2) "withTests"
   discard <| checkClosedModule [] extended
   concreteInterfaces
+  largeFuel
+  constructorIndices
   IO.println "3  Kernel quotient, polymorphism, helper bodies and specification tests"
 
 private def security : IO Unit := do

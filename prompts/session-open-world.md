@@ -131,6 +131,8 @@ end Gen.Probes.Compare
 
 `Type` 承载可执行数据与计算，禁止 `noncomputable`、`partial`。在 `Prop` 中表达 `=`、`True`、`False` 与行为定律，用 `rfl`、`simp`、`omega`、`decide`、`by_cases` 证明。结构递归、嵌套递归以及 `mutual` 中需要按方程推理的各成员，显式写 `termination_by structural ...`，让结构递归器（如 `.brecOn`）支持归约。`WellFounded.fix` 可能使 `rfl` 与 `simp` 停在不透明项上。
 
+编写树规约和证明时，切勿用 `UInt64.size`（`2^64`）或 `2^32` 等巨大闭项实例化 `termination_by structural` 的 `Nat` 燃料。若世界仍是符号变量，内核或元层的定义相等性检查可能沿 `Nat.brecOn` 或 `Nat.rec` 逐个展开 `Nat.succ`。让树按实际有限的世界输入（如 `w.env.stdinLines`）做结构递归，或让定律量化抽象的 `fuel : Nat`。
+
 严格按值求值会先计算普通函数的每个实参。让昂贵的回退留在 `if ... then ... else ...`、`&&`、`||`、`<|>` 的短路分支，或传 `Thunk.mk fun () => ...` 类型的延迟计算，在选中的分支才强制 `Thunk α`。累积大输入时向表头加入元素再反转，避免循环 `xs ++ [x]`。用显式燃料或已访问集合遍历 DAG，另记活动路径以诊断环。
 
 惰性语言中按需展开的无限结构，在 Lean 的普通构造器里会急切构造后继。会话与服务可表示成余代数的有限状态转移，每次输入产生一个观察和后继状态或退出码；`ReactiveApp.onStep` 正是这样的端口。用有限轨迹验证初始世界与每次转移。在 `mutual` 中沿构造器的直接子项递归，让各成员的结构参数对应到同一递减路径。若改用良基度量，以生成的方程引理改写，避免在 `rfl` 中强行展开整棵调用树。

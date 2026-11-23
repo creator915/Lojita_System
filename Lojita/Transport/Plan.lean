@@ -141,19 +141,36 @@ private def sigTokens (u : SynUnit) (rs : Std.HashMap QName QName) :=
   -- References in the implementation body do not contribute to the signature.
   (u.sigSlice.splitOn "\n").map fun line => ((line.splitOn " ").drop 2).map resolve
 
-private def kernelSignature (a b : Snapshot) (u v : SynUnit) (rs : Std.HashMap QName QName) : Bool := Id.run do
-  if u.definedNames.length != v.definedNames.length then return false
-  for (x,y) in u.definedNames.zip v.definedNames do
-    let some old := a.env.find? x.toLeanName | return false
-    let some cand := b.env.find? y.toLeanName | return false
-    if old.numLevelParams != cand.numLevelParams then return false
-    let original := (a.signatures.find? x.toLeanName).getD old.type
-    let ty := original.replace fun
-      | .const n us => (renamedRef? rs (QName.ofName n)).map (fun q => Lean.Expr.const q.toLeanName us)
-      | _ => none
-    let newTy := ((b.signatures.find? y.toLeanName).getD cand.type).instantiateLevelParams cand.levelParams (old.levelParams.map Lean.Level.param)
-    unless Lean.Kernel.isDefEqGuarded b.env {} ty newTy do return false
-  return true
+private def kernelSignature (a b : Snapshot) (u v : SynUnit) (rs : Std.HashMap QName QName) : Bool :=
+  -- Like the object parser, this decision uses Lean's local caches. Its only
+  -- inputs are the checked snapshots and the move. A conversion timeout
+  -- conservatively leaves the dependent on the frontier.
+  let ctx : Lean.Core.Context := {
+    fileName := "<signature>", fileMap := default
+    options := ({} : Lean.Options).set `maxHeartbeats (200000 : Nat)}
+  (unsafe unsafeIO (compareTypes.run'.toIO' ctx {env := b.env})).toOption.getD false
+where
+  compareTypes : Lean.MetaM Bool := do
+    if u.definedNames.length != v.definedNames.length then return false
+    let rename := if rs.isEmpty then id else fun n =>
+      ((renamedRef? rs (QName.ofName n)).map QName.toLeanName).getD n
+    -- An identical imported image already gives its constants the same meaning
+    -- on both sides. A move may still rename a reference inside that image.
+    let shared := if rs.isEmpty then Lean.NameSet.ofList (a.versions.toList.filterMap fun (n, ver) =>
+      if b.versions.find? n == some ver then some n else none) else {}
+    let unshared (s : Snapshot) (n : Lean.Name) := s.owners.contains n &&
+      !shared.contains ((moduleOf? s.env n).getD s.env.mainModule)
+    -- Keep the candidate realization of an old axiom symbolic on both sides.
+    let assumptions := Lean.NameSet.ofList (a.axioms.toList.map rename)
+    for (x,y) in u.definedNames.zip v.definedNames do
+      let some old := a.env.find? x.toLeanName | return false
+      let some cand := b.env.find? y.toLeanName | return false
+      if old.numLevelParams != cand.numLevelParams then return false
+      let oldTy ← a.mapConstants old.type (unshared a) rename
+      let newTy ← b.mapConstants (cand.instantiateTypeLevelParams (old.levelParams.map Lean.Level.param))
+        (fun n => unshared b n && !assumptions.contains n) id
+      unless ← Lean.Meta.withTransparency .all (Lean.Meta.isDefEq oldTy newTy) do return false
+    return true
 
 private structure PlanIndex where
   locals : Std.HashMap QName SynUnit
@@ -161,9 +178,11 @@ private structure PlanIndex where
   imports : Std.HashMap QName ImportSpec
   owners : Std.HashMap QName Obj
 
-private def indexMod (m : LeanMod) : PlanIndex := Id.run do
+private def indexMod (m : LeanMod) (includeOwners := true) : PlanIndex := Id.run do
   let ext := externalUnits m
   let imports := Std.HashMap.ofList (m.imports.map fun i => (i.imod,i))
+  let index : PlanIndex := ⟨byUnit m.units, byUnit ext, imports, {}⟩
+  unless includeOwners do return index
   let mut owners := {}
   for u in m.units do
     for r in u.synRefs do
@@ -177,7 +196,7 @@ private def indexMod (m : LeanMod) : PlanIndex := Id.run do
     for q in u.definedNames do owners := owners.insert q (.ext u.uname)
   for u in m.units do
     for q in u.definedNames do owners := owners.insert q (.unit u.uname)
-  return ⟨byUnit m.units, byUnit ext, imports, owners⟩
+  return {index with owners}
 
 private def preserved (old cand : PlanIndex) (rs : Std.HashMap QName QName)
     (a b : Option Snapshot) (arrow : Proarrow) : Bool := Id.run do
@@ -200,11 +219,11 @@ private def preserved (old cand : PlanIndex) (rs : Std.HashMap QName QName)
 
 def preserves (old cand : LeanMod) (p : Plan) (arrow : Proarrow)
     (oldSnap? candSnap? : Option Snapshot := none) :=
-  preserved (indexMod old) (indexMod cand) (renames p) oldSnap? candSnap? arrow
+  preserved (indexMod old false) (indexMod cand false) (renames p) oldSnap? candSnap? arrow
 
 def frontier (old cand : LeanMod) (p : Plan) (oldSnap? candSnap? : Option Snapshot := none) : List Obj := Id.run do
-  let x := indexMod old
-  let y := indexMod cand
+  let x := indexMod old (includeOwners := oldSnap?.isNone)
+  let y := indexMod cand false
   let rs := renames p
   let mut changed : Std.HashSet Obj := {}
   let mut changedImports : Std.HashSet Lean.Name := {}

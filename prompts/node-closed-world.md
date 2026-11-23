@@ -174,6 +174,8 @@ end Gen.T2.Witness
 
 数据与可执行计算属于 `Type`。禁止 `noncomputable`、`partial`、`sorry`。等式 `=`、谓词、`False`、`True` 及其定律属于 `Prop`，证明可用 `rfl`、`simp`、`omega`、`decide`、`by_cases`。在 `mutual` 的每个结构递归或嵌套递归成员上标明 `termination_by structural ...`。Lean 会根据归纳类型生成结构递归器（必要时用 `.brecOn`），展开后方程才能按预期被 `rfl` 或 `simp` 化简。走良基递归时，`WellFounded.fix` 可能挡住定义归约。
 
+在规约或证明中，切勿把 `UInt64.size`（`2^64`）或 `2^32` 等巨大闭项传给 `termination_by structural` 指定的 `Nat` 燃料参数。世界仍是变量时，内核或元层检查定义相等性可能沿 `Nat.brecOn` 或 `Nat.rec` 逐层剥去 `Nat.succ`。优先对实际有限的输入表（如 `w.env.stdinLines`）做结构递归。需要燃料时，在定律中量化 `∀ fuel : Nat, ...`，对任意燃料证明方程。
+
 Lean 4 按值求值（CBV）。普通函数的实参在进入函数前已经求值。若昂贵的备选路径只在失败时才需要，放入 `if ... then ... else ...` 分支，使用短路的 `&&`、`||`、`<|>`，或显式传递 `Thunk.mk fun () => ...`，选中后才取 `Thunk α` 的值。长表以 `x :: acc` 尾递归累积，末尾一次 `reverse`。循环中的 `xs ++ [x]` 每次复制前缀。遍历祖先图应记录已访问与当前路径，菱形汇合只处理一次。
 
 惰性语言可以按需取无限流的头；Lean 的严格构造器会先求出普通尾字段。在这里把持续服务建模成余代数的一步 `S → Event → WorldProg Δ (Sum S ExitCode)`。每次接收输入只算一次转移，返回新状态或退出码；由拥有状态的解释器安排下一次调用。模拟和证明针对有限事件前缀做归纳。对相互递归的数据和遍历，选每条调用边上真正变小的归纳参数；若必须用良基递归，让证明使用生成的方程引理，再做 `simp`。

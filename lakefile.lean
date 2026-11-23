@@ -19,6 +19,8 @@ extern_lib liblean_cli_host pkg := do
 
 @[default_target] lean_lib LojitaCtx where
   defaultFacets := #[LeanLib.leanArtsFacet, LeanLib.staticFacet]
+  -- The foundation audit requires every constant in this precompiled library
+  -- to be free of native overrides, including compiler-generated tag readers.
   leanOptions := #[⟨`genCtorIdx, false⟩]
 @[default_target] lean_lib Lojita where
   defaultFacets := #[LeanLib.leanArtsFacet, LeanLib.staticFacet]

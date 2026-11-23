@@ -124,9 +124,40 @@ private def checkPlanFrontier : IO Unit := do
   discard <| checkClosedModule [] spliced
   let a ← object "OldView" "def T := Nat\ndef xs : List T := []"
   let b ← object "OldView" "def T := Bool\ndef xs : List T := []"
+  let inlineT ← object "OldView" "def xs : List Nat := []"
   let xs := Obj.unit (q "OldView.xs")
-  ensure (!preserves a b {why := "change"} ⟨xs,xs⟩ (← checkClosedModule [] a) (← checkClosedModule [] b))
+  let before ← checkClosedModule [] a
+  ensure (!preserves a b {why := "change"} ⟨xs,xs⟩ before (← checkClosedModule [] b))
     "imports from two snapshots confused same-spelled type aliases"
+  ensure (preserves a inlineT {why := "inline"} ⟨xs,xs⟩ before (← checkClosedModule [] inlineT))
+    "lost the meaning of an alias removed from the candidate"
+  let imported ← object "ImportedView" "def xs : List OldView.T := []" ["OldView"]
+  let importedXs := Obj.unit (q "ImportedView.xs")
+  ensure (!preserves imported imported {why := "change dependency"} ⟨importedXs,importedXs⟩
+    (← checkClosedModule [a] imported) (← checkClosedModule [b] imported))
+    "confused two versions of an imported alias"
+  let fin := fun (bound : Nat) => object "Index" s!"def size := {bound}\ndef N := size\ndef v : Fin N := ⟨0, by decide⟩"
+  let five ← fin 5
+  let six ← fin 6
+  let v := Obj.unit (q "Index.v")
+  ensure (!preserves five six {why := "resize"} ⟨v,v⟩ (← checkClosedModule [] five) (← checkClosedModule [] six))
+    "same-spelled bounds changed the dependent signature"
+
+  let src ← IO.FS.readFile "Test/S2/LargeFuel.lean"
+  let old ← IO.ofExcept (parseLeanMod src)
+  let cand ← IO.ofExcept (parseLeanMod (src.replace " := rfl" " := by rfl"))
+  let a ← checkClosedModule [] old
+  let b ← checkClosedModule [] cand
+  let law := Obj.unit (q "Gen.LargeFuel.runLaw")
+  let start ← IO.monoNanosNow
+  ensure (preserves old cand {why := "proof edit"} ⟨law,law⟩ a b) "large-fuel signature changed"
+  let ms := ((← IO.monoNanosNow) - start) / 1000000
+  ensure (ms < 200) s!"preserves on large structural fuel took {ms} ms"
+  let spec ← IO.ofExcept (parseLeanMod (src.replace "def run (xs : List UInt8) := scan bigBudget xs"
+    "axiom run : List UInt8 → Nat" |>.replace "theorem runLaw" "axiom runLaw" |>.replace " := rfl" ""))
+  ensure (preserves spec cand {why := "implement run"} ⟨law,law⟩ (← checkConditionalGlue [] [] spec true) b)
+    "realizing an abstract operation changed its law signature"
+  IO.println s!"   Large structural fuel took {ms} ms for preserves"
 
 private def polyAndLift : IO Unit := do
   let kid ← object "Gen.T0.S.OldChild" "def port := 0"
@@ -204,6 +235,12 @@ private def narrowing : IO Unit := do
   let draft ← object "Gen.E.R" "def x := 7" ["Gen.E.R.C"]
   let (r,_) ← checkCandidateGates (task mod) (leaf (empty mod.modName)) (birthPlan draft) [sub]
   ensure (r.certificate.any (·.kind == "subspec_laundering")) s!"subspec_laundering {repr r}"
+  let sub ← object "Gen.E.R.C" "inductive Command where | a | b | c | d | e
+axiom eval : Command → Nat
+axiom atA : eval .a = 7"
+  let draft ← object "Gen.E.R" "def x := Gen.E.R.C.eval .a" ["Gen.E.R.C"]
+  let r ← planPreview (task mod) (leaf (empty mod.modName)) (birthPlan draft) [sub]
+  ensure r.certificate.isNone s!"constructor index in child specification: {repr r}"
   let sub ← object "Gen.E.R.C.G.TooDeep" "axiom n : Nat"
   let g := empty (q "Gen.E.R.C.G")
   let draft ← object (toString g.modName) "" [toString sub.modName]
