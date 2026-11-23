@@ -79,6 +79,10 @@ example (v : Model (.file String)) : evalProg Env.nil framed (v, ⟨()⟩, ⟨()
 open LojitaCtx LojitaCtx.Terminal LojitaCtx.World LojitaCtx.Protocol
 
 example : Utf8.decode [0xc3, 0xa9] = ['é'] := rfl
+example : PosixChannel.evalScanner PosixChannel.oneByteScanner (PosixChannel.openPipe [0, 255]) =
+    (.emit (some 0), PosixChannel.openPipe [255]) := rfl
+example : (runWorldPure (Cli.readExactBytesW (Δ := [.stdioCap]) .here 2)
+    (pipeSimWorld "cand" [] [0, 255, 10] false)).1 = [0, 255] := rfl
 example : (runWorldPure (lookupEnvW (Δ := [.envCap]) .here "S1")
     { defaultSimWorld with env := { emptyProcessEnv with envVars := [("S1", "ok")] } }).1 = some "ok" := rfl
 example (p : Proto Nat) : dual (.pSend 7 p) = .pRecv 7 (dual p) := rfl
@@ -220,6 +224,12 @@ private def testWorld : IO Unit := do
   let env := lookupEnvW (Δ := [.envCap]) .here "LOJITA_S1_ENV"
   let w := { defaultSimWorld with env := { emptyProcessEnv with envVars := [("LOJITA_S1_ENV", "session-one")] } }
   check ((← Lojita.WorldRunner.runWorldIO env) == (runWorldPure env w).1) "environment lookup differs"
+  let channels : WorldProg CliCaps (Bool × Bool × Bool × Bool) := do
+    return (← isTTYStdinW stdioInCli, ← isTTYStdoutW stdioInCli,
+      ← hasTTYW ttyInCli, ← writeTTYW ttyInCli [])
+  let (inTTY, outTTY, attached, wrote) ← Lojita.WorldRunner.runWorldIO channels
+  check (inTTY == (← (← IO.getStdin).isTty) && outTTY == (← (← IO.getStdout).isTty) &&
+    (!wrote || attached)) "standard descriptor and controlling terminal observations differ"
   let tick : Event [.clockCap] := ⟨.here, .evTickMs 0⟩
   let (.inr result, _) := runReactivePure reactive [tick, tick] w | throw (IO.userError "reactive app did not exit")
   check (result == 17 && (← Lojita.WorldRunner.runReactiveIO reactive).toNat == result) "reactive results differ"

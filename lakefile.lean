@@ -43,3 +43,11 @@ extern_lib liblean_cli_host pkg := do
 lean_exe «test-s4-session» where
   root := `Test.S4Session
   supportInterpreter := true
+
+lean_lib PosixFixtures where
+  srcDir := "Test/Posix"
+  globs := #[.submodules `Gen]
+
+lean_exe «test-posix-channels» where
+  root := `Test.PosixChannelConformance
+  supportInterpreter := true

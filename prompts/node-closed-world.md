@@ -115,7 +115,9 @@ axiom tagged : ∀ bs, streams true bs = ([], bs)
 end Gen.T1.Doc.Route
 ```
 
-父节点用抽象的 `presence` 证明根的两个方块，用 `content` 和 Route 的通道律证明字节方程。`CliCaps` 的环境和终端能力分别由 `envInCli`、`ttyInCli` 定位。`observed` 把这两个纯端口的结果接到进程退出码和模拟终端缓冲区。
+父节点用抽象的 `presence` 证明根的两个方块，用 `content` 和 Route 的通道律证明字节方程。`envInCli` 用于读取环境变量。`observed` 把两个输出端口接到进程退出码和标准流的字节缓冲区。
+
+`stdioCap` 管理 fd 0/1/2。半开管道上用 `readStdinByteW` 或 `LojitaCtx.Cli.scanStdinFuelW` 消费前缀；用 `LojitaCtx.Cli.streamScannerApp` 跨输入事件保存扫描状态。`ttyCap` 独立管理控制终端 `/dev/tty`。用 `setTTYRawW` 切换原始模式，用 `writeTTYW` 绘制界面；`LojitaCtx.Cli.tuiReactiveApp` 将界面帧写入终端，选中结果才写入 stdout。
 
 ```lean dispatch
 import LojitaCtx.PolyTransport
@@ -141,17 +143,17 @@ theorem tagged (s : String) (bs : List UInt8) : streams (some s) bs = ([], s.toU
   simp only [streams, toStderr, Gen.T1.Doc.Label.presence, Option.isSome, Option.getD,
     Gen.T1.Doc.Route.tagged, Gen.T1.Doc.Label.content]
 def app : CliApp CliCaps := do
-  let bs ← readStdinAllW envInCli
+  let bs ← readStdinAllW stdioInCli
   let tag ← lookupEnvW envInCli "LOJITA_TAG"
   let ss := streams tag bs
-  writeStdoutW ttyInCli ss.1
-  writeStderrW ttyInCli ss.2
+  writeStdoutW stdioInCli ss.1
+  writeStderrW stdioInCli ss.2
   return 0
 theorem observed (w : SimWorld) :
-    let ss := streams (lookupEnvVar "LOJITA_TAG" w.env.envVars) w.env.stdinBytes
+    let ss := streams (lookupEnvVar "LOJITA_TAG" w.env.envVars) w.stdio.stdin.pending
     let r := runCliPure app w
-    (r.1, r.2.tty.stdoutBuf, r.2.tty.stderrBuf) =
-      (0, ss.1.foldl ByteArray.push w.tty.stdoutBuf, ss.2.foldl ByteArray.push w.tty.stderrBuf) := rfl
+    (r.1, r.2.stdio.stdout.written, r.2.stdio.stderr.written) =
+      (0, ss.1.foldl ByteArray.push w.stdio.stdout.written, ss.2.foldl ByteArray.push w.stdio.stderr.written) := rfl
 end Gen.T1.Doc
 ```
 
@@ -236,7 +238,7 @@ end Gen.Glyph.Witness
 
 数据与可执行计算属于 `Type`。禁止 `noncomputable`、`partial`、`sorry`。等式 `=`、谓词、`False`、`True` 及其定律属于 `Prop`，证明可用 `rfl`、`simp`、`omega`、`decide`、`by_cases`。在 `mutual` 的每个结构递归或嵌套递归成员上标明 `termination_by structural ...`。Lean 会根据归纳类型生成结构递归器（必要时用 `.brecOn`），展开后方程才能按预期被 `rfl` 或 `simp` 化简。走良基递归时，`WellFounded.fix` 可能挡住定义归约。
 
-在规约或证明中，切勿把 `UInt64.size`（`2^64`）或 `2^32` 等巨大闭项传给 `termination_by structural` 指定的 `Nat` 燃料参数。世界仍是变量时，内核或元层检查定义相等性可能沿 `Nat.brecOn` 或 `Nat.rec` 逐层剥去 `Nat.succ`。优先对实际有限的输入表（如 `w.env.stdinLines`）做结构递归。需要燃料时，在定律中量化 `∀ fuel : Nat, ...`，对任意燃料证明方程。
+在规约或证明中，切勿把 `UInt64.size`（`2^64`）或 `2^32` 等巨大闭项传给 `termination_by structural` 指定的 `Nat` 燃料参数。世界仍是变量时，内核或元层检查定义相等性可能沿 `Nat.brecOn` 或 `Nat.rec` 逐层剥去 `Nat.succ`。优先对实际有限的输入表（如 `w.stdio.stdin.pending`）做结构递归。需要燃料时，在定律中量化 `∀ fuel : Nat, ...`，对任意燃料证明方程。
 
 Lean 4 按值求值（CBV）。普通函数的实参在进入函数前已经求值。若昂贵的备选路径只在失败时才需要，放入 `if ... then ... else ...` 分支，使用短路的 `&&`、`||`、`<|>`，或显式传递 `Thunk.mk fun () => ...`，选中后才取 `Thunk α` 的值。长表以 `x :: acc` 尾递归累积，末尾一次 `reverse`。循环中的 `xs ++ [x]` 每次复制前缀。遍历祖先图应记录已访问与当前路径，菱形汇合只处理一次。
 

@@ -69,7 +69,7 @@ termination_by structural xs => xs
   let publicLookup := "def lookupDef := Gen.T0.Doc.lookupDef"
   let low ← object t0 publicLookup [doc]
   let repaired ← object t0 (publicLookup ++ "\ntheorem forwardRef : " ++ correct ++ " := Gen.T0.Doc.forwardRef") [doc]
-  let upperSpec ← object top "open LojitaCtx.World\naxiom app : CliApp [.envCap,.ttyCap]"
+  let upperSpec ← object top "open LojitaCtx.World\naxiom app : CliApp [.stdioCap]"
     ["LojitaCtx.World"]
   let es ← object escape "axiom html : String → String"
   let escaped ← object escape (r#"def html (s : String) := (s.replace "&" "&amp;").replace "<" "&lt;""#)
@@ -93,9 +93,9 @@ def render (src : String) : String :=
   let lines := src.splitOn "\n"
   let defs := lines.map fun s => if s.startsWith "[^1]: " then some (s.drop 6).toString else none
   String.join (lines.map (renderLine (lookupDef defs)))
-def app : CliApp [.envCap,.ttyCap] := do
+def app : CliApp [.stdioCap] := do
   let input ← readStdinAllW .here
-  writeStdoutStrW (.there .here) (render (String.fromUTF8! input.toByteArray))
+  writeStdoutStrW .here (render (String.fromUTF8! input.toByteArray))
   return 0"#) ["LojitaCtx.World",escape,parser,t0]
   let proof ← object "Gen.T1.Obstruction" (s!"theorem impossible : False := by
   have h := Gen.T1.Doc.ParseLine.observed.symm.trans ((Gen.T1.Doc.ParseLine.project {exampleDoc}).trans Gen.T0.Doc.dropsDefinition)

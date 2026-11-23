@@ -32,6 +32,8 @@ SESSION_ROOT 负责边界两侧的往返。外侧用带类型的 `Ownership.Prog
 
 探针唯一入口是 `probe : Lojita.Session.SessionEnv.Probe`。`batch` 经 fs-relay 运行别名，可带文件夹具；`terminal` 经 term-relay 发送按键、关闭输入、改变窗口并读取观察。更复杂的轨迹可直接组合 `ptySpec`、`fsSpec`、`netSpec`、`gitSpec`、`webSpec`。解释器把 `"ref"` 映射到 reference.sexp 指定的本地程序或 Docker 镜像，构建后 `"cand"` 映射到封存的可执行文件。比较原始字节、错误流、状态码和任务涉及的副作用。用 `run_lean_script` 预演，或提交如下动作。
 
+`SessionEnv.stdio` 以 `pipesNoTTY` 拓扑运行纯管道探针。先发送 `writeStdin`，用 `sleepMs` 与 `drainRaw` 观察关闭输入前的输出和退出状态，再发送 `closeStdin`。在相同轨迹上比较 ref 与 cand。`stdioCap` 管理 fd 0/1/2；对象可用 `readStdinByteW`、`LojitaCtx.Cli.scanStdinFuelW` 或 `LojitaCtx.Cli.streamScannerApp` 逐步消费输入。`ttyCap` 管理独立的 `/dev/tty`；`LojitaCtx.Cli.tuiReactiveApp` 使用 `setTTYRawW` 与 `writeTTYW` 处理按键和绘制界面。用 `Terminal.stepANSI` 投影终端字节，再比较可见内容。
+
 ```lean observe
 import Lojita.Session.SessionEnv
 namespace Gen.Probes.Observe
@@ -79,10 +81,10 @@ axiom ordinary : ∀ bs, streams none bs = (bs, [])
 axiom tagged : ∀ s bs, streams (some s) bs = ([], s.toUTF8.data.toList ++ bs)
 axiom app : CliApp CliCaps
 axiom observed : ∀ w : SimWorld,
-  let ss := streams (lookupEnvVar "LOJITA_TAG" w.env.envVars) w.env.stdinBytes
+  let ss := streams (lookupEnvVar "LOJITA_TAG" w.env.envVars) w.stdio.stdin.pending
   let r := runCliPure app w
-  (r.1, r.2.tty.stdoutBuf, r.2.tty.stderrBuf) =
-    (0, ss.1.foldl ByteArray.push w.tty.stdoutBuf, ss.2.foldl ByteArray.push w.tty.stderrBuf)
+  (r.1, r.2.stdio.stdout.written, r.2.stdio.stderr.written) =
+    (0, ss.1.foldl ByteArray.push w.stdio.stdout.written, ss.2.foldl ByteArray.push w.stdio.stderr.written)
 end Gen.T1.Doc
 ```
 
@@ -140,7 +142,7 @@ end Gen.Probes.Compare
 
 `Type` 承载可执行数据与计算，禁止 `noncomputable`、`partial`。在 `Prop` 中表达 `=`、`True`、`False` 与行为定律，用 `rfl`、`simp`、`omega`、`decide`、`by_cases` 证明。结构递归、嵌套递归以及 `mutual` 中需要按方程推理的各成员，显式写 `termination_by structural ...`，让结构递归器（如 `.brecOn`）支持归约。`WellFounded.fix` 可能使 `rfl` 与 `simp` 停在不透明项上。
 
-编写树规约和证明时，切勿用 `UInt64.size`（`2^64`）或 `2^32` 等巨大闭项实例化 `termination_by structural` 的 `Nat` 燃料。若世界仍是符号变量，内核或元层的定义相等性检查可能沿 `Nat.brecOn` 或 `Nat.rec` 逐个展开 `Nat.succ`。让树按实际有限的世界输入（如 `w.env.stdinLines`）做结构递归，或让定律量化抽象的 `fuel : Nat`。
+编写树规约和证明时，切勿用 `UInt64.size`（`2^64`）或 `2^32` 等巨大闭项实例化 `termination_by structural` 的 `Nat` 燃料。若世界仍是符号变量，内核或元层的定义相等性检查可能沿 `Nat.brecOn` 或 `Nat.rec` 逐个展开 `Nat.succ`。让树按实际有限的世界输入（如 `w.stdio.stdin.pending`）做结构递归，或让定律量化抽象的 `fuel : Nat`。
 
 严格按值求值会先计算普通函数的每个实参。让昂贵的回退留在 `if ... then ... else ...`、`&&`、`||`、`<|>` 的短路分支，或传 `Thunk.mk fun () => ...` 类型的延迟计算，在选中的分支才强制 `Thunk α`。累积大输入时向表头加入元素再反转，避免循环 `xs ++ [x]`。用显式燃料或已访问集合遍历 DAG，另记活动路径以诊断环。
 

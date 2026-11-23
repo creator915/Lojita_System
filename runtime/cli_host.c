@@ -256,15 +256,17 @@ static int stdin_eof = 0;
 
 static int stdin_fill_chunk(void) {
     if (stdin_eof) return 0;
-    ssize_t n = read(STDIN_FILENO, stdin_stash, sizeof(stdin_stash));
-    if (n < 0) return -1;
-    if (n == 0) {
+    for (;;) {
+        ssize_t n = read(STDIN_FILENO, stdin_stash, sizeof(stdin_stash));
+        if (n > 0) {
+            stdin_stash_pos = 0;
+            stdin_stash_len = (size_t)n;
+            return 1;
+        }
+        if (n < 0 && errno == EINTR) continue;
         stdin_eof = 1;
         return 0;
     }
-    stdin_stash_pos = 0;
-    stdin_stash_len = (size_t)n;
-    return 1;
 }
 
 static void stdin_consume(size_t count) {
@@ -279,7 +281,7 @@ int ct_read_stdin_byte(int *out_got_byte, uint8_t *out_byte) {
     *out_got_byte = 0;
     *out_byte = 0;
     if (stdin_stash_pos >= stdin_stash_len && !stdin_eof) {
-        if (stdin_fill_chunk() < 0) return -1;
+        stdin_fill_chunk();
     }
     if (stdin_stash_pos < stdin_stash_len) {
         *out_byte = stdin_stash[stdin_stash_pos];

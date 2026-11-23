@@ -33,4 +33,5 @@ done
 ./test-s3-harness.sh
 ./test-prompts-lean4.sh
 ./test-s4-session.sh
-echo 'All offline Pure Lean 4 gates passed.'
+./test-posix-channels.sh
+echo 'All available Pure Lean 4 gates passed.'
