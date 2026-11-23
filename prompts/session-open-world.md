@@ -1,10 +1,16 @@
 # 开放世界中的精化塔
 
+## 二维分工
+
+**纵轴 · 跨阶段的整树精化。** 一棵树表示整个目标程序在一个抽象层级的完整所有权树。SESSION_ROOT 负责开放世界探测，每层只编写根模块规约 `Gen.<Ti>.<Root>`。从有限可判定的 T0 蓝图开始，最终层公开 `CliApp Δ` 或 `ReactiveApp Δ S` 及其 `∀ w : SimWorld` 观察定律。初始树和它的原位修复用 `(baseTrees)`。精化层只填唯一已封存的直接前驱，如 `(baseTrees "T0")`，宿主自动跟随更早各层的当前封存版本。给出根到根的 `maybeLiftSrc`，可附加 `maybeTransportSrc`。以关系方块表达精化时，根到根的 transport 也可单独满足此门槛。严禁把 CLI、解析、压缩等内部功能各建一棵外层树再自底向上拼装。
+
+**横轴 · 树内的 import 所有权。** 收到根规约后，封闭根节点决定怎样分包。每条父子边来自父实现的孩子 `import` 和对应的 `subspecs`，每个孩子槽只有一个父所有者。内核先仅凭孩子的抽象 `axiom` 接口检查父胶水能推出根规约，再唤醒孩子独立实现；孩子也可用同样方式拆出孙包。提升整树时，`LiftSpec` 第三项 `child-map` 把底树的这些 import 子包路由到上层子包，可递归给出子 lift。上层还可增设自己的 import 子包。
+
 ## Categorical Design Checklist（每棵树）
 
 1. 确定 domain、codomain 和外部观察量。选好纤维投影 `PortLift` 或横向关系 `PortRel`，说明将对哪些输入检查交换律。
 2. 用 `Type` 中的载体和操作、`Prop` 中的 `∀` 律表达行为。可以给出精确的字节与状态方程，让 Node 决定具体算法。每个声明都有独立的顶层名字，放在与 treeName 对应的 `namespace Gen.<treeName>.<Module>` 中。
-3. 兄弟包独立拥有各自的表示与证明。需要共用的协议片段就在各自接口复制，交给父节点连接端口。baseTrees 只填写已封存的树名。
+3. 兄弟包独立拥有各自的表示与证明。需要共用的协议片段就在各自接口复制，交给父节点连接端口。用前驱根的封存源码识别需要路由的子包。
 4. 对任意输入表述规格，严禁用 `if x == "测试字面量"` 匹配探针。节点可用公开的 `: False` 证明提交 `contradiction` 或 `refute-lift`，也可用 `countermodel` 给出缺律的模型。读具体证据后修改相应边界。
 
 ## 隔离目录里的 MCP
@@ -20,7 +26,7 @@
 
 Node 在其独立 MCP 调用 `check_lean` 检查完整实现（`allow_axioms:true` 检查孩子规约），用 `check_plan` 检查声明、依赖前沿和孩子端口。双方都能读到自己权限内的上下文和本轮草稿。不要从宿主文件系统寻找 API。每轮最终答复只交一个 `session-action`，源码字段中的 `@draft` 不加引号。MCP 预检后仍须交付 drive-tree、build-exe、回放动作和 finish。
 
-SESSION_ROOT 负责边界两侧的往返。外侧用带类型的 `Ownership.Prog SessionΨ` 观测 ref 的可见行为。内侧将这些行为写成 `namespace Gen.<Epoch>.<Path> ... end Gen.<Epoch>.<Path>` 中的规约。每个对象有独立边界。以 `Type` 中的归纳或结构载体、最少投影、`axiom` 操作和 `Prop` 中的 `∀` 定律描述接口。规约只针对行为，不针对实现；复制，不复用。Node 仅获当前对象、孩子接口与准许的闭合祖先。
+SESSION_ROOT 负责边界两侧的往返。外侧用带类型的 `Ownership.Prog SessionΨ` 观测 ref 的可见行为。内侧将这些行为写成 `namespace Gen.<Epoch>.<Path> ... end Gen.<Epoch>.<Path>` 中的规约。规约限定整棵树的外部行为。以 `Type` 中的归纳或结构载体、最少投影、`axiom` 操作和 `Prop` 中的 `∀` 定律描述接口。规约只针对行为，不针对实现；复制，不复用。Node 仅获当前对象、孩子接口与准许的闭合祖先。
 
 ## 先测量，再立规约
 
@@ -40,80 +46,83 @@ end Gen.Probes.Observe
 (session-action (kind run-script) (why "记录短行的输出和退出状态") (source @observe))
 ```
 
-## 纵向与横向
+## 从有限的 Doc 蓝图到字节流 CLI
 
-以可判定的退化沙箱 T0 为基底。上升到 T1…Tn 时，把点展开成局部范畴或依赖纤维，`PortLift`、`keepPort`、`fromEl` 描述投影。沿 `Commutes₁` 至 `Commutes₃` 比较先执行与先投影。横向改变表示时记录 `Plan` 的 proarrow `src ⇝ tgt`、`PortRel` 与 `TransportsPoly` 方块；`cut₁` 连接多输出与下游输入。逐项处理依赖，直到 `frontier` 为空。下例从可执行基底 Gen.T0.Measure 的 count 端口上升，每个表的纤维保存一个合法游标。纵向忘掉游标，横向用投影的反图关联两种输入，再分别检查这两个方块。
+T0 把标签抽象成一个 Bool，整个程序的观察是输出流选择。先提交根规约。封闭根的计划会导入 `Gen.T0.Doc.Label` 并给它 subspec，见节点手册的 `blueprint-plan`。SESSION_ROOT 可以从封存结果读到这条边。
+
+```lean blueprint-spec
+namespace Gen.T0.Doc
+axiom toStderr : Bool → Bool
+axiom routing : ∀ present, toStderr present = present
+end Gen.T0.Doc
+```
+
+```sexp drive-base
+(session-action (kind drive-tree) (treeName "T0") (why "验证标签存在与输出通道的有限蓝图")
+  (specSrc @blueprint-spec) (baseTrees))
+```
+
+T1 用可选字符串和实际字节实现同一个程序。投影 `input` 忘掉标签文本，只保留存在性。`vertical` 比较先选通道与先投影的结果；`horizontal` 用投影的反图关联两种输入。根规约还把两个流和退出码连到每个模拟世界，具体分包留给封闭节点。
 
 ```lean upper-spec
-import LojitaCtx.Blueprint
 import LojitaCtx.PolyTransport
-import Gen.T0.Measure
-namespace Gen.T1.Measure
-open LojitaCtx.Blueprint LojitaCtx.PolyTransport
-abbrev Marked := Sigma (fun xs : List Gen.T0.Measure.Mark => Fin (xs.length + 1))
-def input : PortLift (List Gen.T0.Measure.Mark) Marked := fromEl (fun xs : List Gen.T0.Measure.Mark => Fin (xs.length + 1))
-axiom count : Marked → Nat
-axiom vertical : Commutes₁ input (keepPort _) (fun _ => True) Eq Gen.T0.Measure.count count
-axiom horizontal : TransportsPoly (cographPort input.project) (idPort _) (fun _ => True) Gen.T0.Measure.count count
-end Gen.T1.Measure
+import LojitaCtx.World
+import Gen.T0.Doc
+namespace Gen.T1.Doc
+open LojitaCtx.Blueprint LojitaCtx.PolyTransport LojitaCtx.World
+def input : PortLift Bool (Option String) := ⟨Option.isSome⟩
+axiom toStderr : Option String → Bool
+axiom vertical : Commutes₁ input (keepPort _) (fun _ => True) Eq Gen.T0.Doc.toStderr toStderr
+axiom horizontal : TransportsPoly (cographPort input.project) (idPort _) (fun _ => True) Gen.T0.Doc.toStderr toStderr
+axiom streams : Option String → List UInt8 → List UInt8 × List UInt8
+axiom ordinary : ∀ bs, streams none bs = (bs, [])
+axiom tagged : ∀ s bs, streams (some s) bs = ([], s.toUTF8.data.toList ++ bs)
+axiom app : CliApp CliCaps
+axiom observed : ∀ w : SimWorld,
+  let ss := streams (lookupEnvVar "LOJITA_TAG" w.env.envVars) w.env.stdinBytes
+  let r := runCliPure app w
+  (r.1, r.2.tty.stdoutBuf, r.2.tty.stderrBuf) =
+    (0, ss.1.foldl ByteArray.push w.tty.stdoutBuf, ss.2.foldl ByteArray.push w.tty.stderrBuf)
+end Gen.T1.Doc
 ```
 
-```lean upper
-import LojitaCtx.Blueprint
-import LojitaCtx.PolyTransport
-import Gen.T0.Measure
-namespace Gen.T1.Measure
-open LojitaCtx.Blueprint LojitaCtx.PolyTransport
-abbrev Marked := Sigma (fun xs : List Gen.T0.Measure.Mark => Fin (xs.length + 1))
-def input : PortLift (List Gen.T0.Measure.Mark) Marked := fromEl (fun xs : List Gen.T0.Measure.Mark => Fin (xs.length + 1))
-def count (x : Marked) := Gen.T0.Measure.count x.1
-theorem vertical : Commutes₁ input (keepPort _) (fun _ => True) Eq Gen.T0.Measure.count count :=
-  fun _ _ => rfl
-theorem horizontal : TransportsPoly (cographPort input.project) (idPort _) (fun _ => True) Gen.T0.Measure.count count := by
-  intro x y _ h
-  exact congrArg Gen.T0.Measure.count h
-end Gen.T1.Measure
-```
+根到根的 lift 把 T0.Doc 的 Label 路由给 T1.Doc 的 Label。T1.Doc 的封闭节点另增 Route，在自己的计划中导入两个孩子，分别提供 subspec。新出生的 Route 没有底树来源。第四项指定根端口及其交换方块。
 
 ```sexp lifting
-(lift "Gen.T0.Measure" "Gen.T1.Measure" ()
-  ((("Gen.T0.Measure.count") ("Gen.T1.Measure.count") "Gen.T1.Measure.vertical" ())))
+(lift "Gen.T0.Doc" "Gen.T1.Doc"
+  (("Gen.T0.Doc.Label" "Gen.T1.Doc.Label"))
+  ((("Gen.T0.Doc.toStderr") ("Gen.T1.Doc.toStderr") "Gen.T1.Doc.vertical" ())))
 ```
 
 ```sexp transport
-(poly-transport "Gen.T0.Measure" "Gen.T1.Measure" ()
-  ((square ("Gen.T0.Measure.count") ("Gen.T1.Measure.count") "Gen.T1.Measure.horizontal" ())))
+(poly-transport "Gen.T0.Doc" "Gen.T1.Doc"
+  ((move ("Gen.T0.Doc.Label") ("Gen.T1.Doc.Label") ()))
+  ((square ("Gen.T0.Doc.toStderr") ("Gen.T1.Doc.toStderr") "Gen.T1.Doc.horizontal" ())))
 ```
 
 ```sexp drive-upper
-(session-action (kind drive-tree) (treeName "T1") (why "验证计数端口的两个方块")
+(session-action (kind drive-tree) (treeName "T1") (why "把整棵标签蓝图提升到字节流 CLI")
   (specSrc @upper-spec) (baseTrees "T0") (maybeLiftSrc (just @lifting)) (maybeTransportSrc (just @transport)))
 ```
 
-用 `check_spec` 预检。`drive-tree` 会启动封闭节点。孩子可用 `contradiction` 给出规约的 `: False`，也可用 `countermodel` 的 `CountermodelBundle` 与 `@refute` 证明开放定律不足。`refute-lift` 的 `: False` 会附上所依赖的基底单元。出现 liftObstruction 时，读诊断，原位重驱同名 T0 修正捷径，再重驱同名 T1。宿主自动加载最新祖先，并向已验证的无辜孩子重查契约；通过的孩子无需再提案。
+用 `check_spec` 预检。`drive-tree` 会启动封闭节点。孩子可用 `contradiction` 给出规约的 `: False`，也可用 `countermodel` 的 `CountermodelBundle` 与 `@refute` 证明开放定律不足。`refute-lift` 的 `: False` 会附上所依赖的基底单元。出现 liftObstruction 时，读诊断，原位重驱同名 T0 修正捷径，再重驱同名 T1。宿主自动加载最新祖先，并重查 `PRESERVED_CHILDREN` 中无辜孩子的契约；通过的孩子无需再提案。
 
 ## 构建与回放
 
-根规约把宿主观察表示成 `LojitaCtx.World.CliApp Δ` 或 `ReactiveApp Δ S`，给出关于所有相应模拟世界的定律。对 verdict 为 ok 的树用 `check_entry` 检查限定入口，再用 `build-exe` 构建。Main 由宿主生成。下例引用练习树 Gen.App.Doc 的入口。
-
-```lean entry
-import LojitaCtx.World
-namespace Gen.App.Doc
-open LojitaCtx.World
-axiom app : CliApp CliCaps
-axiom exitOK : ∀ w : SimWorld, (runCliPure app w).1 = 0
-end Gen.App.Doc
-```
+T1 封存后，用 `check_entry` 检查根规约的入口，再用 `build-exe` 生成 Main 并链接 T1 与其直接前驱链上的模块。工作区的其他封存树仍参加完整性重审和构建指纹计算。
 
 ```sexp build
-(session-action (kind build-exe) (why "封存命令行入口") (entry "Gen.App.Doc.app") (mode cli))
+(session-action (kind build-exe) (why "封存命令行入口") (entry "Gen.T1.Doc.app") (mode cli))
 ```
 
 ```lean compare
 import Lojita.Session.SessionEnv
 namespace Gen.Probes.Compare
 open Lojita.Session.SessionEnv
-def probe : Probe := replay [] ""
+def probe : Probe := do
+  let empty ← replay [] ""
+  if empty.exitCode != 0 then return empty
+  replay [] "abc\n"
 end Gen.Probes.Compare
 ```
 
@@ -122,7 +131,7 @@ end Gen.Probes.Compare
 ```
 
 ```sexp done
-(session-action (kind finish) (summary "空输入的退出状态及两个输出流均已回放"))
+(session-action (kind finish) (summary "空输入和短行的退出状态及两个输出流均已回放"))
 ```
 
 仅当同一次探针真实执行 ref 与 cand 且比较通过后，宿主才记录回放收据。finish 重审各棵封存树、源码、构建身份及收据。重建或修改祖先后需要重新回放。工具 `write_draft`、`patch_draft`、`read_draft`、`list_drafts` 维护当前轮次的草稿；裸 `@name` 也可引用具名 Lean 或 sexp 围栏。

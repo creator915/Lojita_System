@@ -226,8 +226,8 @@ private def callTool (cfg : Config) (readNode : ReadNode) (tool : String) (args 
       let entry ← required args "entry"
       let mode ← IO.ofExcept (parseMode ((value args "mode").getD "cli"))
       withWorkspaceLock ws do
-        let closure ← loadCurrentClosure ws (← sealedNames ws)
-        checkVerifiedEntry closure.modules (qualified entry) mode
+        let name := qualified entry
+        checkVerifiedEntry (← entryModules ws name) name mode
       return success s!"verified entry {entry}"
     | _ =>
       let some path := cfg.refFile | fail "probe requires --ref-file"

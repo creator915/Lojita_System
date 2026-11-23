@@ -1,5 +1,11 @@
 # 封闭世界中的对象与态射
 
+## 在二维结构中定位当前节点
+
+纵轴的每次 `drive-tree` 都交付整个目标程序的一层。SESSION_ROOT 在开放世界探测，只给 `Gen.<Ti>.<Root>` 写根规约，最终层含 `CliApp Δ` 或 `ReactiveApp Δ S` 及 `∀ w : SimWorld` 的定律。初始蓝图用空 `baseTrees`。精化层只指定唯一的直接前驱蓝图，随附根到根的 `maybeLiftSrc`，也可给出根到根的 `maybeTransportSrc`。内部功能一律在树内分包，禁止用多棵外层树拼装程序。
+
+横轴的 `HomeSt` 文件所有权边完全来自封闭父节点的孩子 `import` 与 `subspecs`。每个槽由一个父节点线性拥有。先用孩子的抽象 `axiom` 接口证明条件胶水满足父规约，再将孩子分别交给独立节点实现。孩子也可以这样拆出孙包。跨层时，`LiftSpec` 的第三项 `child-map` 将前驱树的 import 子包路由到本层对应槽，可附递归子 lift。本层还可引入新子包。
+
 ## Categorical Design Checklist（设计顺序）
 
 1. 先写清输入对象、输出对象和可观察的端口。纵向细化用 `PortLift.project` 把纤维送回基底；横向迁移用 `PortRel` 关联新旧表示。给每个运算选好相应的交换方块，再写程序。
@@ -22,20 +28,20 @@
 
 你拥有一个对象，即 CURRENT CODE 中的模块。用 `namespace Gen.<Epoch>.<Path>` 开始，用同名的 `end` 结束。父节点只能依赖你公布的行为。为子对象写 subspec 时，先选 `Type` 中的 `inductive` 或 `structure` 载体，再给观察者所需的最少投影、以 `axiom` 声明的操作，以及 `Prop` 中对所有输入成立的 `∀` 定律。规约只针对行为，不针对实现；复制，不复用。实现可以复制接口中的具体载体，再独立定义操作并证明方程。把两遍扫描或哈希表写进孩子的接口，会剥夺它选择算法的自由。
 
-例如，下面的接口只固定空输入的结果。实现选择了结构递归。
+独立的 Count 练习演示结构递归。下面的接口只固定空输入的结果。
 
 ```lean measure-spec
-namespace Gen.T0.Measure
+namespace Gen.Count.Measure
 inductive Mark where
   | text
   | lineBreak
 axiom count : List Mark → Nat
 axiom empty : count [] = 0
-end Gen.T0.Measure
+end Gen.Count.Measure
 ```
 
 ```lean measure
-namespace Gen.T0.Measure
+namespace Gen.Count.Measure
 inductive Mark where
   | text
   | lineBreak
@@ -44,7 +50,7 @@ def count : List Mark → Nat
   | _ :: xs => count xs + 1
 termination_by structural xs => xs
 theorem empty : count [] = 0 := rfl
-end Gen.T0.Measure
+end Gen.Count.Measure
 ```
 
 通过 `write_draft` 保存完整模块。`patch_draft` 精确替换文本，`read_draft`、`list_drafts` 查看本轮草稿。用 `check_lean` 检查实现，用 `allow_axioms=true` 检查孩子的接口。没有 shell、宿主 IO、文件系统或网络接口。你只提交一个 `submission`，源代码可引用裸 `@name`，也可附带具名代码围栏。下面是空 CURRENT CODE 上的完整出生计划。
@@ -52,81 +58,137 @@ end Gen.T0.Measure
 ```sexp measure-plan
 (submission (kind plan) (why "按表的结构计数并证明空表定律") (main @measure)
   (subspecs)
-  (moves (move bot (unit "Gen.T0.Measure.Mark")) (move bot (unit "Gen.T0.Measure.count")) (move bot (unit "Gen.T0.Measure.empty"))))
+  (moves (move bot (unit "Gen.Count.Measure.Mark")) (move bot (unit "Gen.Count.Measure.count")) (move bot (unit "Gen.Count.Measure.empty"))))
 ```
 
-## 完整的双子包 CLI
+## T0.Doc 的一个子包
 
-Gen.App.Doc 的外部端口为标准输入字节和可选环境变量 LOJITA_TAG。设置标签时将标签和输入送到 stderr，缺省时将输入送到 stdout。Label 公开字节内容，Route 公开输出通道的选择。下列两份规约先用 `check_lean` 的 `allow_axioms` 预检。孩子看不到对方的源码。
+会话手册的 `blueprint-spec` 给出全程序的通道选择律。根节点把标签判断拆给 Label，用它的公理 `presence` 即可证明 `routing`。
+
+```lean base-label-spec
+namespace Gen.T0.Doc.Label
+axiom marked : Bool → Bool
+axiom presence : ∀ present, marked present = present
+end Gen.T0.Doc.Label
+```
+
+```lean blueprint
+import Gen.T0.Doc.Label
+namespace Gen.T0.Doc
+def toStderr := Gen.T0.Doc.Label.marked
+theorem routing (present : Bool) : toStderr present = present := Gen.T0.Doc.Label.presence present
+end Gen.T0.Doc
+```
+
+```sexp blueprint-plan
+(submission (kind plan) (why "以标签接口证明通道选择律") (main @blueprint)
+  (subspecs ("Label" @base-label-spec))
+  (moves (move bot (ext "Gen.T0.Doc.Label.marked"))
+         (move bot (unit "Gen.T0.Doc.toStderr")) (move bot (unit "Gen.T0.Doc.routing"))))
+```
+
+```lean base-label
+namespace Gen.T0.Doc.Label
+def marked (present : Bool) := present
+theorem presence (present : Bool) : marked present = present := rfl
+end Gen.T0.Doc.Label
+```
+
+## T1.Doc 的双子包 CLI
+
+根到根的 `lifting` 把蓝图 Label 路由到这里的 Label。标签现在有具体文本，Label 还负责拼接字节。根节点新设 Route，把字节分配给 stdout 或 stderr。每个孩子只看自己的规约与获准的祖先。
 
 ```lean label-spec
-namespace Gen.App.Doc.Label
+namespace Gen.T1.Doc.Label
+axiom marked : Option String → Bool
+axiom presence : ∀ tag, marked tag = tag.isSome
 axiom payload : String → List UInt8 → List UInt8
 axiom content : ∀ s bs, payload s bs = s.toUTF8.data.toList ++ bs
-end Gen.App.Doc.Label
+end Gen.T1.Doc.Label
 ```
 
 ```lean route-spec
-namespace Gen.App.Doc.Route
-axiom streams : Option String → List UInt8 → List UInt8 × List UInt8
-axiom ordinary : ∀ bs, streams none bs = (bs, [])
-axiom tagged : ∀ s bs, streams (some s) bs = ([], bs)
-end Gen.App.Doc.Route
+namespace Gen.T1.Doc.Route
+axiom streams : Bool → List UInt8 → List UInt8 × List UInt8
+axiom ordinary : ∀ bs, streams false bs = (bs, [])
+axiom tagged : ∀ bs, streams true bs = ([], bs)
+end Gen.T1.Doc.Route
 ```
 
-父节点把纯操作接到世界边界。`CliApp Δ` 是结果为自然数退出码的 `WorldProg Δ`。`CliCaps` 的环境和终端能力分别由 `envInCli`、`ttyInCli` 定位。stdout/stderr 的操作接收 `List UInt8`。模拟器返回“值 × 新世界”，所以律可以直接说哪些字节追加到了哪条流。
+父节点用抽象的 `presence` 证明根的两个方块，用 `content` 和 Route 的通道律证明字节方程。`CliCaps` 的环境和终端能力分别由 `envInCli`、`ttyInCli` 定位。`observed` 把这两个纯端口的结果接到进程退出码和模拟终端缓冲区。
 
 ```lean dispatch
+import LojitaCtx.PolyTransport
 import LojitaCtx.World
-import Gen.App.Doc.Label
-import Gen.App.Doc.Route
-namespace Gen.App.Doc
-open LojitaCtx.World
-def deliver (streams : List UInt8 × List UInt8) : WorldProg CliCaps Unit := do
-  writeStdoutW ttyInCli streams.1
-  writeStderrW ttyInCli streams.2
-theorem stdoutLaw (ss : List UInt8 × List UInt8) (w : SimWorld) :
-    (runWorldPure (deliver ss) w).2.tty.stdoutBuf = ss.1.foldl ByteArray.push w.tty.stdoutBuf := rfl
+import Gen.T0.Doc
+import Gen.T1.Doc.Label
+import Gen.T1.Doc.Route
+namespace Gen.T1.Doc
+open LojitaCtx.Blueprint LojitaCtx.PolyTransport LojitaCtx.World
+def input : PortLift Bool (Option String) := ⟨Option.isSome⟩
+def toStderr := Gen.T1.Doc.Label.marked
+theorem vertical : Commutes₁ input (keepPort _) (fun _ => True) Eq Gen.T0.Doc.toStderr toStderr :=
+  fun tag _ => (Gen.T1.Doc.Label.presence tag).trans (Gen.T0.Doc.routing tag.isSome).symm
+theorem horizontal : TransportsPoly (cographPort input.project) (idPort _) (fun _ => True) Gen.T0.Doc.toStderr toStderr := by
+  intro present tag _ h
+  exact (congrArg Gen.T0.Doc.toStderr h).trans (vertical tag trivial).symm
+def streams (tag : Option String) (bs : List UInt8) :=
+  Gen.T1.Doc.Route.streams (toStderr tag) (Gen.T1.Doc.Label.payload (tag.getD "") bs)
+theorem ordinary (bs : List UInt8) : streams none bs = (bs, []) := by
+  simp only [streams, toStderr, Gen.T1.Doc.Label.presence, Option.isSome, Option.getD,
+    Gen.T1.Doc.Route.ordinary, Gen.T1.Doc.Label.content] <;> rfl
+theorem tagged (s : String) (bs : List UInt8) : streams (some s) bs = ([], s.toUTF8.data.toList ++ bs) := by
+  simp only [streams, toStderr, Gen.T1.Doc.Label.presence, Option.isSome, Option.getD,
+    Gen.T1.Doc.Route.tagged, Gen.T1.Doc.Label.content]
 def app : CliApp CliCaps := do
-  let input ← readStdinAllW envInCli
+  let bs ← readStdinAllW envInCli
   let tag ← lookupEnvW envInCli "LOJITA_TAG"
-  let payload := Gen.App.Doc.Label.payload (tag.getD "") input
-  deliver (Gen.App.Doc.Route.streams tag payload)
+  let ss := streams tag bs
+  writeStdoutW ttyInCli ss.1
+  writeStderrW ttyInCli ss.2
   return 0
-theorem exitOK (w : SimWorld) : (runCliPure app w).1 = 0 := rfl
-end Gen.App.Doc
+theorem observed (w : SimWorld) :
+    let ss := streams (lookupEnvVar "LOJITA_TAG" w.env.envVars) w.env.stdinBytes
+    let r := runCliPure app w
+    (r.1, r.2.tty.stdoutBuf, r.2.tty.stderrBuf) =
+      (0, ss.1.foldl ByteArray.push w.tty.stdoutBuf, ss.2.foldl ByteArray.push w.tty.stderrBuf) := rfl
+end Gen.T1.Doc
 ```
 
-以 `main_block:"@dispatch", dep_blocks:["@label-spec","@route-spec"]` 预检父胶水。下例适用于空 CURRENT CODE。两个 `ext` 目标明确记录孩子端口的出生；本模块的每个新声明各有一个 `unit` 目标。孩子名字、import 和 subspec 必须吻合。
+先用 `main_block:"@dispatch", dep_blocks:["@label-spec","@route-spec"]` 检查条件胶水，再用 `check_plan` 预检以下出生计划。两个 `subspecs` 分别匹配一个 import。内核通过父节点的检查后才启动子节点。
 
 ```sexp dispatch-plan
-(submission (kind plan) (why "组合标签端口、通道端口及线性的世界操作") (main @dispatch)
+(submission (kind plan) (why "把标签蓝图的观察接到字节流") (main @dispatch)
   (subspecs ("Label" @label-spec) ("Route" @route-spec))
-  (moves (move bot (ext "Gen.App.Doc.Label.payload"))
-         (move bot (ext "Gen.App.Doc.Route.streams"))
-         (move bot (unit "Gen.App.Doc.deliver"))
-         (move bot (unit "Gen.App.Doc.stdoutLaw"))
-         (move bot (unit "Gen.App.Doc.app"))
-         (move bot (unit "Gen.App.Doc.exitOK"))))
+  (moves (move bot (ext "Gen.T1.Doc.Label.marked")) (move bot (ext "Gen.T1.Doc.Label.payload"))
+         (move bot (ext "Gen.T1.Doc.Route.streams"))
+         (move bot (unit "Gen.T1.Doc.input")) (move bot (unit "Gen.T1.Doc.toStderr"))
+         (move bot (unit "Gen.T1.Doc.vertical")) (move bot (unit "Gen.T1.Doc.horizontal"))
+         (move bot (unit "Gen.T1.Doc.streams")) (move bot (unit "Gen.T1.Doc.ordinary"))
+         (move bot (unit "Gen.T1.Doc.tagged")) (move bot (unit "Gen.T1.Doc.app"))
+         (move bot (unit "Gen.T1.Doc.observed"))))
 ```
 
-两个孩子分别提交自己的局部实现。父节点只通过各自公布的行为使用它们。
+Label 可导入获配的蓝图子包。新出生的 Route 独立实现自己的接口。
 
 ```lean label-impl
-namespace Gen.App.Doc.Label
+import Gen.T0.Doc.Label
+namespace Gen.T1.Doc.Label
+def marked (tag : Option String) := Gen.T0.Doc.Label.marked tag.isSome
+theorem presence (tag : Option String) : marked tag = tag.isSome := Gen.T0.Doc.Label.presence tag.isSome
 def payload (s : String) (bs : List UInt8) := s.toUTF8.data.toList ++ bs
 theorem content (s : String) (bs : List UInt8) : payload s bs = s.toUTF8.data.toList ++ bs := rfl
-end Gen.App.Doc.Label
+end Gen.T1.Doc.Label
 ```
 
 ```lean route-impl
-namespace Gen.App.Doc.Route
-def streams : Option String → List UInt8 → List UInt8 × List UInt8
-  | none, bs => (bs, [])
-  | some _, bs => ([], bs)
-theorem ordinary (bs : List UInt8) : streams none bs = (bs, []) := rfl
-theorem tagged (s : String) (bs : List UInt8) : streams (some s) bs = ([], bs) := rfl
-end Gen.App.Doc.Route
+namespace Gen.T1.Doc.Route
+def streams : Bool → List UInt8 → List UInt8 × List UInt8
+  | false, bs => (bs, [])
+  | true, bs => ([], bs)
+theorem ordinary (bs : List UInt8) : streams false bs = (bs, []) := rfl
+theorem tagged (bs : List UInt8) : streams true bs = ([], bs) := rfl
+end Gen.T1.Doc.Route
 ```
 
 ## 二维虚拟设备
@@ -137,17 +199,17 @@ end Gen.App.Doc.Route
 
 ## 对偶证据
 
-规约自身矛盾时，`(kind contradiction)` 的 `refute` 导入规约并给出公开定理 `: False`。开放接口定律不足时，`(kind countermodel)` 提交模型与 `@refute`。下例原生 Char 上的可证性质在每一阶段的开放字符代数中都可能失败。模型只导入 `LojitaCtx.Countermodel`。见证将接口承诺接到内核从 bundle 生成的 `CountermodelCheck.VerifiedClaim` 上。
+规约自身矛盾时，`(kind contradiction)` 的 `refute` 导入规约并给出公开定理 `: False`。开放接口定律不足时，`(kind countermodel)` 提交模型与 `@refute`。独立的 Glyph 反模型练习中，原生 Char 上的可证性质在每一阶段的开放字符代数中都可能失败。模型只导入 `LojitaCtx.Countermodel`。见证将接口承诺接到内核从 bundle 生成的 `CountermodelCheck.VerifiedClaim` 上。
 
 ```lean char-spec
-namespace Gen.T2.Glyph
+namespace Gen.Glyph.Algebra
 axiom law : ∀ c : Char, (c == c) = true
-end Gen.T2.Glyph
+end Gen.Glyph.Algebra
 ```
 
 ```lean model
 import LojitaCtx.Countermodel
-namespace Gen.T2.Phantom
+namespace Gen.Glyph.Phantom
 open LojitaCtx.Countermodel
 def claim (a : CharAlg) := ∀ x, a.charEq x x = true
 def bundle : CountermodelBundle :=
@@ -155,15 +217,15 @@ def bundle : CountermodelBundle :=
     intro k h
     have absurd := h none
     contradiction)
-end Gen.T2.Phantom
+end Gen.Glyph.Phantom
 ```
 
 ```lean refute
-import Gen.T2.Glyph
+import Gen.Glyph.Algebra
 import CountermodelCheck
-namespace Gen.T2.Witness
-theorem witness : CountermodelCheck.VerifiedClaim := Gen.T2.Glyph.law
-end Gen.T2.Witness
+namespace Gen.Glyph.Witness
+theorem witness : CountermodelCheck.VerifiedClaim := Gen.Glyph.Algebra.law
+end Gen.Glyph.Witness
 ```
 
 ```sexp counterexample

@@ -175,6 +175,12 @@ def loadCurrentClosure (ws : FilePath) (names : List String) : IO BaseClosure :=
   let modules ← IO.ofExcept (mergeModules (trees.toList.flatMap (exported ·.home)))
   return ⟨tips,trees.toList,modules⟩
 
+/-- Both entry preflight and the native linker use the owning tree's live ancestry. -/
+def entryModules (ws : FilePath) (entry : QName) : IO (List LeanMod) := do
+  let "Gen" :: epoch :: _ := entry.segments | fail "expected qualified entry Gen.<treeName>.<Module>.<entry>"
+  unless (← sealedNames ws).contains epoch do fail "unsealed entry tree"
+  return (← loadCurrentClosure ws [epoch]).modules
+
 /-- Inspect a coherent published generation without creating files or completing a writer's journal. -/
 def readSealedModules (ws : FilePath) : IO (List LeanMod) := do
   let lock ← try IO.FS.Handle.mk (ws / "workspace.lock") .read

@@ -35,41 +35,61 @@ structure Prepared where
   home : Frozen
   closure : BaseClosure
 
+private def transportSource (ws : FilePath) (home : Frozen) (closure : BaseClosure) (src : QName) :
+    IO (Frozen × List LeanMod) := do
+  if src == home.code.modName then return (home,[])
+  if let some tree := closure.trees.find? (·.home.code.modName == src) then return (tree.home,[])
+  if let some kept ← partialSource ws src then return (kept,[])
+  if let ["Gen", epoch, _] := src.segments then
+    if (← sealedNames ws).contains epoch then
+      let source ← loadCurrentClosure ws [epoch]
+      if let some tree := source.trees.find? (fun t => t.name == epoch && t.home.code.modName == src) then
+        -- Check the source in its own ancestry. Only the declared bases enter the target's link.
+        let ancestors := source.trees.filter (·.name != epoch)
+        return (tree.home,ancestors.flatMap (exported ·.home))
+  fail s!"missing transport source {src}"
+
 def prepareSpec (ws : FilePath) (name src : String) (bases : List String) (liftSrc transportSrc : Option String) :
     IO Prepared := do
   checkTreeName name
+  if bases.length > 1 then
+    fail "MULTI_BASE_TREES: drive-tree refines at most one predecessor blueprint tree; decompose subsystems inside one tree via closed-world import subspecs"
   let spec ← IO.ofExcept (parseLeanMod src)
   unless spec.modName.segments.take 2 == ["Gen",name] && spec.modName.segments.length == 3 &&
       spec.modName.segments.all validSegment do fail s!"expected namespace Gen.{name}.<RootModule>"
   let closure ← loadCurrentClosure ws bases
   if closure.trees.any (·.name == name) then fail "cycle in requested baseTrees"
+  let liftSpec ← liftSrc.mapM parseLift
+  let transportSpec ← transportSrc.mapM parseTransport
+  if let [baseName] := bases then
+    let some baseTree := closure.trees.find? (·.name == baseName) | fail s!"unsealed base {baseName}"
+    let baseRoot := baseTree.home.code.modName
+    unless liftSpec.any (·.base == baseRoot) || transportSpec.any (·.oldMod == baseRoot) do
+      fail "MISSING_REFINEMENT_MORPHISM: non-empty baseTrees requires a root-to-root maybeLiftSrc or maybeTransportSrc from the base tree root"
   checkClosedBundle closure.modules
   let allowed := closure.modules.map (·.modName)
   if let e :: _ := checkTaskImports spec.modName [] allowed spec then fail (reprStr e)
   discard <| checkConditionalGlue closure.modules [] spec true
   let home ← initialHome ws name spec
-  let lift ← liftSrc.mapM fun s => do
-    let l ← parseLift s
+  let lift ← liftSpec.mapM fun l => do
     unless l.upper == spec.modName do fail "wrongUpper"
     checkLiftSource closure.modules l
     let some base := closure.modules.find? (·.modName == l.base) | fail "missing lift base"
     return (base,l)
-  let transports ← transportSrc.toList.mapM fun s => do
-    let t ← parseTransport s
-    unless t.newMod == spec.modName do fail "wrongNewMod"
-    let source ← if t.oldMod == home.code.modName then pure home else do
-      if let some tree := closure.trees.find? (·.home.code.modName == t.oldMod) then pure tree.home else
-        let some preserved ← partialSource ws t.oldMod | fail s!"missing transport source {t.oldMod}"
-        pure preserved
-    let targets := t.childMoves.flatMap ChildMove.targets
-    let target : LeanMod := ⟨t.newMod,targets.map (⟨·,[]⟩),[],[]⟩
-    if let e :: _ := polyShapeProblems source.code target t then fail (reprStr e)
-    for q in t.childMoves.flatMap ChildMove.sources do
-      unless (lookupChild source q).isSome do fail s!"missing transport child {q}"
-    return (source,t)
+  let (transports, checkingModules) ← match transportSpec with
+    | none => pure ([],closure.modules)
+    | some t => do
+      unless t.newMod == spec.modName do fail "wrongNewMod"
+      let (source,ancestors) ← transportSource ws home closure t.oldMod
+      let targets := t.childMoves.flatMap ChildMove.targets
+      let target : LeanMod := ⟨t.newMod,targets.map (⟨·,[]⟩),[],[]⟩
+      if let e :: _ := polyShapeProblems source.code target t then fail (reprStr e)
+      for q in t.childMoves.flatMap ChildMove.sources do
+        unless (lookupChild source q).isSome do fail s!"missing transport child {q}"
+      pure ([(source,t)],← IO.ofExcept (mergeModules (closure.modules ++ ancestors)))
   let task : NodeTask := {
     delta := ⟨spec.modName,home.spec.units,spec⟩
-    baseModules := closure.modules, maybeLift := lift, transports, allowedAncestors := some allowed}
+    baseModules := checkingModules, maybeLift := lift, transports, allowedAncestors := some allowed}
   return ⟨task,home,closure⟩
 
 /-- A node MCP process receives precisely the frozen input of PlanPreview,

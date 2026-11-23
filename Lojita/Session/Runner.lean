@@ -90,12 +90,14 @@ def executeAction (cfg : SessionConfig) (action : SessionAction) : IO ActionResu
     | .driveTree n why src bs l t =>
       return .accepted s!"drive-tree {n}: {← driveTree cfg n why src bs l t}\n{why}"
     | .buildExe mode why entry => withWorkspaceLock cfg.workspace do
-      let closure ← auditTrees cfg.workspace
-      let out := cfg.workspace / "bin/candidate"
-      compileVerifiedExe closure.modules (qualified entry) mode out
-      let receipt := cfg.workspace / "replay-receipt.sexp"
+      let ws := cfg.workspace
+      let name := qualified entry
+      let modules ← entryModules ws name
+      discard <| auditTrees ws
+      compileVerifiedExe modules name mode (ws / "bin/candidate")
+      let receipt := ws / "replay-receipt.sexp"
       if ← receipt.pathExists then IO.FS.removeFile receipt
-      atomicText (cfg.workspace / "bin/build.sexp") (← buildIdentity cfg.workspace).canonical
+      atomicText (ws / "bin/build.sexp") (← buildIdentity ws).canonical
       return .accepted s!"build-exe {entry}: {why}"
     | .finish summary => finishSession cfg summary
   catch e => return .rejected (toString e)

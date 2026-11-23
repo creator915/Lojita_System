@@ -164,14 +164,21 @@ with Client("session") as cli:
     cli.tool("read_context", ok=False, module="Gen.Unsealed.Root")
     spec = module("Gen.Rpc.Next", "axiom result : Nat")
     cli.tool("write_draft", name="spec", content=spec)
-    cli.tool("check_spec", spec_block="@spec", base_trees=["T1"])
+    cli.tool("check_spec", spec_block="@spec", base_trees=[])
+    missing = cli.tool("check_spec", ok=False, spec_block="@spec", base_trees=["T1"])
+    assert "MISSING_REFINEMENT_MORPHISM" in missing["content"][0]["text"]
     cli.tool("check_spec", ok=False, source=spec, base_trees=["missing"])
     cli.tool("check_spec", source=spec, base_trees=["T0"],
              lift_src='(lift "Gen.T0.Doc" "Gen.Rpc.Next" () ())',
              transport_src='(poly-transport "Gen.T0.Root" "Gen.Rpc.Next" ((move ("Gen.T0.Doc") () ())) ())')
-    cli.tool("check_spec", ok=False, source=spec, base_trees=["T0"],
-             lift_src='(lift "Gen.T0.Doc" "Gen.Rpc.Next" () ((("missing") ("unused") "sq" ())))')
+    bad_endpoint = cli.tool("check_spec", ok=False, source=spec, base_trees=["T0"],
+                            lift_src='(lift "Gen.T0.Root" "Gen.Rpc.Next" (("Gen.T0.Doc" "Gen.Rpc.Next.Doc")) '
+                                     '((("missing") ("unused") "sq" ())))')
+    assert "missingBaseUnit: missing" in bad_endpoint["content"][0]["text"]
     cli.tool("check_entry", entry="Gen.T1.Doc.app")
+    cli.tool("check_entry", entry="Gen.Side.Extra.Saved.app")
+    retired = cli.tool("check_entry", ok=False, entry="Gen.T1.Doc.Retired.app")
+    assert "ENTRY_MISSING" in retired["content"][0]["text"]
     cli.tool("check_entry", ok=False, entry="Gen.T1.Doc.app", mode="reactive")
     cli.tool("check_entry", ok=False, entry="Gen.T1.Doc.render")
     cli.tool("check_entry", ok=False, entry="Gen.T1.Doc.unknown")
