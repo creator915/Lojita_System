@@ -20,12 +20,12 @@ run_cmd do
     modules := modules.insert mod
     for ax in ← collectAxioms name do
       unless allowed.contains ax do throwError "{mod} declaration {name} depends on {ax}"
-    if objectModule then
-      if info.isUnsafe || isExtern env name || (Compiler.getImplementedBy? env name).isSome then
-        throwError "{mod} contains a native override or unsafe declaration {name}"
-      for used in info.getUsedConstantsAsSet do
-        if #[`IO, `BaseIO, `EIO, `EST, `EStateM.RealWorld].any (·.isPrefixOf used) then
-          throwError "{name} refers to effectful constant {used}"
+    if info.isUnsafe || (mod == `Lojita.Ownership.Core && info.isPartial) ||
+        isExtern env name || (Compiler.getImplementedBy? env name).isSome then
+      throwError "{mod} contains a native override or unchecked declaration {name}"
+    for used in info.getUsedConstantsAsSet do
+      if #[`IO, `BaseIO, `EIO, `EST, `EStateM.RealWorld].any (·.isPrefixOf used) then
+        throwError "{name} refers to effectful constant {used}"
   for source in ← (System.FilePath.mk "LojitaCtx").readDir do
     if source.path.extension == some "lean" then
       let mod := Name.str `LojitaCtx (source.path.fileStem.getD "")
@@ -76,6 +76,131 @@ private def framed := inside (Γ := frameCtx) "work" localWork
 
 example (v : Model (.file String)) : evalProg Env.nil framed (v, ⟨()⟩, ⟨()⟩) = ((v, ⟨()⟩, ⟨()⟩), 17) := rfl
 
+private abbrev homeFiles : Ctx := [("token", .file Nat), ("label", .file String)]
+private abbrev side (n : String) : Ctx := [(n, .dir homeFiles)]
+private abbrev delayed := mkSpec "delayed" homeFiles (.ten (.dat Nat) (.ten (.res (.dir homeFiles)) .end_))
+
+private def branch (n : String) : Prog [delayed] (.dir (side n)) (.dir (side n)) Nat :=
+  .exec (.here rfl) (.here rfl) () rfl <|
+  .step (.recvD (.here rfl) rfl) fun answer =>
+  .step (.recover (.here rfl) rfl) fun _ => .done answer
+
+private def sides : SplitCtx (side "east" ++ side "west") (side "west") (side "east") :=
+  .right _ (by decide) (.left _ rfl .nil)
+
+private def bothSides := Prog.par sides (by decide) (branch "west") (branch "east")
+  (fun a b => .done (a, b))
+
+private def sideEnv : Env [delayed] := Env.cons (spec := delayed) (fun _ ms =>
+  (ms.1, (⟨ms.1.down + 1⟩, ms.2), ⟨()⟩)) Env.nil
+
+example (a b : Nat) (x y : String) :
+    evalProg sideEnv bothSides ((⟨a⟩, ⟨x⟩, ⟨()⟩), (⟨b⟩, ⟨y⟩, ⟨()⟩), ⟨()⟩) =
+      (((⟨b + 1⟩, ⟨y⟩, ⟨()⟩), (⟨a + 1⟩, ⟨x⟩, ⟨()⟩), ⟨()⟩), (b, a)) := rfl
+
+example (env : Env [delayed]) (ms : Models (side "east" ++ side "west")) :
+    evalProg env bothSides ms = evalProg env
+      (.par sides.swap (by decide) (branch "east") (branch "west") fun b a =>
+        .step (.reorder (Reorder.swapAppend (side "west") (side "east"))) fun _ => .done (a, b)) ms :=
+  evalProg_par_swap env sides (by decide) (by decide) (branch "west") (branch "east") _ ms
+
+private abbrev jobHome (_ : Nat) := St.dir homeFiles
+private abbrev Job := Session.workerI Nat Nat jobHome
+private abbrev slots := workCtx Nat Nat jobHome
+
+private def countingJob (readyAt : Nat) : Proc [] homeFiles Job :=
+  .worker (G := fun _ : Nat => homeFiles)
+    (fun j => .tell (if j + 1 == readyAt then some (j + 1) else none) (.giveExDir (j + 1) rfl))
+    (fun j => .giveExDir j rfl) 0
+
+private def awaitOne : Prog [] (.dir (slots ["w"])) (.dir (side "w")) (Option Nat × Nat) :=
+  .awaitI (.here rfl) rfl fun opt i => .done (opt, i)
+
+private def abortOne : Prog [] (.dir (slots ["w"])) (.dir (side "w")) Nat :=
+  .abortI (.here rfl) rfl fun i => .done i
+
+example (ms : Models homeFiles) :
+    evalProg Env.nil awaitOne (evalProc Env.nil (countingJob 2) ms, ⟨()⟩) =
+      ((ms, ⟨()⟩), none, 1) := rfl
+example (ms : Models homeFiles) :
+    evalProg Env.nil abortOne (evalProc Env.nil (countingJob 2) ms, ⟨()⟩) = ((ms, ⟨()⟩), 0) := rfl
+
+private def phaseHome : Bool → St
+  | false => .dir []
+  | true => .file Nat
+
+private def phaseCtx : Bool → Ctx
+  | false => []
+  | true => [("answer", .file Nat)]
+
+private def indexedJob : Proc [] [] (.workerI Unit Bool phaseHome) :=
+  .worker (G := phaseCtx)
+    (fun
+      | false => .run (create "answer" 41) fun _ => .tell (some ()) (.giveExDir true rfl)
+      | true => .tell (some ()) (.giveExDir true rfl))
+    (fun
+      | false => .giveExDir false rfl
+      | true => .giveExAt true (.here rfl) rfl .end_) false
+
+example :
+    let w := evalProc Env.nil indexedJob ⟨()⟩
+    (w.abort, w.stepOne.1, w.stepOne.2.abort) = (⟨false, ⟨()⟩⟩, some (), ⟨true, ⟨41⟩⟩) := rfl
+
+private inductive Selection (names : List String) where
+  | pending
+  | ready (n : String) (p : Position id n names) (result index : Nat)
+
+private def selectedDir {names : List String} : Selection names → St
+  | .pending => .dir (slots names)
+  | .ready _ p _ i => .dir (setAt (workPos Nat Nat jobHome p) (jobHome i))
+
+private def selectJob (names : List String) (hne : names ≠ [] := by decide) :
+    Proc [] (slots names) (Halt (Selection names) selectedDir) :=
+  .awaitAnyP names hne
+    (fun n p r i => .giveExDir (.ready n p r i) rfl)
+    (.giveExDir .pending rfl)
+
+-- The middle occurrence wins. Even a pending sibling probed before it keeps its original state.
+example (a b c : Models homeFiles) :
+    let later := evalProc Env.nil (countingJob 2) a
+    let ready := evalProc Env.nil (countingJob 1)
+    (evalProc Env.nil (selectJob ["same", "same", "last"]) (later, ready b, ready c, ⟨()⟩)).1 =
+      ⟨.ready "same" (.there (.here rfl)) 1 1, (later, b, ready c, ⟨()⟩)⟩ := rfl
+
+example (a b c : Models homeFiles) :
+    let w := evalProc Env.nil (countingJob 2)
+    (evalProc Env.nil (selectJob ["a", "b", "c"]) (w a, w b, w c, ⟨()⟩)).1 =
+      ⟨.pending, ((w a).stepOne.2, (w b).stepOne.2, (w c).stepOne.2, ⟨()⟩)⟩ := rfl
+
+private def nestedState : Option Nat → Ctx
+  | none => slots ["inner"]
+  | some _ => side "inner"
+
+private def nestedTurn : (j : Option Nat) → Proc [] (nestedState j) (WorkerTurn Nat (Option Nat) nestedState)
+  | none => .awaitAnyP ["inner"] (by decide)
+      (fun _ p r i => by
+        cases p with
+        | here => exact .tell (some r) (.giveExDir (some i) rfl)
+        | there q => exact nomatch q)
+      (.tell none (.giveExDir none rfl))
+  | some i => .tell (some i) (.giveExDir (some i) rfl)
+
+private def recoverJob (n : String) : Proc [] (slots [n]) (Halt Nat jobHome) :=
+  .abortP (.here rfl) rfl fun i => .giveExAt i (.here rfl) rfl .end_
+
+private def nestedJob : Proc [] (slots ["inner"]) Job :=
+  .worker nestedTurn (fun
+    | none => recoverJob "inner"
+    | some i => .giveExAt i (.here rfl) rfl .end_) none
+
+-- The inner worker crosses the outer worker's small storage between the two turns.
+example (ms : Models homeFiles) :
+    let inner := evalProc Env.nil (countingJob 2) ms
+    let outer := evalProc Env.nil nestedJob (inner, ⟨()⟩)
+    let (first, w₁) := outer.stepOne
+    let (second, w₂) := w₁.stepOne
+    (first, w₁.abort, second, w₂.abort) = (none, ⟨1, ms⟩, some 2, ⟨2, ms⟩) := rfl
+
 open LojitaCtx LojitaCtx.Terminal LojitaCtx.World LojitaCtx.Protocol
 
 example : Utf8.decode [0xc3, 0xa9] = ['é'] := rfl
@@ -114,6 +239,128 @@ end
 
 private def check (ok : Bool) (message : String) : IO Unit :=
   unless ok do throw (IO.userError message)
+
+private def home (n : Nat) (label : String) : ModelsIO homeFiles := (n, label, ())
+private def contents (m : ModelsIO homeFiles) : Nat × String := (m.1, m.2.1)
+
+private def testParallel : IO Unit := do
+  let env : EnvIO [delayed] := EnvIO.cons (spec := delayed) (fun _ ms => pure do
+    IO.sleep 150
+    return (ms.1, pure ((Nat.succ ms.1, ms.2), ()))) EnvIO.nil
+  let input := (home 11 "east", home 37 "west", ())
+  let start ← IO.monoMsNow
+  let (owned, a, b) ← evalIO env bothSides input
+  let elapsed := (← IO.monoMsNow) - start
+  check ((a, b) == (37, 11) && contents owned.1 == (38, "west") &&
+    contents owned.2.1 == (12, "east")) "parallel branch answers or rejoined directories"
+  check (elapsed < 260) s!"parallel 150 ms branches took {elapsed} ms"
+  IO.println s!"Parallel 150 ms branches finished in {elapsed} ms"
+
+  let finished ← IO.mkRef false
+  let failing : EnvIO [delayed] := EnvIO.cons (spec := delayed) (fun _ ms => pure do
+    if BEq.beq (α := Nat) ms.1 11 then throw (IO.userError "east failed")
+    IO.sleep 20
+    finished.set true
+    return (ms.1, pure (ms, ()))) EnvIO.nil
+  let .error (.userError "east failed") ← (evalIO failing bothSides input).toBaseIO
+    | throw (IO.userError "lost parallel branch error")
+  check (← finished.get) "parallel branch still running after its sibling threw"
+
+-- A native timer service owns its directory until it fires or its cancellation hook wakes it.
+private def timedJob (delay : UInt64) (index : Nat) (ms : ModelsIO homeFiles) : IO (OfferIO Job) := do
+  let wc ← WorkerCancel.new
+  let timer ← Std.Internal.UV.Timer.mk delay false
+  let alarm ← timer.next
+  wc.onCancel do
+    timer.stop
+    alarm.resolve ()
+  let wait : IO (Option Nat × ((i : Nat) × ModelIO (jobHome i))) := do
+    IO.wait alarm.result!
+    return (if ← wc.cancelled.get then none else some ms.1, ⟨index, ms⟩)
+  return ⟨wc, ← IO.asTask wait .dedicated⟩
+
+private def selectIO (names : List String) (ms : ModelsIO (slots names)) (hne : names ≠ [] := by decide) :
+    IO ((s : Selection names) × ModelIO (selectedDir s)) := do
+  return (← (← evalProcIO EnvIO.nil (selectJob names hne) ms)).1
+
+private def testWorkerRace : IO Unit := do
+  let start ← IO.monoMsNow
+  let timer₁ ← timedJob 80 1 (home 11 "slow1")
+  let timer₂ ← timedJob 5000 3 (home 33 "slow2")
+  let slow₁ ← evalProcIO EnvIO.nil nestedJob (timer₁, ())
+  let inner ← evalProcIO EnvIO.nil nestedJob (timer₂, ())
+  let slow₂ ← evalProcIO EnvIO.nil nestedJob (inner, ())
+  let timerFast ← timedJob 20 2 (home 22 "fast")
+  let fast ← evalProcIO EnvIO.nil nestedJob (timerFast, ())
+
+  let ⟨.ready n (.there (.here _)) r i, first⟩ ←
+      selectIO ["slow1", "fast", "slow2"] (slow₁, fast, slow₂, ())
+    | throw (IO.userError "the middle worker did not win")
+  let fastMs := (← IO.monoMsNow) - start
+  check (n == "fast" && r == 22 && i == 2 && contents first.2.1 == (22, "fast") && fastMs < 100)
+    s!"incorrect fast worker result or latency ({fastMs} ms)"
+
+  let ⟨.ready n (.here _) r i, second⟩ ← selectIO ["slow1", "slow2"] (first.1, first.2.2)
+    | throw (IO.userError "slow1 did not survive the first selection")
+  let slowMs := (← IO.monoMsNow) - start
+  check (n == "slow1" && r == 11 && i == 1 && contents second.1 == (11, "slow1") &&
+    !(← timer₁.cancel.cancelled.get) && slowMs < 180) s!"incorrect slow1 result or latency ({slowMs} ms)"
+
+  let stopping ← IO.monoMsNow
+  let ⟨i, recovered⟩ := (← (← evalProcIO EnvIO.nil (recoverJob "slow2") second.2)).1
+  let abortMs := (← IO.monoMsNow) - stopping
+  check (i == 3 && contents recovered == (33, "slow2") && (← inner.cancel.cancelled.get) &&
+    (← timer₂.cancel.cancelled.get) && (← IO.hasFinished timer₂.task) && abortMs < 150)
+    s!"nested abort did not recover the live directory in time ({abortMs} ms)"
+  IO.println s!"Worker completion at {fastMs} and {slowMs} ms, nested abort in {abortMs} ms"
+
+private def waitingBeforeFailure (seen : IO.Ref (Array (OfferIO Job))) : (names : List String) →
+    IO (ModelsIO (slots (names ++ ["failed"])))
+  | [] => do
+    let failed : OfferIO Job := ⟨← WorkerCancel.new, Task.pure (.error (.userError "last slot failed"))⟩
+    return (failed, ())
+  | n :: ns => do
+    let wc ← WorkerCancel.new
+    let w : OfferIO Job := ⟨wc, wc.promise.result!.map (fun _ => .ok (none, ⟨0, home 0 n⟩)) (sync := true)⟩
+    seen.modify (·.push w)
+    return (w, ← waitingBeforeFailure seen ns)
+
+private def testWorkerCleanup : IO Unit := do
+  let immediate : Running Unit (Option Nat) Unit := ⟨Unit, (), fun _ _ => (some 7, ()), id⟩
+  check (pollN 1000000000000 immediate == some 7) "existing server polling did not return its first answer"
+  let w ← evalProcIO EnvIO.nil (countingJob 2048) (home 7 "turns")
+  let (owned, opt, i) ← evalIO EnvIO.nil awaitOne (w, ())
+  check (opt == some 2048 && i == 2048 && contents owned.1 == (7, "turns")) "autonomous worker turns"
+  let w ← timedJob 5000 9 (home 8 "abort")
+  let (owned, i) ← evalIO EnvIO.nil abortOne (w, ())
+  check (i == 9 && contents owned.1 == (8, "abort") && (← w.cancel.cancelled.get)) "single-slot abort"
+
+  let a ← timedJob 5000 1 (home 1 "a")
+  let b ← timedJob 5000 2 (home 2 "b")
+  let failed : OfferIO Job := ⟨← WorkerCancel.new, Task.pure (.error (.userError "child failed"))⟩
+  let .error (.userError "child failed") ← (selectIO ["a", "failed", "b"] (a, failed, b, ())).toBaseIO
+    | throw (IO.userError "lost selected child error")
+  check ((← a.cancel.cancelled.get) && (← b.cancel.cancelled.get) &&
+    (← IO.hasFinished a.task) && (← IO.hasFinished b.task)) "failed selection left a live sibling"
+
+  let names := (List.range 128).map toString
+  let seen ← IO.mkRef #[]
+  let wide ← waitingBeforeFailure seen names
+  let .error (.userError "last slot failed") ← (selectIO (names ++ ["failed"]) wide (by simp)).toBaseIO
+    | throw (IO.userError "missed the last of 129 slots")
+  for worker in ← seen.get do
+    check ((← worker.cancel.cancelled.get) && (← IO.hasFinished worker.task)) "wide selection leaked a sibling"
+
+  let wc ← WorkerCancel.new
+  let hooks ← IO.mkRef #[]
+  wc.onCancel do
+    hooks.modify (·.push 1)
+    throw (IO.userError "hook failed")
+  wc.onCancel (hooks.modify (·.push 2))
+  let .error (.userError "hook failed") ← wc.trigger.toBaseIO | throw (IO.userError "lost hook error")
+  wc.onCancel (hooks.modify (·.push 3))
+  wc.trigger
+  check ((← hooks.get) == #[1, 2, 3] && (← wc.promise.isResolved)) "cancellation hook delivery"
 
 -- Only the test executable instruments this pure callback. The native
 -- implementation observes invocation, including premature calls by the evaluator.
@@ -287,6 +534,9 @@ private def testRelays (bin scratch : System.FilePath) : IO Unit := do
   check ((bytes "P6").isPrefixOf (← canvas.stopIO).2.1) "canvas export"
 
 def run : IO Unit := do
+  testParallel
+  testWorkerRace
+  testWorkerCleanup
   stressServer
   checkNested
   IO.println "100000 machine calls, one explicit shutdown"
