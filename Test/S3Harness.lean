@@ -260,17 +260,87 @@ private def planText (m : LeanMod) (subs : List LeanMod := []) (moves : Option (
 private def refuteText (kind : String) (r : LeanMod) : String :=
   s!"(submission (kind {kind}) (why \"obstruction\") (refute @proof))\n```lean proof\n{renderLeanMod r}\n```"
 
-private def drive (ai : Proposer) (t : NodeTask) (h : Frozen) : IO (Verdict × Frozen) :=
-  withNodeEnvIO ai fun env => do
+private def drive (ai : Proposer) (t : NodeTask) (h : Frozen)
+    (accept : AcceptNode := fun _ _ => pure ()) (cancelOwner : String → IO Unit := fun _ => pure ()) : IO (Verdict × Frozen) :=
+  withNodeEnvIO ai (fun env => do
     let v := thawHome h
     let init ← evalProcIO env (nodeAgent v.1) v.2
-    let running ← init t
-    for _ in [0:32] do
-      if let some verdict ← running.callIO () then
-        ensure ((← running.callIO ()) == some verdict) "finished node changed on poll"
-        let stopped ← running.stopIO
-        return (verdict, freezeHome stopped.1 stopped.2)
-    throw (IO.userError "scripted node did not finish")
+    let (some verdict, stopped) ← WorkerIO.awaitIO (← init t)
+      | throw (IO.userError "scripted node stopped without a verdict")
+    return (verdict, freezeHome stopped.1 stopped.2)) accept cancelOwner
+
+private abbrev Events := Std.Mutex (Array (QName × String))
+
+private def mark (events : Events) (owner : QName) (event : String) : IO Unit :=
+  events.atomically (modify (·.push (owner, event)))
+
+private def eventLog (events : Events) : IO (List (QName × String)) :=
+  events.atomically (return (← get).toList)
+
+private def concurrentTreeSpeedupAndDeterminism (dir : System.FilePath) : IO Unit := do
+  let port := fun (name : String) => object ("Gen.Concurrent.Top" ++ name) "axiom val : Nat"
+  let top ← port ""
+  let a ← port ".A"
+  let b ← port ".B"
+  let c ← port ".C"
+  let d ← port ".D"
+  let a1 ← port ".A.A1"
+  let a2 ← port ".A.A2"
+  let join := fun (m : LeanMod) (kids : List LeanMod) =>
+    let names := kids.map (toString ·.modName)
+    object (toString m.modName) ("def val : Nat := " ++ String.intercalate " + " (names.map (· ++ ".val"))) names
+  let rootKids := [a, b, c, d]
+  let topImpl ← join top rootKids
+  let aImpl ← join a [a1, a2]
+  let rootPlan := planText topImpl rootKids
+  let aPlan := planText aImpl [a1, a2]
+  let leaves := [a1, a2, b, c, d]
+  let implementations ← leaves.mapM fun m => object (toString m.modName) "def val : Nat := 1"
+  let replies := Std.HashMap.ofList (implementations.map fun m => (m.modName, planText m))
+  -- Check an independently assembled reference tree in the resident kernel. Both
+  -- timed workers still run every plan gate and closure check through the normal entry point.
+  let sealed := fun (m spec : LeanMod) (kids : List (String × Frozen)) =>
+    Frozen.frozen m (inherit {birthPlan m with why := "scripted"} []) spec kids
+  let slots := implementations.zipWith (fun m spec => (toString m.modName, sealed m spec [])) leaves
+  let aHome := sealed (withChildIfaces aImpl [a1, a2]) a (slots.take 2)
+  let reference := sealed (withChildIfaces topImpl rootKids) top ((toString a.modName, aHome) :: slots.drop 2)
+  let setupStart ← IO.monoMsNow
+  verifyClosure [] reference
+  let expected ← storeHomeCAS dir (thawHome reference)
+  for (spec, glue, kids) in [(top, topImpl, rootKids), (a, aImpl, [a1, a2])] do
+    let report ← planPreview (task spec) (leaf (empty spec.modName)) (birthPlan glue) kids
+    ensure report.certificate.isNone s!"invalid concurrent fixture {repr report.certificate}"
+  let setupMs := (← IO.monoMsNow) - setupStart
+  let run := fun (reverse : Bool) => do
+    let events ← Std.Mutex.new #[]
+    let ai : Proposer := fun req => do
+      if let some cert := req.diagnostic then throw (IO.userError (toString cert))
+      let n := req.task.delta.child
+      mark events n "start"
+      if n == top.modName then return rootPlan
+      if n == a.modName then return aPlan
+      let some reply := replies[n]? | throw (IO.userError s!"unexpected concurrent child {n}")
+      IO.sleep (if ([a1, a2].any (·.modName == n)) != reverse then 60 else 120)
+      mark events n "awake"
+      return reply
+    let start ← IO.monoMsNow
+    let (v, h) ← drive ai (task top) (leaf (empty top.modName))
+    let ms := (← IO.monoMsNow) - start
+    ensure (v == .ok && h.children.map Prod.fst == rootKids.map (toString ·.modName) &&
+      (lookupChild h a.modName).any (fun kid => kid.children.map Prod.fst == [a1, a2].map (toString ·.modName)))
+      "concurrent tree did not seal in specification order"
+    let log ← eventLog events
+    for m in top :: a :: leaves do ensure (log.count (m.modName, "start") == 1) s!"extra turn for {m.modName}"
+    let fast := if reverse then b else a1
+    let slow := if reverse then a1 else b
+    ensure (log.idxOf (fast.modName, "awake") < log.idxOf (slow.modName, "awake")) s!"sleep order {repr log}"
+    ensure (log.idxOf (a2.modName, "start") < log.idxOf (b.modName, "awake")) "grandchildren waited for a sibling barrier"
+    ensure (ms < 260) s!"concurrent tree took {ms} ms (reverse={reverse})"
+    return (ms, ← storeHomeCAS dir (thawHome h))
+  let (forward, hash) ← run false
+  let (reverse, other) ← run true
+  ensure (hash == expected && hash == other) "sealed Merkle root differs from the reference tree or reversed schedule"
+  IO.println s!"A  Verified fixture in {setupMs} ms. Concurrent drives in {forward}/{reverse} ms, identical Merkle root {hash}"
 
 private def splitChildren : IO Unit := do
   let spec ← object "Gen.Route.Root" "axiom total : Nat"
@@ -321,7 +391,7 @@ private def splitChildren : IO Unit := do
   ensure (v == .ok && (lookupChild moved alias).any (fun f => f.code == left && f.spec == lex))
     "relocated slot did not link to the saved implementation"
 
-private def obstruction (dir : System.FilePath) : IO Unit := do
+private def obstruction (dir : System.FilePath) (parserFirst := false) : IO Unit := do
   let bad ← object "Gen.T0.Doc" "def singlePass (_ : Nat) := 0\ntheorem badSinglePass : singlePass 1 = 0 := rfl"
   let fixed ← object "Gen.T0.Doc" "def singlePass (n : Nat) := n"
   let lower ← object "Gen.T0.Root" "def version := 1" ["Gen.T0.Doc"]
@@ -330,8 +400,9 @@ private def obstruction (dir : System.FilePath) : IO Unit := do
   let parser ← object "Gen.T1.Doc.ParseLine" "axiom parse : Nat → Nat
 axiom law : parse 1 = Gen.T0.Doc.singlePass 1
 axiom atOne : parse 1 = 1" ["Gen.T0.Doc"]
+  let children := if parserFirst then [parser, esc] else [esc, parser]
   let main ← object (toString upper.modName) "def value := Gen.T1.Doc.Escape.escape 1 + Gen.T1.Doc.ParseLine.parse 1"
-    [toString esc.modName,toString parser.modName]
+    (children.map (toString ·.modName))
   let letters ← object "Gen.T1.Doc.Escape.Letters" "axiom count : Nat"
   let letterImpl ← object (toString letters.modName) "def count := 1"
   let escImpl ← object (toString esc.modName) "def escape (n : Nat) := n + Gen.T1.Doc.Escape.Letters.count"
@@ -348,22 +419,32 @@ theorem atOne : parse 1 = 1 := rfl" ["Gen.T0.Doc"]
     let root := withChildIfaces lower [base]
     return {(task upper) with baseModules := [base,root], maybeLift := some (root,liftFor root)}
   let run := fun (t : NodeTask) (h : Frozen) (repair : Bool) => do
-    let turns ← IO.mkRef ({} : Std.HashMap QName Nat)
+    let events ← Std.Mutex.new #[]
     let ai : Proposer := fun req => do
       if let some cert := req.diagnostic then throw (IO.userError (toString cert))
       let owner := req.task.delta.child
-      turns.modify (fun m => m.alter owner (fun n => some (n.getD 0 + 1)))
-      if owner == upper.modName then return planText main [esc,parser]
+      mark events owner "start"
+      if owner == upper.modName then return planText main children
       if owner == esc.modName then return planText escImpl [letters]
-      if owner == letters.modName then return planText letterImpl
-      if owner == parser.modName then return if repair then planText parseImpl else refuteText "refute-lift" witness
+      if owner == letters.modName then
+        if parserFirst then IO.sleep 80
+        return planText letterImpl
+      if owner == parser.modName then
+        if parserFirst && !repair then IO.sleep 5
+        return if repair then planText parseImpl else refuteText "refute-lift" witness
       throw (IO.userError s!"unscripted child {owner}")
-    let (v,f) ← drive ai t h
-    return (v, f, ← turns.get)
+    let (v,f) ← drive ai t h (fun t _ => mark events t.delta.child "accepted") (fun n => mark events (q n) "aborted")
+    let log ← eventLog events
+    if parserFirst && !repair then
+      for kid in [letters, esc] do
+        ensure (log.contains (kid.modName, "accepted") &&
+          log.idxOf (parser.modName, "accepted") < log.idxOf (kid.modName, "accepted")) "obstruction did not finish first"
+    ensure (!(log.any (·.2 == "aborted"))) "obstruction cancelled an innocent sibling"
+    return (v, f, fun n => log.count (n, "start"))
   let (v,partialHome,turns) ← run (job bad) (leaf (empty upper.modName)) false
   let .liftObstruction _ culprits _ := v | throw (IO.userError s!"wrong verdict {repr v}")
-  ensure (culprits.contains (q "Gen.T0.Doc.badSinglePass") && turns[esc.modName]? == some 1 &&
-    turns[parser.modName]? == some 1) "obstruction provenance or AI turns"
+  ensure (culprits.contains (q "Gen.T0.Doc.badSinglePass") &&
+    [upper, esc, parser, letters].all (fun m => turns m.modName == 1)) "obstruction provenance or AI turns"
   let [(slot, kept)] := partialHome.children | throw (IO.userError "expected one verified innocent sibling")
   ensure (slot == toString esc.modName && kept.code == withChildIfaces escImpl [letters] && kept.spec == esc &&
     (lookupChild kept letters.modName).any (·.code == letterImpl)) "Escape changed during rollback"
@@ -373,7 +454,7 @@ theorem atOne : parse 1 = 1 := rfl" ["Gen.T0.Doc"]
   let keep := TransportSpec.transportSpecTree reload.code.modName upper.modName [.keepChild esc.modName esc.modName] []
   let (v,success,turns) ← run {(job fixed) with transports := [(reload,keep)]} reload true
   let some sameKid := lookupChild success esc.modName | throw (IO.userError "missing retained Escape")
-  ensure (v == .ok && turns[esc.modName]?.getD 0 == 0 && turns[letters.modName]?.getD 0 == 0 && turns[parser.modName]? == some 1 &&
+  ensure (v == .ok && turns esc.modName == 0 && turns letters.modName == 0 && turns parser.modName == 1 &&
     (← storeFrozen dir sameKid) == (← storeFrozen dir kept)) "keepChild replay or Merkle identity"
   let linked ← checkClosedModule (depsExcept (exported success ++ [fixed,lower]) success.code) success.code
   ensure (linked.axioms.all trustedBaseAxioms.contains) "final closure has an open assumption"
@@ -381,7 +462,21 @@ theorem atOne : parse 1 = 1 := rfl" ["Gen.T0.Doc"]
   Nat.one_ne_zero (Gen.T1.Doc.ParseLine.atOne.symm.trans (Gen.T1.Doc.ParseLine.law.trans Gen.T0.Doc.badSinglePass))"
     ["Gen.T0.Doc",toString parser.modName]
   expectError "DISALLOWED_AXIOM_VIOLATION" (checkLiftRefutation [bad] parser extra)
-  IO.println "3  Many-to-many lift, kernel False witness, retained Escape Merkle identity. Escape AI turns 1 then 0"
+  if parserFirst then IO.println "C  Parser obstructed first. Escape and Letters sealed and replayed with zero AI turns."
+  else IO.println "3  Many-to-many lift, kernel False witness, retained Escape Merkle identity. Escape AI turns 1 then 0"
+
+private def orderIndependentObstructionHarvest (dir : System.FilePath) : IO Unit := do
+  obstruction dir true
+  let spec := empty (q "Order")
+  let home := leaf spec
+  let names := ["Order.Z", "Order.A", "Order.B"]
+  let state : NodeState := {
+    task := task spec, original := home, current := home
+    verified := Std.HashMap.ofList (names.map (·, home))}
+  let c : Candidate := ⟨spec, [empty (q "Order.B")], [], {why := "order"}, [], {}⟩
+  ensure ((freezeVerifiedKids state).children.map Prod.fst == ["Order.A", "Order.B", "Order.Z"] &&
+    (freezeVerifiedKids {state with candidate := some c}).children.map Prod.fst == ["Order.B", "Order.A", "Order.Z"])
+    "partial home order changed outside the candidate frontier"
 
 open LojitaCtx.Countermodel in
 private theorem closed32CannotRefute (m : SoundStringModel) :
@@ -399,6 +494,14 @@ private theorem boundedCharCannotRefute (m : SoundCharModel) (n : Nat) :
   apply refute n
   rw [m.natToCharLaw, m.charEqLaw]
   simp
+
+private def phantomModel : IO LeanMod := object "PhantomModel" "open LojitaCtx.Countermodel
+def claim (a : CharAlg) := ∀ x, a.charEq x x = true
+def bundle : CountermodelBundle :=
+  .charCountermodel claim phantomCharModel (by
+    intro k h
+    have bad := h none
+    contradiction)" ["LojitaCtx.Countermodel"]
 
 private def countermodels : IO Unit := do
   let t0 ← object "Gen.T0.Native" "def chars := String.toList\ndef pack := String.ofList\ndef charEq (c d : Char) := c == d"
@@ -418,13 +521,7 @@ def bundle : CountermodelBundle :=
     have bad := h (' ' :: List.replicate k 'a')
     change fromListSwapped ' ' 'a' k (' ' :: List.replicate k 'a') = _ at bad
     simp [fromListSwapped, swapChar] at bad)" lib
-  let chars ← object "PhantomModel" "open LojitaCtx.Countermodel
-def claim (a : CharAlg) := ∀ x, a.charEq x x = true
-def bundle : CountermodelBundle :=
-  .charCountermodel claim phantomCharModel (by
-    intro k h
-    have bad := h none
-    contradiction)" lib
+  let chars ← phantomModel
   let imports := ["CountermodelCheck",toString spec.modName]
   let refute ← object "StringEvidence" "theorem witness : CountermodelCheck.VerifiedClaim := Gen.T2.Native.roundLaw" imports
   let charRefute ← object "CharEvidence" "theorem witness : CountermodelCheck.VerifiedClaim := Gen.T2.Native.charLaw" imports
@@ -463,6 +560,202 @@ def bundle : CountermodelBundle := .charCountermodel claim phantomCharModel (by
     t (leaf (empty spec.modName))
   ensure (v matches .countermodel ..) "countermodel NodeServer verdict"
   IO.println s!"4  Native interface-cut countermodels in {sm} ms (String) and {cm} ms (Char), bounded conservation and exact rejection codes"
+
+private inductive RepairOutcome where
+  | repair | refuteParent | proposerError
+  deriving BEq
+
+-- Hold a grandchild in its proposer until its owner cancels it. Its sibling has
+-- already sealed, so the replacement branch must be able to reuse that sibling.
+private def replanCancellationAndSalvage : IO Unit := do
+  let rootName := "Gen.Harvest.Root"
+  let branchName := rootName ++ ".Branch"
+  let branch ← object branchName "axiom old : Nat"
+  let revised ← object branchName "axiom next : Nat"
+  let kept ← object (branchName ++ ".Keep") "axiom val : Nat"
+  let blocked ← object (branchName ++ ".Waiting") "axiom val : Nat"
+  let extra ← object (rootName ++ ".Extra") "axiom val : Nat"
+  let flaw ← object (rootName ++ ".Bad") "def zero : Nat := 0\naxiom bad : zero = 1"
+  let childProof ← object "HarvestEvidence" s!"theorem witness : False := Nat.zero_ne_one {flaw.modName}.bad"
+    [toString flaw.modName]
+  let parentProof ← object "HarvestRootEvidence" s!"theorem witness : False := {rootName}.impossible" [rootName]
+  let oldBranch ← object branchName s!"def old := {kept.modName}.val + {blocked.modName}.val"
+    [toString kept.modName, toString blocked.modName]
+  let newBranch ← object branchName s!"def next := {kept.modName}.val" [toString kept.modName]
+  let leafPlan := fun (m : LeanMod) => planText <$> object (toString m.modName) "def val : Nat := 9"
+  let keptPlan ← leafPlan kept
+  let extraPlan ← leafPlan extra
+  let repaired ← object rootName s!"def val := {branchName}.next + {extra.modName}.val" [branchName, toString extra.modName]
+  let moves : List Proarrow := [⟨.ext flaw.modName, .bot⟩, ⟨.ext branch.units.head!.uname, .ext revised.units.head!.uname⟩,
+    ⟨.unit repaired.units.head!.uname, .unit repaired.units.head!.uname⟩]
+  for outcome in [RepairOutcome.repair, .refuteParent, .proposerError] do
+    let refuteParent := outcome == .refuteParent
+    let root ← object rootName ("axiom val : Nat" ++ (if refuteParent then "\naxiom impossible : False" else ""))
+    let children := [flaw, branch, extra]
+    let main ← object rootName (s!"def val := {branchName}.old + {extra.modName}.val" ++
+      (if refuteParent then s!"\ntheorem impossible : False := Nat.zero_ne_one {flaw.modName}.bad" else ""))
+      (children.map (toString ·.modName))
+    let events ← Std.Mutex.new #[]
+    let keptReady ← IO.Promise.new
+    let extraReady ← IO.Promise.new
+    let waiting ← IO.Promise.new
+    let cancelled ← IO.Promise.new
+    let ai : Proposer := fun req => do
+      let n := req.task.delta.child
+      mark events n "start"
+      if let some cert := req.diagnostic then
+        ensure (n == root.modName && !(← eventLog events).any (·.2 == "abort")) s!"premature abort {cert}"
+        if cert.kind == "child_contradiction" then
+          if refuteParent then return refuteText "contradiction" parentProof
+          if outcome == .proposerError then throw (IO.userError "replan proposer failed")
+          -- A rejected repair must leave exactly the same live channels in place.
+          return planText repaired [revised] (⟨.unit (q "missing"), .bot⟩ :: moves)
+        ensure (!refuteParent && cert.kind == "unknownSrc") s!"unexpected repair error {cert}"
+        return planText repaired [revised] moves
+      if n == root.modName then return planText main children
+      if n == extra.modName then return extraPlan
+      if n == flaw.modName then
+        IO.wait keptReady.result!
+        IO.wait extraReady.result!
+        IO.wait waiting.result!
+        return refuteText "contradiction" childProof
+      if n == branch.modName then
+        return if req.task.delta.newIface == revised then planText newBranch [kept] else planText oldBranch [kept, blocked]
+      if n == kept.modName then return keptPlan
+      if n == blocked.modName then
+        waiting.resolve ()
+        IO.wait cancelled.result!
+        throw (IO.userError "proposer terminated by owner")
+      throw (IO.userError s!"unexpected harvest child {n}")
+    let accept : AcceptNode := fun t _ => do
+      if t.delta.child == kept.modName then keptReady.resolve ()
+      if t.delta.child == extra.modName then extraReady.resolve ()
+    let cancel := fun n => do
+      mark events (q n) "abort"
+      if n == toString blocked.modName then cancelled.resolve ()
+    let result ← (drive ai (task root) (leaf (empty root.modName)) accept cancel).toBaseIO
+    let log ← eventLog events
+    ensure (log.count (kept.modName, "start") == 1 && log.count (extra.modName, "start") == 1 &&
+      log.count (branch.modName, "abort") == 1 && log.count (blocked.modName, "abort") == 1)
+      "invalidated branch leaked, restarted a sealed child, or missed cancellation"
+    if outcome == .proposerError then
+      let .error (.userError "replan proposer failed") := result | throw (IO.userError "lost replan failure")
+      continue
+    let (v, h) ← EIO.ofExcept result
+    if refuteParent then
+      ensure (v == .contradiction parentProof && h.children.map Prod.fst == [toString extra.modName])
+        "parent's own refutation lost its verdict or retained an unsealed branch"
+    else
+      let some b := lookupChild h revised.modName | throw (IO.userError "missing replacement branch")
+      ensure (v == .ok && log.count (branch.modName, "start") == 2 &&
+        b.children.map Prod.fst == [toString kept.modName]) "aborted branch did not yield its verified grandchild"
+      verifyClosure [] h
+
+private def reverseDialecticaLocalAbsorptionAndInFlightSurvival : IO Unit := do
+  let top ← object "Gen.RD.Top" "axiom val : Nat"
+  let mid ← object "Gen.RD.Top.Mid" "axiom val : Nat\nexample : val = val := rfl"
+  let uncle ← object "Gen.RD.Top.Uncle" "axiom val : Nat"
+  let slow ← object "Gen.RD.Top.Mid.SlowInnocent" "axiom val : Nat"
+  let badName := "Gen.RD.Top.Mid.Bad"
+  let good ← object badName "axiom good : Nat"
+  let support ← object "Gen.RD.Support" "def initial : Nat := 0\ndef same (c : Char) := c == c"
+  let model ← phantomModel
+  let topImpl ← object (toString top.modName) "def val := Gen.RD.Top.Mid.val + Gen.RD.Top.Uncle.val"
+    [toString mid.modName, toString uncle.modName]
+  let glue := fun (name : String) => object (toString mid.modName)
+    s!"def val := {slow.modName}.val + {badName}.{name}" [badName, toString slow.modName]
+  let before ← glue "unused"
+  let after ← glue "good"
+  let topPlan := planText topImpl [mid, uncle]
+  let answer := fun (m : LeanMod) => object (toString m.modName) "def val : Nat := 42"
+  let slowPlan := planText (← answer slow)
+  let unclePlan := planText (← answer uncle)
+  let goodPlan := planText (← object badName "def good : Nat := 7")
+  for isModel in [false, true] do
+    let helper := if isModel then "sameChar" else "zero"
+    let body := if isModel then "def sameChar := same\naxiom bad : ∀ c, sameChar c = true"
+      else "def zero : Nat := initial\naxiom bad : zero = 1"
+    let bad ← object badName ("open Gen.RD.Support\n" ++ body ++ "\naxiom unused : Nat") [toString support.modName]
+    let target := if isModel then "CountermodelCheck.VerifiedClaim" else "False"
+    let term := if isModel then s!"{badName}.bad" else s!"Nat.zero_ne_one {badName}.bad"
+    let proof ← object "RDEvidence" s!"private theorem step : {target} := {term}
+theorem refuted : {target} := step
+theorem irrelevant : {badName}.unused = {badName}.unused := rfl"
+      (badName :: (if isModel then ["CountermodelCheck"] else []))
+    let why := "The interface assumes the missing character equality law."
+    let evidence := if isModel then
+        s!"(submission (kind countermodel) (why \"{why}\") (model @m) (refute @r))\n```lean m\n{renderLeanMod model}\n```\n```lean r\n{renderLeanMod proof}\n```"
+      else refuteText "contradiction" proof
+    let kind := if isModel then "child_countermodel" else "child_contradiction"
+    let law := q (badName ++ ".bad")
+    let used := [law, q (badName ++ "." ++ helper)].mergeSort (fun x y => x.toLeanName.lt y.toLeanName)
+    let snap ← if isModel then checkCountermodel [support] bad model proof else checkRefutation [support] bad proof
+    let targets := if isModel then [`CountermodelCheck.VerifiedClaim] else [``False]
+    ensure (extractCulpritAssumptions bad {snap with owners := snap.owners.erase law.toLeanName} targets == used)
+      "transitive provenance lost a direct axiom or included an unrelated theorem"
+    let moves : List Proarrow := [⟨Obj.ext law, .ext good.units.head!.uname⟩,
+      ⟨.ext (q (badName ++ ".unused")), .ext good.units.head!.uname⟩,
+      ⟨.unit before.units.head!.uname, .unit after.units.head!.uname⟩]
+    let firstPlan := planText before [bad, slow]
+    -- The unchanged SlowInnocent contract comes from the last accepted snapshot.
+    let repair := planText after [good] moves
+    let privateNote := "private child exploration"
+    let badSeed := Frozen.frozen (empty bad.modName) [(.flags, [privateNote])] (empty bad.modName) []
+    let midSeed := Frozen.frozen (empty mid.modName) [] mid [(badName, badSeed)]
+    let root := Frozen.frozen (empty top.modName) [] top [(toString mid.modName, midSeed)]
+    let events ← Std.Mutex.new #[]
+    let badStarted ← IO.Promise.new
+    let ai : Proposer := fun req => do
+      let n := req.task.delta.child
+      mark events n "start"
+      if let some cert := req.diagnostic then
+        ensure (n == mid.modName && cert.kind == kind) s!"refutation escaped its parent: {cert}"
+        let witness := s!"{badName} ({String.intercalate ", " (used.map toString)})"
+        ensure (cert.witness == witness && cert.cause.contains (renderLeanMod proof) &&
+          (!isModel || (cert.cause.contains why && cert.cause.contains (renderLeanMod model)))) s!"wrong certificate: {cert}"
+        ensure (req.old == withChildIfaces before [bad, slow] && req.home.any (fun h =>
+          (lookupChild h bad.modName).any (·.spec == bad))) "replan lost the current code or exact old stub"
+        let notes := req.memory.filter fun (o, _) => o matches .ext _
+        ensure (notes.map Prod.fst == used.map Obj.ext && notes.all (fun (_, xs) =>
+          xs.length == 1 && xs.head!.contains kind) && !(reprStr req.memory).contains privateNote)
+          "parent memory lost the projection or disclosed child exploration"
+        let log ← eventLog events
+        for sib in [slow, uncle] do
+          ensure (log.contains (sib.modName, "sleep") && !log.contains (sib.modName, "awake"))
+            s!"{sib.modName} was not in flight at local replan"
+        return repair
+      if n == top.modName then return topPlan
+      if n == mid.modName then return firstPlan
+      if n == bad.modName then
+        if req.task.delta.newIface == good then return goodPlan
+        ensure (req.memory == badSeed.memory) "refuting worker lost its private seed"
+        badStarted.resolve ()
+        IO.sleep 10
+        return evidence
+      if n == slow.modName || n == uncle.modName then
+        discard <| IO.wait badStarted.result?
+        mark events n "sleep"
+        IO.sleep 180
+        mark events n "awake"
+        return if n == slow.modName then slowPlan else unclePlan
+      throw (IO.userError s!"unexpected RD child {n}")
+    let start ← IO.monoMsNow
+    let (v, h) ← drive ai {(task top) with baseModules := [support], allowedAncestors := some [support.modName]}
+      root (cancelOwner := fun n => mark events (q n) "abort")
+    let ms := (← IO.monoMsNow) - start
+    ensure (v == .ok) s!"{kind} propagated to root"
+    verifyClosure [support] h
+    let log ← eventLog events
+    for (m, count) in [(top, 1), (uncle, 1), (mid, 2), (bad, 2), (slow, 1)] do
+      ensure (log.count (m.modName, "start") == count) s!"{kind}: wrong turn count for {m.modName}"
+    ensure (!(log.any (·.2 == "abort"))) "reconciliation cancelled a surviving slot"
+    let some sealedMid := lookupChild h mid.modName | throw (IO.userError "missing repaired parent")
+    ensure ((lookupChild sealedMid bad.modName).any (·.spec == good) &&
+      sealedMid.code == withTests (withChildIfaces after [good, slow]) mid &&
+      (memoryIndex sealedMid.memory)[Obj.ext good.units.head!.uname]?.any (·.any (·.contains kind)))
+      "repair did not seal the revised glue, test or inherited refutation"
+    IO.println s!"B  {kind} absorbed in Mid, one SlowInnocent turn and one Uncle turn ({ms} ms)"
+  replanCancellationAndSalvage
 
 private def filesUnder (dir : System.FilePath) : IO (List (String × Hash)) := do
   let mut todo := [dir]
@@ -522,6 +815,9 @@ def run : IO Unit := IO.FS.withTempDir fun dir => do
     obstruction dir
     countermodels
     preview dir
+    concurrentTreeSpeedupAndDeterminism dir
+    reverseDialecticaLocalAbsorptionAndInFlightSurvival
+    orderIndependentObstructionHarvest dir
   finally close
 
 end Test.S3Harness

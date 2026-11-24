@@ -22,6 +22,8 @@ mutual
     | moveChildLifts (bases uppers : List QName) (subs : List LiftSpec)
 end
 
+deriving instance BEq for LiftSpec, ChildLift
+
 def mkChildLift (base : QName) (targets : List QName) (subs : List LiftSpec := []) : ChildLift :=
   .moveChildLifts [base] targets subs
 
@@ -94,12 +96,14 @@ def checkLift (baseImpl upperCand upperSpec : LeanMod) (upperSnap : Snapshot) (l
       errors := errors.push (.invalidSquare e.squareUnit)
   return errors.toList
 
-/-- The dependency walk starts at public proofs of False. Auxiliary definitions,
-    including private lemmas and generated matchers, retain kernel ownership. -/
-def extractCulpritBaseUnits (bases : List LeanMod) (refuteSnap : Snapshot) : List QName := Id.run do
+private def usedRefutationUnits (units : List SynUnit) (refuteSnap : Snapshot) (targets : List Name) :
+    List QName := Id.run do
+  let direct := units.foldl (init := ({} : NameMap QName)) fun names u =>
+    u.definedNames.foldl (init := names) fun acc q => acc.insert q.toLeanName u.uname
   let mut todo := (refuteSnap.mod.units.flatMap (·.definedNames)).map QName.toLeanName |>.filter fun n =>
-    !isPrivateName n && (refuteSnap.env.find? n).any fun
-      | .thmInfo t => Lean.Kernel.isDefEqGuarded refuteSnap.env {} t.type (mkConst ``False)
+    !isPrivateName n && refuteSnap.constants.contains n && (refuteSnap.env.find? n).any fun
+      | .thmInfo t => targets.any fun target => refuteSnap.env.contains target &&
+          Lean.Kernel.isDefEqGuarded refuteSnap.env {} t.type (mkConst target)
       | _ => false
   let mut seen : NameSet := {}
   let mut hit : Std.HashSet QName := {}
@@ -107,12 +111,22 @@ def extractCulpritBaseUnits (bases : List LeanMod) (refuteSnap : Snapshot) : Lis
     todo := rest
     if seen.contains n then continue
     seen := seen.insert n
-    if let some owner := refuteSnap.owners.find? n then
-      hit := hit.insert owner
-      if let some info := refuteSnap.env.find? n then
-        todo := info.getUsedConstantsAsSet.foldl (fun acc q => q :: acc) todo
-  let culprits := distinct ((bases.flatMap (·.units)).filterMap fun u => if hit.contains u.uname then some u.uname else none)
+    if let some owner := refuteSnap.owners.find? n then hit := hit.insert owner
+    if let some info := refuteSnap.env.find? n then
+      if info matches .axiomInfo _ then
+        if let some owner := direct.find? (privateToUserName n) then hit := hit.insert owner
+      todo := info.getUsedConstantsAsSet.foldl (fun acc q => q :: acc) todo
+  let culprits := distinct ((units.map (·.uname)).filter hit.contains)
   return culprits.mergeSort (fun a b => a.toLeanName.lt b.toLeanName)
+
+/-- Follow public False proofs through private lemmas and kernel auxiliaries to their base units. -/
+def extractCulpritBaseUnits (bases : List LeanMod) (refuteSnap : Snapshot) : List QName :=
+  usedRefutationUnits (bases.flatMap (·.units)) refuteSnap [``False]
+
+/-- Project the checked witness back onto exactly the child interface units it used. -/
+def extractCulpritAssumptions (specMod : LeanMod) (refuteSnap : Snapshot) (targets : List Name := [``False]) :
+    List QName :=
+  usedRefutationUnits specMod.units refuteSnap targets
 
 /-- Re-parse at the boundary even when the submitted carrier was decoded from a store. -/
 def witnessBoundary (bases : List LeanMod) (spec witness : LeanMod) : IO Unit := do

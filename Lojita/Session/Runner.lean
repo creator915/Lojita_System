@@ -41,17 +41,9 @@ def runNode (cfg : SessionConfig) (dir : FilePath) (task : NodeTask) (home : Fro
     withNodeEnvIO propose (fun env => do
       let v := thawHome home
       let start ← Lojita.Ownership.evalProcIO env (nodeAgent v.1) v.2
-      let srv ← start task
-      let mut count := 0
-      repeat
-        if cfg.maxNodePolls.any (count ≥ ·) then
-          discard srv.stopIO
-          fail s!"node poll limit {task.delta.child}"
-        count := count + 1
-        if let some verdict ← srv.callIO () then
-          let stopped ← srv.stopIO
-          return (verdict,freezeHome stopped.1 stopped.2)
-      fail "node stopped without a verdict") accept
+      let (some verdict, stopped) ← Lojita.Ownership.WorkerIO.awaitIO (← start task)
+        | fail "node stopped without a verdict"
+      return (verdict, freezeHome stopped.1 stopped.2)) accept
   finally
     for owner in ← active.get do cfg.backend.retire owner
 
