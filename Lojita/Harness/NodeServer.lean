@@ -58,9 +58,15 @@ def freezeVerifiedKids (s : NodeState) : Frozen :=
 private def harvest (s : NodeState) (h : Frozen) : NodeState :=
   {s with salvaged := h.children.foldl (fun m (n, kid) => m.insert n kid) s.salvaged}
 
+private def normalizeHomeSpec (spec : LeanMod) (h : Frozen) : Frozen :=
+  if h.code.modName == spec.modName then
+    if h.spec == spec then h else .frozen h.code h.memory spec h.children
+  else if spec == specAt spec.modName h then h
+  else .frozen h.code h.memory spec h.children
+
 private def normalizeChildSpec (s : NodeState) (n : String) (h : Frozen) : Frozen :=
   match s.candidate.bind (fun c => c.specs.find? (fun spec => toString spec.modName == n)) with
-  | some spec => .frozen h.code h.memory spec h.children
+  | some spec => normalizeHomeSpec spec h
   | none => h
 
 private def survivingSlots (s : NodeState) (c : Candidate) : IO (Std.HashSet String) := do
@@ -120,7 +126,7 @@ def reconcileChildren (s : NodeState) (c : Candidate) : IO PlanResult := do
     interfaces := interfaces.push (n, blank)
     if s.inFlight.contains n then continue
     if let some h := kept[q]? then
-      verified := verified.insert n h
+      verified := verified.insert n (normalizeHomeSpec spec h)
       continue
     let sub := horizontal[q]?.getD []
     let lifts := c.childLifts[q]?.getD #[]
@@ -128,12 +134,14 @@ def reconcileChildren (s : NodeState) (c : Candidate) : IO PlanResult := do
     let existing := recent ++ saved[n]?.toList
     if sub.isEmpty then
       if let some h ← existing.findM? (fun h => reusableHome s.task c.deps spec h lifts) then
-        verified := verified.insert n h
+        verified := verified.insert n (normalizeHomeSpec spec h)
         continue
     let seed := existing.headD blank
     let pinned := if recent.isEmpty && saved.contains n then
-      (s.task.otherChildHistory.bind (fun (slots,ms) => if slots.contains n then some ms else none)) <|>
-        s.task.oldBaseModules
+      let hist :=
+        (s.task.otherChildHistory.bind (fun (slots,ms) => if slots.contains n then some ms else none)) <|>
+          s.task.oldBaseModules
+      hist.filter fun ms => !sameModules ms s.task.baseModules
       else none
     let child := {s.task with
       delta := ⟨q, seed.spec.units, spec⟩, baseModules := c.deps, transports := sub,

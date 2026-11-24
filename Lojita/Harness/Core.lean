@@ -277,18 +277,61 @@ private def gatePipeline (t : NodeTask) (old : Frozen) (p : Plan) (subs : List L
     let historicalBases := if t.currentOnLiveBases then none else t.oldBaseModules
     let histDeps := (historicalBases.getD deps).filter fun m => !stubNames.contains m.modName
     let histNames := Std.HashSet.ofList (histDeps.map (·.modName))
-    let oldStubs := old.code.imports.filterMap fun i => if i.assumes.isEmpty then none else
-      let compat := saved[i.imod]?.filter fun s =>
-        s.units == i.assumes &&
-          s.imports.all fun j => j.imod.toLeanName.getRoot == `LojitaCtx || histNames.contains j.imod
-      let fallbackMods := distinct (
-        (old.code.imports.filterMap fun j =>
-          if j.imod.toLeanName.getRoot == `LojitaCtx &&
-              i.assumes.any (fun u => u.synRefs.any (under j.imod ·)) then some j.imod else none) ++
-        (histDeps.filterMap fun m =>
-          if i.assumes.any (fun u => u.synRefs.any (under m.modName ·)) then some m.modName else none))
-      some (compat.getD ⟨i.imod, fallbackMods.map (⟨·, []⟩), [], i.assumes⟩)
-    match ← (checkConditionalGlue histDeps oldStubs old.code).toBaseIO with
+    let mut oldStubs := #[]
+    let openTokens := fun (raw : String) =>
+      (raw.map fun c => if c.isWhitespace || c == '(' || c == ')' then ' ' else c).splitOn " "
+    let opensCover := fun (opens : List String) (ns : QName) =>
+      opens.any fun raw => (openTokens raw).contains (toString ns)
+    let isHistAllowed := fun (q : QName) => q.toLeanName.getRoot == `LojitaCtx || histNames.contains q
+    for i in old.code.imports do
+      if i.assumes.isEmpty then continue
+      let (ctxFromRefs, ctxNsFromRefs) ← contextHintsForRefs (i.assumes.flatMap (·.synRefs))
+      let histRefMods := histDeps.filterMap fun m =>
+        if i.assumes.any (fun u => u.synRefs.any (under m.modName ·)) then some m.modName else none
+      let needsOpen := fun (ns : QName) =>
+        i.assumes.any fun u =>
+          let refSet := Std.HashSet.ofList u.synRefs
+          u.synRefs.any fun r => under ns r && r.segments.length > ns.segments.length &&
+            refSet.contains ⟨r.segments.drop ns.segments.length⟩
+      let neededNs := distinct (ctxNsFromRefs.filter needsOpen ++ histRefMods.filter needsOpen)
+      let mut chosen : Option LeanMod := none
+      if let some s := saved[i.imod]? then
+        if s.imports.all (fun j => isHistAllowed j.imod) then
+          if s.units == i.assumes then
+            chosen := some s
+          else if neededNs.all (opensCover s.opens) &&
+              histRefMods.all (fun m => s.imports.any (·.imod == m)) &&
+              (ctxFromRefs.isEmpty || s.imports.any (·.imod.toLeanName.getRoot == `LojitaCtx)) then
+            let candidateStub : LeanMod := ⟨i.imod, s.imports, s.opens, i.assumes⟩
+            if (← (checkConditionalGlue histDeps [] candidateStub true).toBaseIO).isOk then
+              chosen := some candidateStub
+      if let some stub := chosen then
+        oldStubs := oldStubs.push stub
+        continue
+      let savedMods := (saved[i.imod]?.map (·.imports) |>.getD []).filterMap fun j =>
+        if isHistAllowed j.imod then some j.imod else none
+      let oldCtxMods := old.code.imports.filterMap fun j =>
+        if j.imod.toLeanName.getRoot == `LojitaCtx &&
+            (saved[i.imod]?.isNone || i.assumes.any (fun u => u.synRefs.any (under j.imod ·))) then
+          some j.imod
+        else none
+      let fallbackImports := (distinct (savedMods ++ ctxFromRefs ++ oldCtxMods ++ histRefMods)).map (⟨·, []⟩)
+      let carriedOpens := match saved[i.imod]? with
+        | some s => opensAfterRemoval s (s.imports.filterMap fun j => if isHistAllowed j.imod then none else some j.imod)
+        | none => opensAfterRemoval old.code (old.code.imports.filterMap fun j => if isHistAllowed j.imod then none else some j.imod)
+      let missingNs := neededNs.filter (!opensCover carriedOpens ·)
+      let missingOpens := if missingNs.isEmpty then [] else
+        ["open " ++ String.intercalate " " (missingNs.map toString)]
+      let openCandidates := (if missingOpens.isEmpty then [carriedOpens]
+        else [distinct (carriedOpens ++ missingOpens), missingOpens, carriedOpens]).filter (!·.isEmpty)
+      let mut fallbackStub : LeanMod := ⟨i.imod, fallbackImports, [], i.assumes⟩
+      for opens in distinct openCandidates do
+        let tryStub : LeanMod := ⟨i.imod, fallbackImports, opens, i.assumes⟩
+        if (← (checkConditionalGlue histDeps [] tryStub true).toBaseIO).isOk then
+          fallbackStub := tryStub
+          break
+      oldStubs := oldStubs.push fallbackStub
+    match ← (checkConditionalGlue histDeps oldStubs.toList old.code).toBaseIO with
     | .ok oldSnap =>
       checkFrontier (validate old.code p cand (some oldSnap) (some snap))
     | .error err =>

@@ -88,6 +88,15 @@ def mergeModules (mods : List LeanMod) : Except String (List LeanMod) := do
       out := out.push m
   return out.toList
 
+def sameModules (a b : List LeanMod) : Bool :=
+  if a == b then true
+  else
+    let idxA := Std.HashMap.ofList (a.map fun m => (m.modName, m))
+    let idxB := Std.HashMap.ofList (b.map fun m => (m.modName, m))
+    idxA.size == idxB.size &&
+      a.all (fun m => idxB[m.modName]? == some m) &&
+      b.all (fun m => idxA[m.modName]? == some m)
+
 def exported (f : Frozen) : List LeanMod :=
   let mods := (exportNode f #[]).toList
   -- Preserve conflicts for the linker's diagnostic, coalesce shared originals.

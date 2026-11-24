@@ -376,7 +376,8 @@ structure InitialHome where
   oldBaseModules : Option (List LeanMod)
   otherChildHistory : Option (List String × List LeanMod)
 
-def initialHomeWithBases (ws : FilePath) (n : String) (spec : LeanMod) : IO InitialHome := do
+def initialHomeWithBases (ws : FilePath) (n : String) (spec : LeanMod)
+    (liveBases : Option (List LeanMod) := none) : IO InitialHome := do
   checkTreeName n
   let complete ← savedTree ws .trees n
   let kept ← savedTree ws .partial n
@@ -386,16 +387,29 @@ def initialHomeWithBases (ws : FilePath) (n : String) (spec : LeanMod) : IO Init
   unless seed.code.modName == spec.modName do fail "in-place drive changed root namespace"
   let slots := Std.HashSet.ofList (seed.children.map Prod.fst)
   let other := complete.toList.flatMap (fun (h,_) => h.children.filter (!slots.contains ·.1))
+  let diffLive := fun (ms : List LeanMod) => match liveBases with
+    | some live => !sameModules ms live
+    | none => true
+  let resolvePair := fun (rootBases childBases : List LeanMod) (childSlots : List String) =>
+    let pinned := if diffLive rootBases then some rootBases else none
+    let otherHistory :=
+      if childSlots.isEmpty then none
+      else if pinned.isSome then
+        if sameModules rootBases childBases then none else some (childSlots, childBases)
+      else
+        if diffLive childBases then some (childSlots, childBases) else none
+    (pinned, otherHistory)
   let (pinned, otherHistory) := match kept, complete with
     | some (kh, kms), some (ch, cms) =>
       if kh.code == ch.code then
         -- Partial commits retain the previously sealed root code (`s.original.code`),
         -- which was verified against `complete`'s vertical parents (`cms`), while
         -- `kh.children` were verified during the partial drive against `kms`.
-        (some cms, if kh.children.isEmpty || cms == kms then none else some (kh.children.map Prod.fst, kms))
+        resolvePair cms kms (kh.children.map Prod.fst)
       else
-        (some kms, if other.isEmpty || kms == cms then none else some (other.map Prod.fst, cms))
-    | _, _ => (selected.map Prod.snd, none)
+        resolvePair kms cms (other.map Prod.fst)
+    | _, _ =>
+      (selected.bind (fun (_, ms) => if diffLive ms then some ms else none), none)
   return ⟨.frozen seed.code seed.memory seed.spec (seed.children ++ other), pinned, otherHistory⟩
 
 def initialHome (ws : FilePath) (n : String) (spec : LeanMod) : IO Frozen :=

@@ -1496,6 +1496,162 @@ private def engineRemediationTests : IO Unit := do
       verifyClosure [fixedBase, fixedRoot] sealed2
   IO.println "D  Post-seal accept/cancel resilience, parallel abort, eqIface normalization, horizontal survival, and liftObstruction salvage passed"
 
+open Lojita.Session in
+private def eqIfaceReuseAndOldStubsRegression : IO Unit := do
+  -- Reproduces the live Gen.T2.Gron / Gen.T2.Gron.Input 3-drive bug:
+  -- Child imports LojitaCtx.World + opens LojitaCtx LojitaCtx.Terminal LojitaCtx.World + uses Bytes;
+  -- Parent imports only LojitaCtx.Cli (not LojitaCtx.World);
+  -- Drive #2 alpha-renames Input's constructor binders (reused in 0 turns);
+  -- Drive #3 re-drives both with unchanged T1 (oldBaseModules := none) and tweaked T1 (oldBaseModules := some ...).
+  let t1Name := "Gen.T1.GronBase"
+  let t2Name := "Gen.T2.Gron"
+  let inputName := t2Name ++ ".Input"
+  let t1Spec ← object t1Name "axiom tag : Nat"
+  let t1V1 ← object t1Name "def tag : Nat := 1"
+  let t1V2 ← object t1Name "def tag : Nat := 2"
+  let t2Spec ← object t2Name "open LojitaCtx.Cli\naxiom run : Nat" ["LojitaCtx.Cli"]
+  let inputSpec1 ← object inputName
+    "open LojitaCtx LojitaCtx.Terminal LojitaCtx.World\ninductive Source where\n  | tls (sni : String) (skipVerify : Bool) (connect : Bytes)\naxiom handle : Source → Nat"
+    ["LojitaCtx.World"]
+  let inputSpec2 ← object inputName
+    "open LojitaCtx LojitaCtx.Terminal LojitaCtx.World\ninductive Source where\n  | tls (sni : String) (insecure : Bool) (tunnel : Bytes)\naxiom handle : Source → Nat"
+    ["LojitaCtx.World"]
+  ensure (inputSpec1 != inputSpec2) "expected alpha-renamed specs to be textually distinct"
+  let inputImpl ← object inputName
+    "open LojitaCtx LojitaCtx.Terminal LojitaCtx.World\ninductive Source where\n  | tls (sni : String) (skipVerify : Bool) (connect : Bytes)\ndef handle : Source → Nat\n  | .tls _ _ bs => bs.length"
+    ["LojitaCtx.World"]
+  let mkParent := fun (extra : Nat) => object t2Name
+    s!"open LojitaCtx.Cli\ndef run : Nat := {inputName}.handle ({inputName}.Source.tls \"host\" true []) + {t1Name}.tag + {extra}"
+    ["LojitaCtx.Cli", t1Name, inputName]
+  let parent1 ← mkParent 0
+  let parent2 ← mkParent 1
+  let parent3 ← mkParent 2
+  let parent4 ← mkParent 3
+  let liftSrc := (encodeLiftSpec (.liftSpecTree (q t1Name) (q t2Name) [] [])).canonical
+  let runMove : List Proarrow := [⟨.unit (q (t2Name ++ ".run")), .unit (q (t2Name ++ ".run"))⟩]
+
+  IO.FS.withTempDir fun ws => do
+    initWorkspace ws
+    -- Seal T1 v1
+    discard <| publishTree ws "T1" "t1 v1" [] [] .ok (Frozen.frozen t1V1 [] t1Spec [])
+    let t1Closure1 ← loadCurrentClosure ws ["T1"]
+
+    -- T2 Drive #1: seals Gron and Gron.Input with spec v1 (skipVerify / connect).
+    let prep1 ← prepareSpec ws "T2" (renderLeanMod t2Spec) ["T1"] (some liftSrc) none
+    ensure (prep1.task.oldBaseModules.isNone && prep1.task.otherChildHistory.isNone)
+      "fresh T2 should have no historical bases"
+    let (v1, sealed1) ← drive (fun req => do
+      if let some cert := req.diagnostic then throw (IO.userError (toString cert))
+      if req.task.delta.child == q t2Name then return planText parent1 [inputSpec1]
+      if req.task.delta.child == q inputName then return planText inputImpl
+      throw (IO.userError s!"unexpected drive #1 node {req.task.delta.child}")) prep1.task prep1.home
+    ensure (v1 == .ok) "T2 drive #1 did not seal"
+    verifyClosure t1Closure1.modules sealed1
+    discard <| publishTree ws "T2" "t2 drive 1" ["T1"] t1Closure1.directTips .ok sealed1
+
+    -- T2 Drive #2 (T1 unchanged): alpha-renamed Input spec v2 (insecure / tunnel) reuses Input in 0 turns
+    -- and normalizes h.spec to inputSpec2; oldBaseModules is none because T1 did not change.
+    let prep2 ← prepareSpec ws "T2" (renderLeanMod t2Spec) ["T1"] (some liftSrc) none
+    ensure (prep2.task.oldBaseModules.isNone && prep2.task.otherChildHistory.isNone)
+      "Bug A: unchanged T1 populated oldBaseModules or otherChildHistory on T2 drive #2"
+    let d2Events ← Std.Mutex.new #[]
+    let (v2, sealed2) ← drive (fun req => do
+      if let some cert := req.diagnostic then throw (IO.userError (toString cert))
+      mark d2Events req.task.delta.child "start"
+      if req.task.delta.child == q t2Name then return planText parent2 [inputSpec2] runMove
+      throw (IO.userError s!"Input should reuse in 0 turns on drive #2: {req.task.delta.child}")) prep2.task prep2.home
+    let d2Log ← eventLog d2Events
+    ensure (v2 == .ok && d2Log.count (q inputName, "start") == 0)
+      s!"T2 drive #2 did not reuse Input in 0 turns: {repr d2Log}"
+    ensure ((lookupChild sealed2 (q inputName)).any (·.spec == inputSpec2))
+      "Bug C: reusableHome did not normalize reused child's root spec to alpha-renamed inputSpec2"
+    verifyClosure t1Closure1.modules sealed2
+    discard <| publishTree ws "T2" "t2 drive 2" ["T1"] t1Closure1.directTips .ok sealed2
+
+    -- Also verify partial commit on unchanged T1 keeps oldBaseModules == none and otherChildHistory == none.
+    let dummyObs ← object "Gen.T2.DummyObs" "theorem t : True := trivial"
+    let partialSameBase := Frozen.frozen sealed2.code [] t2Spec [(inputName, (lookupChild sealed2 (q inputName)).get!)]
+    discard <| publishTree ws "T2" "partial unchanged base" ["T1"] t1Closure1.directTips
+      (.liftObstruction "partial" [q (t1Name ++ ".tag")] dummyObs) partialSameBase
+    let initUnchanged ← initialHomeWithBases ws "T2" t2Spec (some t1Closure1.modules)
+    ensure (initUnchanged.oldBaseModules.isNone && initUnchanged.otherChildHistory.isNone)
+      "Bug A: partial with identical vertical bases populated oldBaseModules or otherChildHistory"
+    -- Clear partial by re-publishing drive #2 sealed home before drive #3.
+    discard <| publishTree ws "T2" "t2 drive 2 restored" ["T1"] t1Closure1.directTips .ok sealed2
+
+    -- T2 Drive #3a (T1 still unchanged): oldBaseModules == none, Input reuses in 0 turns.
+    let prep3a ← prepareSpec ws "T2" (renderLeanMod t2Spec) ["T1"] (some liftSrc) none
+    ensure prep3a.task.oldBaseModules.isNone "Bug A: unchanged T1 populated oldBaseModules on T2 drive #3a"
+    let (v3a, sealed3a) ← drive (fun req => do
+      if let some cert := req.diagnostic then throw (IO.userError (toString cert))
+      if req.task.delta.child == q t2Name then return planText parent3 [inputSpec2] runMove
+      throw (IO.userError s!"Input should reuse in 0 turns on drive #3a: {req.task.delta.child}")) prep3a.task prep3a.home
+    ensure (v3a == .ok) "T2 drive #3a failed"
+    verifyClosure t1Closure1.modules sealed3a
+
+    -- T2 Drive #3b (T1 tweaked to v2): oldBaseModules == some [t1V1], elaborates cleanly and seals.
+    discard <| publishTree ws "T1" "t1 v2" [] [] .ok (Frozen.frozen t1V2 [] t1Spec [])
+    let t1Closure2 ← loadCurrentClosure ws ["T1"]
+    let prep3b ← prepareSpec ws "T2" (renderLeanMod t2Spec) ["T1"] (some liftSrc) none
+    ensure (prep3b.task.oldBaseModules.any (· == [t1V1]))
+      "Bug A: tweaked T1 did not pin historical T1 v1 in oldBaseModules"
+    let (v3b, sealed3b) ← drive (fun req => do
+      if let some cert := req.diagnostic then throw (IO.userError (toString cert))
+      if req.task.delta.child == q t2Name then return planText parent4 [inputSpec2] runMove
+      throw (IO.userError s!"Input should reuse in 0 turns on drive #3b: {req.task.delta.child}")) prep3b.task prep3b.home
+    ensure (v3b == .ok) "T2 drive #3b with pinned historical T1 v1 failed"
+    verifyClosure t1Closure2.modules sealed3b
+
+  -- Direct Bug B (oldStubs) tests simulating pre-fix poisoned homes where saved Input still has
+  -- spec v1 (skipVerify/connect) while old.code.imports has spec v2 (insecure/tunnel), plus
+  -- incompatible-import and missing-saved fallback paths.
+  let poisonedCode := withChildIfaces parent2 [inputSpec2]
+  let oldChildV1 := Frozen.frozen inputImpl [] inputSpec1 []
+  let poisonedHome := Frozen.frozen poisonedCode [] t2Spec [(inputName, oldChildV1)]
+  let plan3 : Plan := {why := "edit run", newMod := some parent3, moves := runMove}
+  let baseTask : NodeTask := {(task t2Spec) with baseModules := [t1V2]}
+  -- B1: candidateStub preserves s.imports + s.opens when s.units != i.assumes, both pinned and unpinned.
+  for pinned in [none, some [t1V1]] do
+    let rep ← planPreview {baseTask with oldBaseModules := pinned} poisonedHome plan3 [inputSpec2]
+    ensure rep.certificate.isNone
+      s!"Bug B (candidateStub, pinned={pinned.isSome}) failed historical elaboration: {repr rep}"
+  -- B2: Verify old.code actually elaborated semantically (Bytes resolved, not Sort ?u) by checking
+  -- that a syntactically-blind tactic dependent on `run` triggers frontier_incomplete.
+  let parentWithDep ← object t2Name
+    s!"open LojitaCtx.Cli\ndef run : Nat := {inputName}.handle ({inputName}.Source.tls \"host\" true []) + {t1Name}.tag\ntheorem dep : run = run := by first | exact rfl | trivial"
+    ["LojitaCtx.Cli", t1Name, inputName]
+  let blindCode := withChildIfaces parentWithDep [inputSpec2]
+  let blindCode := {blindCode with units := blindCode.units.map fun u => {u with synRefs := []}}
+  let blindHome := Frozen.frozen blindCode [] t2Spec [(inputName, oldChildV1)]
+  let parent3Changed ← object t2Name
+    s!"open LojitaCtx.Cli\ndef run : Bool := true" ["LojitaCtx.Cli"]
+  let badSpecBool ← object t2Name "open LojitaCtx.Cli\naxiom run : Bool" ["LojitaCtx.Cli"]
+  let dropInputPlan : Plan := {
+    why := "change run type", newMod := some parent3Changed
+    moves := [⟨.ext (q inputName), .bot⟩, ⟨.ext (q t1Name), .bot⟩, ⟨.unit (q (t2Name ++ ".run")), .unit (q (t2Name ++ ".run"))⟩]}
+  let depRep ← planPreview {(task badSpecBool) with baseModules := [t1V2], oldBaseModules := some [t1V1]}
+    blindHome dropInputPlan []
+  ensure (depRep.certificate.any (·.kind == "frontier_incomplete") &&
+      depRep.frontier == [(encObj (.unit (q (t2Name ++ ".dep")))).canonical])
+    s!"Bug B semantic frontier check failed (expected frontier_incomplete on dep): {repr depRep}"
+  -- B3: General fallback when saved child has an incompatible base import (not in histNames):
+  -- filters incompatible import + opensAfterRemoval + contextHintsForRefs, no Sort ?u / historical_elaboration_failed.
+  let compatBadBase ← object "Gen.T1.GoneBase" "def z : Nat := 0"
+  let incompatSpec ← object inputName
+    s!"open LojitaCtx LojitaCtx.Terminal LojitaCtx.World {compatBadBase.modName}\ninductive Source where\n  | tls (sni : String) (skipVerify : Bool) (connect : Bytes)\naxiom handle : Source → Nat\naxiom extra : Nat"
+    ["LojitaCtx.World", toString compatBadBase.modName]
+  let incompatHome := Frozen.frozen poisonedCode [] t2Spec [(inputName, Frozen.frozen inputImpl [] incompatSpec [])]
+  let repIncompat ← planPreview {baseTask with oldBaseModules := some [t1V1]} incompatHome plan3 [inputSpec2]
+  ensure repIncompat.certificate.isNone
+    s!"Bug B (incompatible saved import fallback) failed: {repr repIncompat}"
+  -- B4: General fallback when saved child is completely absent (old.children = []):
+  -- recovers LojitaCtx.Terminal/World imports and opens purely from i.assumes synRefs!
+  let noSavedHome := Frozen.frozen poisonedCode [] t2Spec []
+  let repNoSaved ← planPreview {baseTask with oldBaseModules := some [t1V1]} noSavedHome plan3 [inputSpec2]
+  ensure repNoSaved.certificate.isNone
+    s!"Bug B (missing saved child synRefs fallback) failed: {repr repNoSaved}"
+  IO.println "E  eqIface 0-turn spec normalization, unchanged-base oldBaseModules=none, and oldStubs LojitaCtx recovery passed"
+
 def run : IO Unit := IO.FS.withTempDir fun dir => do
   merkle dir
   preload
@@ -1515,6 +1671,7 @@ def run : IO Unit := IO.FS.withTempDir fun dir => do
     reverseDialecticaLocalAbsorptionAndInFlightSurvival
     orderIndependentObstructionHarvest dir
     engineRemediationTests
+    eqIfaceReuseAndOldStubsRegression
   finally close
 
 end Test.S3Harness

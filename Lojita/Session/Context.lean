@@ -74,7 +74,7 @@ def prepareSpec (ws : FilePath) (name src : String) (bases : List String) (liftS
   let allowed := closure.modules.map (·.modName)
   if let e :: _ := checkTaskImports spec.modName [] allowed spec then fail (reprStr e)
   discard <| checkConditionalGlue closure.modules [] spec true
-  let ⟨home,oldBaseModules,otherChildHistory⟩ ← initialHomeWithBases ws name spec
+  let ⟨home,oldBaseModules,otherChildHistory⟩ ← initialHomeWithBases ws name spec (some closure.modules)
   let lift ← liftSpec.mapM fun l => do
     unless l.upper == spec.modName do fail "wrongUpper"
     checkLiftSource closure.modules l

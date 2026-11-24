@@ -186,6 +186,34 @@ private def contextClosure (base : Environment) (imports : List ImportSpec)
     todo := (base.header.moduleData[idx.toNat]!.imports.map (·.module)).toList ++ todo
   return names
 
+/-- Resolve valid `LojitaCtx.*` module names and namespaces referenced by syntactic hints
+    against the resident context environment, ignoring non-module guesses such as `LojitaCtx.Bytes`. -/
+def contextHintsForRefs (refs : List QName) : IO (List QName × List QName) := driverLock.atomically do
+  let r ← resident
+  let mut seenMods : NameSet := {}
+  let mut mods := #[]
+  let mut seenNs : NameSet := {}
+  let mut namespaces := #[]
+  for ref in refs do
+    let n := ref.toLeanName
+    if let some origin := moduleOf? r.base n then
+      if origin.getRoot == `LojitaCtx then
+        unless seenMods.contains origin do
+          seenMods := seenMods.insert origin
+          mods := mods.push (QName.ofName origin)
+        let mut ns := n.getPrefix
+        while !ns.isAnonymous && ns.getRoot == `LojitaCtx do
+          if r.base.isNamespace ns && !r.base.contains ns && !seenNs.contains ns then
+            seenNs := seenNs.insert ns
+            namespaces := namespaces.push (QName.ofName ns)
+          ns := ns.getPrefix
+    if let "LojitaCtx" :: sub :: _ := ref.segments then
+      let mod := (`LojitaCtx).str sub
+      if (r.base.getModuleIdx? mod).isSome && !seenMods.contains mod then
+        seenMods := seenMods.insert mod
+        mods := mods.push (QName.ofName mod)
+  return (mods.toList, namespaces.toList)
+
 /-- Locate the command which introduced a constant. Command environments are
     persistent and monotone, so this also assigns generated instances, private
     matchers and mutual recursors without naming conventions. -/
