@@ -103,6 +103,9 @@ private def usedRefutationUnits (units : List SynUnit) (refuteSnap : Snapshot) (
     List QName := Id.run do
   let direct := units.foldl (init := ({} : NameMap QName)) fun names u =>
     u.definedNames.foldl (init := names) fun acc q => acc.insert q.toLeanName u.uname
+  let owned := fun (n : Name) => match moduleOf? refuteSnap.env n with
+    | none => true
+    | some mod => refuteSnap.versions.contains mod
   let mut todo := (refuteSnap.mod.units.flatMap (·.definedNames)).map QName.toLeanName |>.filter fun n =>
     !isPrivateName n && refuteSnap.constants.contains n && (refuteSnap.env.find? n).any fun
       | .thmInfo t => targets.any fun target => refuteSnap.env.contains target &&
@@ -112,13 +115,13 @@ private def usedRefutationUnits (units : List SynUnit) (refuteSnap : Snapshot) (
   let mut hit : Std.HashSet QName := {}
   while let n :: rest := todo do
     todo := rest
-    if seen.contains n then continue
+    if seen.contains n || !owned n then continue
     seen := seen.insert n
     if let some owner := refuteSnap.owners.find? n then hit := hit.insert owner
     if let some info := refuteSnap.env.find? n then
       if info matches .axiomInfo _ then
         if let some owner := direct.find? (privateToUserName n) then hit := hit.insert owner
-      todo := info.getUsedConstantsAsSet.foldl (fun acc q => q :: acc) todo
+      todo := info.getUsedConstantsAsSet.foldl (fun acc q => if owned q && !seen.contains q then q :: acc else acc) todo
   let culprits := distinct ((units.map (·.uname)).filter hit.contains)
   return culprits.mergeSort (fun a b => a.toLeanName.lt b.toLeanName)
 

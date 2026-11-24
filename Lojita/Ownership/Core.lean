@@ -340,15 +340,6 @@ def Worker.stepOne {M : Type u} (w : Worker R M) : Option R × Worker R M :=
 
 def Worker.abort {M : Type u} (w : Worker R M) : M := w.finish w.init
 
-def observeN {M : Type u} : Nat → Running Unit (Option A) M → Option A × Running Unit (Option A) M
-  | 0, r => (none, r)
-  | n+1, r => match r.call () with
-    | (some a, next) => (some a, next)
-    | (none, next) => observeN n next
-termination_by structural n _ => n
-
-def pollN {M : Type u} (n : Nat) (r : Running Unit (Option A) M) := (observeN n r).1
-
 /-- A server's public carrier quantifies over small types and hence lives in
     the next universe. For storage inside another machine, finite observations
     give a small presentation. File data stays in its native type. -/

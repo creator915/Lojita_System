@@ -20,6 +20,7 @@ structure ChildWork where
   task : NodeTask
   home : Frozen
   checked : IO.Promise ChildCheck
+  cancel : IO.Promise WorkerCancel
 
 structure InFlightInfo where
   spec : LeanMod
@@ -27,6 +28,7 @@ structure InFlightInfo where
   allowedAncestors : Option (List QName)
   lifts : Array (LeanMod × LiftSpec)
   checked : IO.Promise ChildCheck
+  cancel : IO.Promise WorkerCancel
 
 structure NodeState where
   task : NodeTask
@@ -47,24 +49,28 @@ private def orderedHomes (specs : List LeanMod) (homes : Homes) :=
     (n, ·) <$> homes[n]?
 
 def freezeVerifiedKids (s : NodeState) : Frozen :=
-  let first := orderedHomes (s.candidate.map (·.specs) |>.getD []) s.verified
+  let combined := s.salvaged.fold (fun m n h => if m.contains n then m else m.insert n h) s.verified
+  let first := orderedHomes (s.candidate.map (·.specs) |>.getD []) combined
   let named := Std.HashSet.ofList (first.map Prod.fst)
-  let rest := s.verified.toList.filter fun (n, _) => !named.contains n
+  let rest := combined.toList.filter fun (n, _) => !named.contains n
   .frozen s.original.code s.original.memory s.original.spec (first ++ rest.mergeSort (fun a b => a.1 ≤ b.1))
 
 private def harvest (s : NodeState) (h : Frozen) : NodeState :=
   {s with salvaged := h.children.foldl (fun m (n, kid) => m.insert n kid) s.salvaged}
 
+private def normalizeChildSpec (s : NodeState) (n : String) (h : Frozen) : Frozen :=
+  match s.candidate.bind (fun c => c.specs.find? (fun spec => toString spec.modName == n)) with
+  | some spec => .frozen h.code h.memory spec h.children
+  | none => h
+
 private def survivingSlots (s : NodeState) (c : Candidate) : IO (Std.HashSet String) := do
   let permissions := childPermissions s.task
-  let horizontal := nestedBindings s.task.transports
   let mut keep := {}
   for spec in c.specs do
     let q := spec.modName
     let n := toString q
     let some info := s.inFlight[n]? | continue
-    unless (horizontal[q]?.getD []).isEmpty && permissions q == info.allowedAncestors &&
-        c.childLifts[q]?.getD #[] == info.lifts do continue
+    unless permissions q == info.allowedAncestors && c.childLifts[q]?.getD #[] == info.lifts do continue
     let same ← if spec == info.spec && c.deps == info.deps then pure true
       else pure (← (eqIface info.spec spec c.deps).toBaseIO).isOk
     if same then keep := keep.insert n
@@ -134,7 +140,7 @@ def reconcileChildren (s : NodeState) (c : Candidate) : IO PlanResult := do
       oldBaseModules := pinned, otherChildHistory := none,
       allowedAncestors := permissions q, maybeLift := lifts[0]?, otherLifts := lifts.toList.drop 1}
     let home := Frozen.frozen seed.code (seed.memory ++ routed[q]?.getD []) seed.spec seed.children
-    births := births.push ⟨child, home, ← IO.Promise.new⟩
+    births := births.push ⟨child, home, ← IO.Promise.new, ← IO.Promise.new⟩
   let code := withChildIfaces (apply c.plan s.current.code) c.specs
   let current := Frozen.frozen code (inherit c.plan s.current.memory) s.current.spec interfaces.toList
   return ⟨current, verified, births.toList⟩
@@ -195,30 +201,39 @@ private def childRefutation (used : List QName) (n why : String) (model : Option
   let detour := "Your subspec for this child is unimplementable as proven above. Submit an incremental Plan from CURRENT CODE revising this child's subspec and any affected parent glue; unaffected siblings will be reused or continue running uninterrupted."
   (⟨kind, witness, cause, detour⟩, culprits.map fun q => (.ext q, [note]))
 
-private inductive Job where
+private inductive Action where
   | propose (req : AIRequest)
   | gates (s : NodeState) (p : Plan) (subs : List LeanMod)
   | reconcile (s : NodeState) (c : Candidate)
   | seal (s : NodeState) (c : Candidate)
   | witness (t : NodeTask) (sub : Submission)
   | childCheck (info : InFlightInfo)
-  | attempt (job : Job)
-  | raise (err : IO.Error)
+  | triggerCancel (targets : List (IO.Promise WorkerCancel))
 
-private def Job.Result : Job → Type
+private def Action.Result : Action → Type
   | .propose _ => Option String
   | .gates .. => GateReport × Option (Candidate × Std.HashSet String)
   | .reconcile .. => PlanResult
   | .seal .. => Except String Frozen
   | .witness .. => Except String Verdict
   | .childCheck .. => Option ChildCheck
-  | .attempt j => Except IO.Error j.Result
-  | .raise _ => Unit
+  | .triggerCancel _ => Unit
+
+private inductive Job where
+  | run (act : Action)
+  | attempt (act : Action)
+  | raise (err : IO.Error)
+
+private def Job.Result : Job → Type
+  | .run a => a.Result
+  | .attempt a => Except IO.Error a.Result
+  | .raise _ => Empty
 
 private structure ChildStart where
   shape : HomeShape
   salvaged : Homes
   checked : IO.Promise ChildCheck
+  cancel : IO.Promise WorkerCancel
 
 private def service : Spec := ⟨"node-service", Job, fun _ => [], fun j => .ten (.dat j.Result) .end_⟩
 private def supply : Spec := ⟨"home", HomeValue, fun _ => [], fun v => .ten (.res (HomeSt v.1)) .end_⟩
@@ -276,7 +291,7 @@ private def failed (f : Frame) (s : NodeState) (msg : String) :=
   retry f s (problem ((msg.splitOn ":").headD "node_error") s.task.delta.child msg "Revise the submission and retry.")
 
 private def sealNode (f : Frame) (s : NodeState) (c : Candidate) : Proc NodeΨ (Work f.active) Reply :=
-  .run (perform f (.seal s c)) fun
+  .run (perform f (.run (.seal s c))) fun
     | .error e => failed f s e
     | .ok h => respond f {s with sealedHome := some h, verdict := some .ok}
 
@@ -289,16 +304,20 @@ private def birthChildren (f : Frame) (s : NodeState) : List ChildWork → Proc 
   | [] => afterChildren f s
   | kid :: rest =>
     let n := toString kid.task.delta.child
-    if fresh : n ∉ f.active ∧ serviceDir ≠ n then
-      let next := Frame.mk (n :: f.active) (by simp [fresh.2, f.fresh])
+    if hres : serviceDir = n then
+      failed f s s!"RESERVED_CHILD_SLOT: {n}"
+    else if hdup : n ∈ f.active then
+      failed f s s!"DUPLICATE_CHILD_SLOT: {n}"
+    else
+      let next := Frame.mk (n :: f.active) (by simp [hres, f.fresh])
       let v := thawHome kid.home
       let info := InFlightInfo.mk kid.task.delta.newIface kid.task.baseModules kid.task.allowedAncestors
-        kid.task.lifts.toArray kid.checked
-      .run (receiveHome n (freshWork fresh.1) v) fun _ =>
-      .run (.exec (.here rfl) (.there (.there (.here rfl))) ⟨v.1, s.salvaged, kid.checked⟩ rfl
+        kid.task.lifts.toArray kid.checked kid.cancel
+      let kidSalvaged := s.salvaged.filter fun k _ => k != n && under kid.task.delta.child (qualified k)
+      .run (receiveHome n (freshWork hdup) v) fun _ =>
+      .run (.exec (.here rfl) (.there (.there (.here rfl))) ⟨v.1, kidSalvaged, kid.checked, kid.cancel⟩ rfl
         (.step (.sendD (.here rfl) rfl kid.task) .done)) fun _ =>
       birthChildren next {s with inFlight := s.inFlight.insert n info} rest
-    else failed f s s!"DUPLICATE_CHILD_SLOT: {n}"
 
 private def drainSlot {ns : ActiveSlots} {n : String} (p : Position id n ns) (sh : HomeShape) :
     Prog NodeΨ (.dir (setAt (workPos Verdict HomeShape HomeSt p) (HomeSt sh))) (.dir (Work p.remove)) Frozen := by
@@ -316,20 +335,29 @@ private def abortSlot {S : Session} (f : Frame) {n : String} (p : Position id n 
   .run (drainSlot p sh) fun h =>
     let next := harvest {s with inFlight := s.inFlight.erase n} h
     if let some i := s.inFlight[n]? then
-      .run (perform (f.remove p) (.childCheck i)) fun
+      .run (perform (f.remove p) (.run (.childCheck i))) fun
         | some .sealed => k (some h) {next with salvaged := next.salvaged.insert n h}
         | _ => k none next
     else k none next
 
-private def abortInvalidated {S : Session} (f : Frame) (s : NodeState) (invalid : List String)
+private def cancelTargets (s : NodeState) (names : List String) : List (IO.Promise WorkerCancel) :=
+  names.filterMap fun n => (s.inFlight[n]?).map (·.cancel)
+
+private def abortInvalidatedLoop {S : Session} (f : Frame) (s : NodeState) (invalid : List String)
     (k : (next : Frame) → NodeState → Proc NodeΨ (Work next.active) S) : Proc NodeΨ (Work f.active) S :=
   match invalid with
   | [] => k f s
   | n :: rest => match Position.find id n f.active with
-    | none => abortInvalidated f s rest k
-    | some p => abortSlot f p s fun _ next => abortInvalidated (f.remove p) next rest k
+    | none => abortInvalidatedLoop f s rest k
+    | some p => abortSlot f p s fun _ next => abortInvalidatedLoop (f.remove p) next rest k
 
-private def abortAllActive {S : Session} (ns : ActiveSlots) (fresh : serviceDir ∉ ns) (s : NodeState)
+private def abortInvalidated {S : Session} (f : Frame) (s : NodeState) (invalid : List String)
+    (k : (next : Frame) → NodeState → Proc NodeΨ (Work next.active) S) : Proc NodeΨ (Work f.active) S :=
+  let targets := cancelTargets s (invalid.filter (f.active.contains ·))
+  if targets.isEmpty then abortInvalidatedLoop f s invalid k
+  else .run (perform f (.run (.triggerCancel targets))) fun _ => abortInvalidatedLoop f s invalid k
+
+private def abortAllActiveLoop {S : Session} (ns : ActiveSlots) (fresh : serviceDir ∉ ns) (s : NodeState)
     (k : NodeState → Proc NodeΨ [] S) : Proc NodeΨ (Work ns) S :=
   match ns with
   | [] => k s
@@ -337,17 +365,25 @@ private def abortAllActive {S : Session} (ns : ActiveSlots) (fresh : serviceDir 
     let f : Frame := ⟨n :: rest, fresh⟩
     abortSlot f (.here rfl) s fun sealed next =>
       let verified := match s.sealedHome, sealed with
-        | none, some h => next.verified.insert n h
+        | none, some h => next.verified.insert n (normalizeChildSpec s n h)
         | _, _ => next.verified
-      abortAllActive rest (fun hm => fresh (List.mem_cons_of_mem n hm)) {next with verified} k
+      abortAllActiveLoop rest (fun hm => fresh (List.mem_cons_of_mem n hm)) {next with verified} k
 
-private def runJob (f : Frame) (s : NodeState) (j : Job) (k : j.Result → Proc NodeΨ (Work f.active) Reply) :
+private def abortAllActive {S : Session} (ns : ActiveSlots) (fresh : serviceDir ∉ ns) (s : NodeState)
+    (k : NodeState → Proc NodeΨ [] S) : Proc NodeΨ (Work ns) S :=
+  let targets := cancelTargets s ns
+  if targets.isEmpty then abortAllActiveLoop ns fresh s k
+  else
+    let f : Frame := ⟨ns, fresh⟩
+    .run (perform f (.run (.triggerCancel targets))) fun _ => abortAllActiveLoop ns fresh s k
+
+private def runJob (f : Frame) (s : NodeState) (a : Action) (k : a.Result → Proc NodeΨ (Work f.active) Reply) :
     Proc NodeΨ (Work f.active) Reply :=
-  .run (perform f (.attempt j)) fun
-    | .ok a => k a
-    | .error err => abortAllActive f.active f.fresh s fun stopped =>
+  .run (perform f (.attempt a)) fun
+    | .ok r => k r
+    | .error err => abortAllActive f.active f.fresh s fun _ =>
       let empty : Frame := ⟨[], by simp⟩
-      .run (perform empty (.raise err)) fun _ => failed empty stopped (toString err)
+      .run (perform empty (.raise err)) Empty.elim
 
 private def proposed (f : Frame) (s : NodeState) (sub : Submission) : Proc NodeΨ (Work f.active) Reply :=
   match sub with
@@ -379,16 +415,16 @@ private def completed (f : Frame) (s : NodeState) (n : String) (v : Verdict) (h 
   let s := {s with inFlight := s.inFlight.erase n}
   let refuted := fun (why : String) model proof =>
     if let some i := info then
-      .run (perform f (.childCheck i)) fun
+      .run (perform f (.run (.childCheck i))) fun
         | some (.refuted used) =>
           let (cert, notes) := childRefutation used n why model proof
           let cur := s.current
           let current := Frozen.frozen cur.code (cur.memory ++ notes) cur.spec cur.children
           retry f {harvest s h with current} cert
-        | _ => failed f s s!"MISSING_REFUTATION_PROVENANCE: {n}"
-    else failed f s s!"MISSING_CHILD_INFO: {n}"
+        | _ => failed f (harvest s h) s!"MISSING_REFUTATION_PROVENANCE: {n}"
+    else failed f (harvest s h) s!"MISSING_CHILD_INFO: {n}"
   match v, s.obstructing with
-  | .ok, _ => afterChildren f {s with verified := s.verified.insert n h}
+  | .ok, _ => afterChildren f {s with verified := s.verified.insert n (normalizeChildSpec s n h)}
   | _, some _ => afterChildren f (harvest s h)
   | obs@(.liftObstruction ..), none => afterChildren f {harvest s h with obstructing := some obs}
   | .contradiction proof, none => refuted "The child interface implies False." none proof
@@ -411,7 +447,7 @@ private def shutdownState (j : J) : Proc NodeΨ (Work j.1.active) (Halt HomeShap
   abortAllActive j.1.active j.1.fresh j.2 fun s => returnHome <|
     match s.sealedHome with
     | some h => h
-    | none => if s.verified.isEmpty && s.obstructing.isNone then s.original else freezeVerifiedKids s
+    | none => if s.verified.isEmpty && s.salvaged.isEmpty && s.obstructing.isNone then s.original else freezeVerifiedKids s
 
 private def startAgent (sh : HomeShape) (salvaged : Homes) : Proc NodeΨ (Home (HomeCtx sh)) AgentS :=
   .ask fun task => .run (drainHome sh) fun original =>
@@ -422,9 +458,9 @@ def nodeAgent (sh : HomeShape) : Proc NodeΨ (Home (HomeCtx sh)) AgentS := start
 abbrev Proposer := AIRequest → IO String
 abbrev AcceptNode := NodeTask → String → IO Unit
 
-private def handleJob (propose : AIRequest → IO (Option String)) (accept : NodeTask → String → IO Bool)
-    (record : ChildCheck → IO Unit) (j : Job) : IO j.Result :=
-  match j with
+private def handleAction (propose : AIRequest → IO (Option String)) (accept : AcceptNode)
+    (record : ChildCheck → IO Unit) (a : Action) : IO a.Result :=
+  match a with
   | .propose req => propose req
   | .gates s p subs => do
     let (report, cand) ← checkCandidateGates s.task s.current p subs
@@ -433,36 +469,53 @@ private def handleJob (propose : AIRequest → IO (Option String)) (accept : Nod
   | .seal s c => do
     let result ← catchError (finish s c)
     if let .ok _ := result then
-      if ← accept s.task (c.plan.why ++ "\n" ++ renderLeanMod c.code) then record .sealed
+      notifyAccept s.task (c.plan.why ++ "\n" ++ renderLeanMod c.code)
+      record .sealed
     return result
   | .witness t sub => do
     let result ← catchError (evidence t sub)
     if let .ok (v, units) := result then
-      if ← accept t (reprStr v) then record (.refuted units)
+      notifyAccept t (reprStr v)
+      record (.refuted units)
     return result.map Prod.fst
   | .childCheck info => do
     if ← info.checked.isResolved then IO.wait info.checked.result? else return none
-  | .attempt j => do return ← (handleJob propose accept record j).toBaseIO
-  | .raise err => throw err
+  | .triggerCancel targets => do
+    for p in targets do
+      if ← p.isResolved then
+        if let some wc ← IO.wait p.result? then
+          if let .error err ← wc.trigger.toBaseIO then
+            discard (IO.eprintln s!"warning: child cancel hook failed: {err}").toBaseIO
 where
   catchError {α : Type} (act : IO α) : IO (Except String α) := return (← act.toBaseIO).mapError toString
+  notifyAccept (task : NodeTask) (semantic : String) : IO Unit := do
+    if let .error err ← (accept task semantic).toBaseIO then
+      discard (IO.eprintln s!"warning: post-verification accept failed for {task.delta.child}: {err}").toBaseIO
+
+private def handleJob (propose : AIRequest → IO (Option String)) (accept : AcceptNode)
+    (record : ChildCheck → IO Unit) (j : Job) : IO j.Result :=
+  match j with
+  | .run a => handleAction propose accept record a
+  | .attempt a => (handleAction propose accept record a).toBaseIO
+  | .raise err => throw err
 
 /-- Child workers install their owner's cancellation hook before publishing the channel. -/
 def withNodeEnvIO {α : Type} (ai : Proposer) (useEnv : EnvIO NodeΨ → IO α)
     (accept : AcceptNode := fun _ _ => pure ()) (cancelOwner : String → IO Unit := fun _ => pure ())
     (childProposer : BaseIO Bool → Proposer := fun _ => ai) : IO α := do
-  let child ← IO.mkRef (none : Option (HandlerIO childSpec))
+  let child ← IO.mkRef (none : Option (Option (IO.Promise WorkerCancel) → HandlerIO childSpec))
   let supplyIO : HandlerIO supply := fun v _ => pure (pure (v.2, ()))
-  let childIO : HandlerIO childSpec := fun i ms => do
-    let some start ← child.get | throw (IO.userError "missing child handler")
-    start i ms
-  let env (propose : AIRequest → IO (Option String)) (accept : NodeTask → String → IO Bool)
-      (record : ChildCheck → IO Unit) : EnvIO NodeΨ :=
-    EnvIO.cons (spec := service) (fun j _ => pure (do return (← handleJob propose accept record j, ())))
+  let env (parentCancel : Option (IO.Promise WorkerCancel)) (propose : AIRequest → IO (Option String))
+      (acceptNode : AcceptNode) (record : ChildCheck → IO Unit) : EnvIO NodeΨ :=
+    let childIO : HandlerIO childSpec := fun i ms => do
+      let some start ← child.get | throw (IO.userError "missing child handler")
+      start parentCancel i ms
+    EnvIO.cons (spec := service) (fun j _ => pure (do return (← handleJob propose acceptNode record j, ())))
       (EnvIO.cons supplyIO (EnvIO.cons childIO EnvIO.nil))
-  child.set (some (fun i ms => do
+  child.set (some (fun parentCancel i ms => do
     return fun t => do
       let stopping ← IO.mkRef false
+      let selfCancel ← IO.Promise.new
       -- A terminated proposer can return an IO error. Let the worker reach its halt
       -- boundary with the channels it still owns, even when a replan was interrupted.
       let propose := fun req => do
@@ -470,18 +523,22 @@ def withNodeEnvIO {α : Type} (ai : Proposer) (useEnv : EnvIO NodeΨ → IO α)
         let result ← (childProposer stopping.get req).toBaseIO
         if ← stopping.get then return none
         return some (← EIO.ofExcept result)
-      let acceptChild := fun task semantic => do
-        if ← stopping.get then return false
-        try
-          accept task semantic
-          return true
-        catch e => if ← stopping.get then return false else throw e
-      let worker ← (← evalProcIO (env propose acceptChild (fun check => i.checked.resolve check)) (startAgent i.shape i.salvaged) ms) t
+      let acceptChild : AcceptNode := fun task semantic => do
+        if ← stopping.get then return
+        try accept task semantic
+        catch e => unless ← stopping.get do throw e
+      let worker ← (← evalProcIO (env (some selfCancel) propose acceptChild (fun check => i.checked.resolve check))
+        (startAgent i.shape i.salvaged) ms) t
       worker.cancel.onCancel do
         stopping.set true
         cancelOwner (toString t.delta.child)
+      selfCancel.resolve worker.cancel
+      if let some p := parentCancel then
+        if let some parentWc ← IO.wait p.result? then
+          parentWc.attachWorker worker
+      i.cancel.resolve worker.cancel
       return worker))
-  try useEnv (env (fun req => some <$> ai req) (fun t msg => accept t msg *> pure true) (fun _ => pure ()))
+  try useEnv (env none (fun req => some <$> ai req) accept (fun _ => pure ()))
   finally child.set none
 
 end Lojita.Harness

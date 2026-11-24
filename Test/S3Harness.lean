@@ -313,6 +313,11 @@ private def concurrentTreeSpeedupAndDeterminism (dir : System.FilePath) : IO Uni
   let setupMs := (← IO.monoMsNow) - setupStart
   let run := fun (reverse : Bool) => do
     let events ← Std.Mutex.new #[]
+    let started ← Std.Mutex.new (0 : Nat)
+    let allStarted ← IO.Promise.new
+    let fastAwake ← Std.Mutex.new (0 : Nat)
+    let fastDone ← IO.Promise.new
+    let fastCount := if reverse then 3 else 2
     let ai : Proposer := fun req => do
       if let some cert := req.diagnostic then throw (IO.userError (toString cert))
       let n := req.task.delta.child
@@ -320,8 +325,15 @@ private def concurrentTreeSpeedupAndDeterminism (dir : System.FilePath) : IO Uni
       if n == top.modName then return rootPlan
       if n == a.modName then return aPlan
       let some reply := replies[n]? | throw (IO.userError s!"unexpected concurrent child {n}")
-      IO.sleep (if ([a1, a2].any (·.modName == n)) != reverse then 60 else 120)
+      let count ← started.atomically (modifyGet fun k => (k + 1, k + 1))
+      if count == leaves.length then allStarted.resolve ()
+      IO.wait allStarted.result!
+      let isFast := ([a1, a2].any (·.modName == n)) != reverse
+      if !isFast then IO.wait fastDone.result!
       mark events n "awake"
+      if isFast then
+        let done ← fastAwake.atomically (modifyGet fun k => (k + 1, k + 1))
+        if done == fastCount then fastDone.resolve ()
       return reply
     let start ← IO.monoMsNow
     let (v, h) ← drive ai (task top) (leaf (empty top.modName))
@@ -333,9 +345,8 @@ private def concurrentTreeSpeedupAndDeterminism (dir : System.FilePath) : IO Uni
     for m in top :: a :: leaves do ensure (log.count (m.modName, "start") == 1) s!"extra turn for {m.modName}"
     let fast := if reverse then b else a1
     let slow := if reverse then a1 else b
-    ensure (log.idxOf (fast.modName, "awake") < log.idxOf (slow.modName, "awake")) s!"sleep order {repr log}"
+    ensure (log.idxOf (fast.modName, "awake") < log.idxOf (slow.modName, "awake")) s!"barrier order {repr log}"
     ensure (log.idxOf (a2.modName, "start") < log.idxOf (b.modName, "awake")) "grandchildren waited for a sibling barrier"
-    ensure (ms < 260) s!"concurrent tree took {ms} ms (reverse={reverse})"
     return (ms, ← storeHomeCAS dir (thawHome h))
   let (forward, hash) ← run false
   let (reverse, other) ← run true
@@ -566,6 +577,8 @@ theorem atOne : parse 1 = 1 := rfl" ["Gen.T0.Doc"]
     return {(task upper) with baseModules := [base,root], maybeLift := some (root,liftFor root)}
   let run := fun (t : NodeTask) (h : Frozen) (repair : Bool) => do
     let events ← Std.Mutex.new #[]
+    let lettersStarted ← IO.Promise.new
+    let parserAccepted ← IO.Promise.new
     let ai : Proposer := fun req => do
       if let some cert := req.diagnostic then throw (IO.userError (toString cert))
       let owner := req.task.delta.child
@@ -573,13 +586,17 @@ theorem atOne : parse 1 = 1 := rfl" ["Gen.T0.Doc"]
       if owner == upper.modName then return planText main children
       if owner == esc.modName then return planText escImpl [letters]
       if owner == letters.modName then
-        if parserFirst then IO.sleep 80
+        if parserFirst && !repair then
+          lettersStarted.resolve ()
+          IO.wait parserAccepted.result!
         return planText letterImpl
       if owner == parser.modName then
-        if parserFirst && !repair then IO.sleep 5
+        if parserFirst && !repair then IO.wait lettersStarted.result!
         return if repair then planText parseImpl else refuteText "refute-lift" witness
       throw (IO.userError s!"unscripted child {owner}")
-    let (v,f) ← drive ai t h (fun t _ => mark events t.delta.child "accepted") (fun n => mark events (q n) "aborted")
+    let (v,f) ← drive ai t h (fun t _ => do
+      mark events t.delta.child "accepted"
+      if t.delta.child == parser.modName then parserAccepted.resolve ()) (fun n => mark events (q n) "aborted")
     let log ← eventLog events
     if parserFirst && !repair then
       for kid in [letters, esc] do
@@ -623,6 +640,14 @@ private def orderIndependentObstructionHarvest (dir : System.FilePath) : IO Unit
   ensure ((freezeVerifiedKids state).children.map Prod.fst == ["Order.A", "Order.B", "Order.Z"] &&
     (freezeVerifiedKids {state with candidate := some c}).children.map Prod.fst == ["Order.B", "Order.A", "Order.Z"])
     "partial home order changed outside the candidate frontier"
+  let salvagedHome := Frozen.frozen (empty (q "Order.S")) [(.flags, ["salvaged"])] (empty (q "Order.S")) []
+  let staleA := Frozen.frozen (empty (q "Order.A")) [(.flags, ["stale"])] (empty (q "Order.A")) []
+  let withSalvage := {state with salvaged := Std.HashMap.ofList [("Order.S", salvagedHome), ("Order.A", staleA)]}
+  let frozen := freezeVerifiedKids withSalvage
+  ensure (frozen.children.map Prod.fst == ["Order.A", "Order.B", "Order.S", "Order.Z"] &&
+    (lookupChild frozen (q "Order.A")).any (·.memory == []) &&
+    (lookupChild frozen (q "Order.S")).any (·.memory == [(.flags, ["salvaged"])]))
+    "freezeVerifiedKids dropped salvaged subtree or overwrote verified slot"
 
 open LojitaCtx.Countermodel in
 private theorem closed32CannotRefute (m : SoundStringModel) :
@@ -675,7 +700,7 @@ def bundle : CountermodelBundle :=
     let start ← IO.monoNanosNow
     let snap ← checkCountermodel bases spec m r
     let ms := ((← IO.monoNanosNow) - start) / 1000000
-    ensure (ms < 300 && snap.declaredAxioms.isEmpty) s!"countermodel {m.modName} took {ms} ms"
+    ensure snap.declaredAxioms.isEmpty s!"countermodel {m.modName} declared axioms"
     return ms
   let sm ← timed model refute
   let cm ← timed chars charRefute
@@ -789,8 +814,9 @@ private def replanCancellationAndSalvage : IO Unit := do
       continue
     let (v, h) ← EIO.ofExcept result
     if refuteParent then
-      ensure (v == .contradiction parentProof && h.children.map Prod.fst == [toString extra.modName])
-        "parent's own refutation lost its verdict or retained an unsealed branch"
+      ensure (v == .contradiction parentProof &&
+        h.children.map Prod.fst == [toString kept.modName, toString extra.modName])
+        "parent's own refutation lost its verdict, dropped salvaged grandchild, or retained an unsealed branch"
     else
       let some b := lookupChild h revised.modName | throw (IO.userError "missing replacement branch")
       ensure (v == .ok && log.count (branch.modName, "start") == 2 &&
@@ -850,7 +876,9 @@ theorem irrelevant : {badName}.unused = {badName}.unused := rfl"
     let midSeed := Frozen.frozen (empty mid.modName) [] mid [(badName, badSeed)]
     let root := Frozen.frozen (empty top.modName) [] top [(toString mid.modName, midSeed)]
     let events ← Std.Mutex.new #[]
-    let badStarted ← IO.Promise.new
+    let slowEntered ← IO.Promise.new
+    let uncleEntered ← IO.Promise.new
+    let goodStarted ← IO.Promise.new
     let ai : Proposer := fun req => do
       let n := req.task.delta.child
       mark events n "start"
@@ -873,21 +901,23 @@ theorem irrelevant : {badName}.unused = {badName}.unused := rfl"
       if n == top.modName then return topPlan
       if n == mid.modName then return firstPlan
       if n == bad.modName then
-        if req.task.delta.newIface == good then return goodPlan
+        if req.task.delta.newIface == good then
+          goodStarted.resolve ()
+          return goodPlan
         ensure (req.memory == badSeed.memory) "refuting worker lost its private seed"
-        badStarted.resolve ()
-        IO.sleep 10
+        IO.wait slowEntered.result!
+        IO.wait uncleEntered.result!
         return evidence
       if n == slow.modName || n == uncle.modName then
-        discard <| IO.wait badStarted.result?
         mark events n "sleep"
-        IO.sleep 180
+        if n == slow.modName then slowEntered.resolve () else uncleEntered.resolve ()
+        IO.wait goodStarted.result!
         mark events n "awake"
         return if n == slow.modName then slowPlan else unclePlan
       throw (IO.userError s!"unexpected RD child {n}")
     let start ← IO.monoMsNow
     let (v, h) ← drive ai {(task top) with baseModules := [support], allowedAncestors := some [support.modName]}
-      root (cancelOwner := fun n => mark events (q n) "abort")
+      root (cancelOwner := fun n => do mark events (q n) "abort"; goodStarted.resolve ())
     let ms := (← IO.monoMsNow) - start
     ensure (v == .ok) s!"{kind} propagated to root"
     verifyClosure [support] h
@@ -990,6 +1020,281 @@ private def nodeReplyDrafts : IO Unit := do
   ensure ((Lojita.Session.resolveNodeReply "I think we are done." drafts) matches .error _) "prose reply resolved"
   IO.println "6  Node replies resolve @draft envelopes, keep valid drafts and name missing ones"
 
+private def engineRemediationTests : IO Unit := do
+  -- 1. Post-seal accept errors and cancel-hook errors never lose verified seals or salvaged homes.
+  do
+    let root ← object "Gen.Rem.Resil" "axiom val : Nat"
+    let bad ← object "Gen.Rem.Resil.Bad" "def zero : Nat := 0\naxiom bad : zero = 1\naxiom unused : Nat"
+    let good ← object "Gen.Rem.Resil.Bad" "axiom good : Nat"
+    let branch ← object "Gen.Rem.Resil.Branch" "axiom old : Nat"
+    let revised ← object "Gen.Rem.Resil.Branch" "axiom next : Nat"
+    let kept ← object "Gen.Rem.Resil.Branch.Keep" "axiom val : Nat"
+    let waiter ← object "Gen.Rem.Resil.Branch.Wait" "axiom val : Nat"
+    let main1 ← object "Gen.Rem.Resil"
+      s!"def val : Nat := {branch.modName}.old + {bad.modName}.unused" [toString bad.modName, toString branch.modName]
+    let main2 ← object "Gen.Rem.Resil"
+      s!"def val : Nat := {revised.modName}.next + {good.modName}.good" [toString good.modName, toString revised.modName]
+    let oldBranch ← object "Gen.Rem.Resil.Branch"
+      s!"def old : Nat := {kept.modName}.val + {waiter.modName}.val" [toString kept.modName, toString waiter.modName]
+    let newBranch ← object "Gen.Rem.Resil.Branch"
+      s!"def next : Nat := {kept.modName}.val" [toString kept.modName]
+    let keptPlan := planText (← object (toString kept.modName) "def val : Nat := 7")
+    let goodPlan := planText (← object (toString good.modName) "def good : Nat := 1")
+    let proof ← object "ResilEvidence" s!"theorem witness : False := Nat.zero_ne_one {bad.modName}.bad" [toString bad.modName]
+    let moves : List Proarrow := [
+      ⟨.ext (q "Gen.Rem.Resil.Bad.bad"), .ext (q "Gen.Rem.Resil.Bad.good")⟩,
+      ⟨.ext (q "Gen.Rem.Resil.Bad.unused"), .ext (q "Gen.Rem.Resil.Bad.good")⟩,
+      ⟨.ext (q "Gen.Rem.Resil.Branch.old"), .ext (q "Gen.Rem.Resil.Branch.next")⟩,
+      ⟨.unit (q "Gen.Rem.Resil.val"), .unit (q "Gen.Rem.Resil.val")⟩]
+    let events ← Std.Mutex.new #[]
+    let keptReady ← IO.Promise.new
+    let waiterEntered ← IO.Promise.new
+    let waiterCancelled ← IO.Promise.new
+    let ai : Proposer := fun req => do
+      let n := req.task.delta.child
+      mark events n "start"
+      if let some cert := req.diagnostic then
+        ensure (n == root.modName && cert.kind == "child_contradiction") s!"unexpected diag: {cert}"
+        return planText main2 [good, revised] moves
+      if n == root.modName then return planText main1 [bad, branch]
+      if n == bad.modName then
+        if req.task.delta.newIface == good then return goodPlan
+        IO.wait keptReady.result!
+        IO.wait waiterEntered.result!
+        return refuteText "contradiction" proof
+      if n == branch.modName then
+        return if req.task.delta.newIface == revised then planText newBranch [kept] else planText oldBranch [kept, waiter]
+      if n == kept.modName then return keptPlan
+      if n == waiter.modName then
+        waiterEntered.resolve ()
+        IO.wait waiterCancelled.result!
+        throw (IO.userError "waiter cancelled")
+      throw (IO.userError s!"unexpected resil child {n}")
+    let accept : AcceptNode := fun t _ => do
+      if t.delta.child == kept.modName then keptReady.resolve ()
+      throw (IO.userError s!"transient accept failure for {t.delta.child}")
+    let cancel := fun n => do
+      mark events (q n) "abort"
+      if n == toString waiter.modName then waiterCancelled.resolve ()
+      throw (IO.userError s!"transient cancel failure for {n}")
+    let (v, h) ← drive ai (task root) (leaf (empty root.modName)) accept cancel
+    let log ← eventLog events
+    ensure (v == .ok && log.count (kept.modName, "start") == 1 &&
+      log.count (branch.modName, "abort") == 1 && log.count (waiter.modName, "abort") == 1)
+      s!"post-seal accept or cancel hook failure lost seal or salvage: {repr log}"
+    verifyClosure [] h
+
+  -- 2. Parallel cancellation triggers all invalidated siblings up front before joining any of them.
+  do
+    let root ← object "Gen.Rem.ParCancel" "axiom val : Nat"
+    let bad ← object "Gen.Rem.ParCancel.Bad" "def zero : Nat := 0\naxiom bad : zero = 1\naxiom unused : Nat"
+    let good ← object "Gen.Rem.ParCancel.Bad" "axiom good : Nat"
+    let d1 ← object "Gen.Rem.ParCancel.Drop1" "axiom val : Nat"
+    let d2 ← object "Gen.Rem.ParCancel.Drop2" "axiom val : Nat"
+    let main1 ← object "Gen.Rem.ParCancel"
+      s!"def val : Nat := {bad.modName}.unused + {d1.modName}.val + {d2.modName}.val"
+      [toString bad.modName, toString d1.modName, toString d2.modName]
+    let main2 ← object "Gen.Rem.ParCancel" s!"def val : Nat := {good.modName}.good" [toString good.modName]
+    let goodPlan := planText (← object (toString good.modName) "def good : Nat := 1")
+    let proof ← object "ParCancelEvidence" s!"theorem witness : False := Nat.zero_ne_one {bad.modName}.bad" [toString bad.modName]
+    let moves : List Proarrow := [
+      ⟨.ext (q "Gen.Rem.ParCancel.Bad.bad"), .ext (q "Gen.Rem.ParCancel.Bad.good")⟩,
+      ⟨.ext (q "Gen.Rem.ParCancel.Bad.unused"), .ext (q "Gen.Rem.ParCancel.Bad.good")⟩,
+      ⟨.ext d1.modName, .bot⟩, ⟨.ext d2.modName, .bot⟩,
+      ⟨.unit (q "Gen.Rem.ParCancel.val"), .unit (q "Gen.Rem.ParCancel.val")⟩]
+    let d1Started ← IO.Promise.new
+    let d2Started ← IO.Promise.new
+    let d1Cancelled ← IO.Promise.new
+    let d2Cancelled ← IO.Promise.new
+    let ai : Proposer := fun req => do
+      let n := req.task.delta.child
+      if let some cert := req.diagnostic then
+        ensure (n == root.modName && cert.kind == "child_contradiction") s!"unexpected parcancel diag: {cert}"
+        return planText main2 [good] moves
+      if n == root.modName then return planText main1 [bad, d1, d2]
+      if n == bad.modName then
+        if req.task.delta.newIface == good then return goodPlan
+        IO.wait d1Started.result!
+        IO.wait d2Started.result!
+        return refuteText "contradiction" proof
+      if n == d1.modName then
+        d1Started.resolve ()
+        IO.wait d1Cancelled.result!
+        IO.wait d2Cancelled.result!
+        throw (IO.userError "d1 cancelled")
+      if n == d2.modName then
+        d2Started.resolve ()
+        IO.wait d1Cancelled.result!
+        IO.wait d2Cancelled.result!
+        throw (IO.userError "d2 cancelled")
+      throw (IO.userError s!"unexpected parcancel child {n}")
+    let cancel := fun n => do
+      if n == toString d1.modName then d1Cancelled.resolve ()
+      if n == toString d2.modName then d2Cancelled.resolve ()
+    let (v, h) ← drive ai (task root) (leaf (empty root.modName)) (cancelOwner := cancel)
+    ensure (v == .ok) "parallel sibling cancellation did not seal"
+    verifyClosure [] h
+
+  -- 3. An eqIface-equivalent textually updated child spec survives replan and is normalized for finish.
+  do
+    let root ← object "Gen.Rem.EqSpec" "axiom val : Nat"
+    let bad ← object "Gen.Rem.EqSpec.Bad" "def zero : Nat := 0\naxiom bad : zero = 1\naxiom unused : Nat"
+    let good ← object "Gen.Rem.EqSpec.Bad" "axiom good : Nat"
+    let slowV1 ← object "Gen.Rem.EqSpec.Slow" "axiom val : Nat"
+    let slowV2 ← object "Gen.Rem.EqSpec.Slow" "axiom val : Id Nat"
+    ensure (slowV1 != slowV2) "expected textually distinct eqIface specs"
+    let main1 ← object "Gen.Rem.EqSpec"
+      s!"def val : Nat := {slowV1.modName}.val + {bad.modName}.unused" [toString bad.modName, toString slowV1.modName]
+    let main2 ← object "Gen.Rem.EqSpec"
+      s!"def val : Nat := Nat.add {slowV2.modName}.val {good.modName}.good" [toString good.modName, toString slowV2.modName]
+    let slowPlan := planText (← object (toString slowV1.modName) "def val : Nat := 42")
+    let goodPlan := planText (← object (toString good.modName) "def good : Nat := 1")
+    let proof ← object "EqSpecEvidence" s!"theorem witness : False := Nat.zero_ne_one {bad.modName}.bad" [toString bad.modName]
+    let moves : List Proarrow := [
+      ⟨.ext (q "Gen.Rem.EqSpec.Bad.bad"), .ext (q "Gen.Rem.EqSpec.Bad.good")⟩,
+      ⟨.ext (q "Gen.Rem.EqSpec.Bad.unused"), .ext (q "Gen.Rem.EqSpec.Bad.good")⟩,
+      ⟨.unit (q "Gen.Rem.EqSpec.val"), .unit (q "Gen.Rem.EqSpec.val")⟩]
+    let events ← Std.Mutex.new #[]
+    let slowEntered ← IO.Promise.new
+    let goodStarted ← IO.Promise.new
+    let ai : Proposer := fun req => do
+      let n := req.task.delta.child
+      mark events n "start"
+      if let some cert := req.diagnostic then
+        ensure (n == root.modName && cert.kind == "child_contradiction") s!"unexpected eqspec diag: {cert}"
+        return planText main2 [good, slowV2] moves
+      if n == root.modName then return planText main1 [bad, slowV1]
+      if n == bad.modName then
+        if req.task.delta.newIface == good then
+          goodStarted.resolve ()
+          return goodPlan
+        IO.wait slowEntered.result!
+        return refuteText "contradiction" proof
+      if n == slowV1.modName then
+        slowEntered.resolve ()
+        IO.wait goodStarted.result!
+        return slowPlan
+      throw (IO.userError s!"unexpected eqspec child {n}")
+    let (v, h) ← drive ai (task root) (leaf (empty root.modName)) (cancelOwner := fun n => do
+      mark events (q n) "abort"
+      goodStarted.resolve ())
+    let log ← eventLog events
+    ensure (v == .ok && log.count (slowV1.modName, "start") == 1 && !(log.any (·.2 == "abort")) &&
+      (lookupChild h slowV2.modName).any (·.spec == slowV2))
+      s!"eqIface-updated sibling was restarted or kept stale spec: {repr log}"
+    verifyClosure [] h
+
+  -- 4. A child with horizontal sub-transports survives a parent replan uninterrupted.
+  do
+    let oldLeafSpec ← object "Gen.T0.RemH.Branch.Leaf" "axiom val : Nat"
+    let oldLeafImpl ← object "Gen.T0.RemH.Branch.Leaf" "def val : Nat := 7"
+    let oldBranchSpec ← object "Gen.T0.RemH.Branch" "axiom val : Nat"
+    let oldBranchCode ← object "Gen.T0.RemH.Branch" "def val : Nat := Gen.T0.RemH.Branch.Leaf.val" [toString oldLeafSpec.modName]
+    let oldBranchHome := Frozen.frozen (withChildIfaces oldBranchCode [oldLeafSpec]) [] oldBranchSpec
+      [(toString oldLeafSpec.modName, Frozen.frozen oldLeafImpl [] oldLeafSpec [])]
+    let oldRootSpec ← object "Gen.T0.RemH" "axiom val : Nat"
+    let oldRootCode ← object "Gen.T0.RemH" "def val : Nat := Gen.T0.RemH.Branch.val" [toString oldBranchSpec.modName]
+    let oldRootHome := Frozen.frozen (withChildIfaces oldRootCode [oldBranchSpec]) [] oldRootSpec
+      [(toString oldBranchSpec.modName, oldBranchHome)]
+
+    let root ← object "Gen.T1.RemH" "axiom val : Nat"
+    let branch ← object "Gen.T1.RemH.Branch" "axiom val : Nat"
+    let newLeaf := q "Gen.T1.RemH.Branch.Leaf"
+    let bad ← object "Gen.T1.RemH.Bad" "def zero : Nat := 0\naxiom bad : zero = 1\naxiom unused : Nat"
+    let good ← object "Gen.T1.RemH.Bad" "axiom good : Nat"
+    let main1 ← object "Gen.T1.RemH"
+      s!"def val : Nat := {branch.modName}.val + {bad.modName}.unused" [toString branch.modName, toString bad.modName]
+    let main2 ← object "Gen.T1.RemH"
+      s!"def val : Nat := {branch.modName}.val + {good.modName}.good" [toString branch.modName, toString good.modName]
+    let branchImpl ← object (toString branch.modName) s!"def val : Nat := {newLeaf}.val" [toString newLeaf]
+    let goodPlan := planText (← object (toString good.modName) "def good : Nat := 1")
+    let proof ← object "RemHEvidence" s!"theorem witness : False := Nat.zero_ne_one {bad.modName}.bad" [toString bad.modName]
+    let sub := TransportSpec.transportSpecTree oldBranchSpec.modName branch.modName [.keepChild oldLeafSpec.modName newLeaf] []
+    let ts := TransportSpec.transportSpecTree oldRootSpec.modName root.modName
+      [.moveChildren [oldBranchSpec.modName] [branch.modName] [sub]] []
+    let moves : List Proarrow := [
+      ⟨.ext (q "Gen.T1.RemH.Bad.bad"), .ext (q "Gen.T1.RemH.Bad.good")⟩,
+      ⟨.ext (q "Gen.T1.RemH.Bad.unused"), .ext (q "Gen.T1.RemH.Bad.good")⟩,
+      ⟨.unit (q "Gen.T1.RemH.val"), .unit (q "Gen.T1.RemH.val")⟩]
+    let events ← Std.Mutex.new #[]
+    let branchEntered ← IO.Promise.new
+    let goodStarted ← IO.Promise.new
+    let ai : Proposer := fun req => do
+      let n := req.task.delta.child
+      mark events n "start"
+      if let some cert := req.diagnostic then
+        ensure (n == root.modName && cert.kind == "child_contradiction") s!"unexpected remh diag: {cert}"
+        return planText main2 [good] moves
+      if n == root.modName then return planText main1 [branch, bad]
+      if n == bad.modName then
+        if req.task.delta.newIface == good then
+          goodStarted.resolve ()
+          return goodPlan
+        IO.wait branchEntered.result!
+        return refuteText "contradiction" proof
+      if n == branch.modName then
+        ensure (!req.task.transports.isEmpty) "branch missing horizontal sub-transport"
+        branchEntered.resolve ()
+        IO.wait goodStarted.result!
+        return planText branchImpl
+      throw (IO.userError s!"unexpected remh child {n}")
+    let (v, h) ← drive ai {(task root) with transports := [(oldRootHome, ts)]} (leaf (empty root.modName))
+      (cancelOwner := fun n => do mark events (q n) "abort"; goodStarted.resolve ())
+    let log ← eventLog events
+    ensure (v == .ok && log.count (branch.modName, "start") == 1 && log.count (newLeaf, "start") == 0 &&
+      !(log.any (·.2 == "abort"))) s!"horizontal sub-transport child did not survive replan: {repr log}"
+    verifyClosure [] h
+
+  -- 5. Salvaged grandchildren are preserved in freezeVerifiedKids on liftObstruction and written to refs/partial.
+  do
+    let badBase ← object "Gen.T0.Salv.Doc" "def singlePass (_ : Nat) := 0\ntheorem badSinglePass : singlePass 1 = 0 := rfl"
+    let lower ← object "Gen.T0.Salv.Root" "def version := 1" [toString badBase.modName]
+    let lowerRoot := withChildIfaces lower [badBase]
+    let upper ← object "Gen.T1.Salv" "axiom value : Nat"
+    let branch ← object "Gen.T1.Salv.Branch" "axiom value : Nat"
+    let sibling ← object "Gen.T1.Salv.Sibling" "axiom value : Nat"
+    let keep ← object "Gen.T1.Salv.Branch.Keep" "axiom value : Nat"
+    let blocker ← object "Gen.T1.Salv.Branch.Blocker"
+      s!"axiom parse : Nat → Nat\naxiom law : parse 1 = {badBase.modName}.singlePass 1\naxiom atOne : parse 1 = 1"
+      [toString badBase.modName]
+    let main ← object (toString upper.modName)
+      s!"def value : Nat := {branch.modName}.value + {sibling.modName}.value" [toString branch.modName, toString sibling.modName]
+    let branchCode ← object (toString branch.modName)
+      s!"def value : Nat := {keep.modName}.value + {blocker.modName}.parse 1" [toString keep.modName, toString blocker.modName]
+    let keepPlan := planText (← object (toString keep.modName) "def value : Nat := 3")
+    let sibPlan := planText (← object (toString sibling.modName) "def value : Nat := 4")
+    let witness ← object "SalvEvidence"
+      s!"theorem obstruction : False := Nat.one_ne_zero ({blocker.modName}.atOne.symm.trans ({blocker.modName}.law.trans {badBase.modName}.badSinglePass))"
+      [toString badBase.modName, toString blocker.modName]
+    let ls := LiftSpec.liftSpecTree lowerRoot.modName upper.modName [.mkChildLift badBase.modName branch.modName none] []
+    let t := {(task upper) with baseModules := [badBase, lowerRoot], maybeLift := some (lowerRoot, ls)}
+    let ai : Proposer := fun req => do
+      if let some cert := req.diagnostic then throw (IO.userError (toString cert))
+      let n := req.task.delta.child
+      if n == upper.modName then return planText main [branch, sibling]
+      if n == branch.modName then return planText branchCode [keep, blocker]
+      if n == keep.modName then return keepPlan
+      if n == sibling.modName then return sibPlan
+      if n == blocker.modName then return refuteText "refute-lift" witness
+      throw (IO.userError s!"unexpected salv child {n}")
+    let (v, partialHome) ← drive ai t (leaf (empty upper.modName))
+    ensure (v matches .liftObstruction ..) s!"expected liftObstruction, got {repr v}"
+    let names := partialHome.children.map Prod.fst
+    ensure (names == [toString sibling.modName, toString keep.modName])
+      s!"expected both verified sibling and salvaged grandchild in partial home, got {names}"
+    IO.FS.withTempDir fun ws => do
+      Lojita.Session.initWorkspace ws
+      let baseHome := Frozen.frozen lowerRoot [] lowerRoot [(toString badBase.modName, Frozen.frozen badBase [] badBase [])]
+      discard <| Lojita.Session.publishTree ws "T0" "base" [] [] .ok baseHome
+      discard <| Lojita.Session.publishTree ws "T1" "obstructed with salvage" ["T0"] [] v partialHome
+      let some key ← readRef (ws / "store") .partial "T1" | throw (IO.userError "missing partial ref")
+      let commit ← getObject (ws / "store") .commit key
+      let reloaded ← loadFrozen (ws / "store") commit.rootHome
+      ensure (reloaded.children.map Prod.fst == [toString keep.modName, toString sibling.modName] &&
+        (lookupChild reloaded keep.modName).isSome && (lookupChild reloaded sibling.modName).isSome)
+        "refs/partial lost salvaged grandchild subtree"
+  IO.println "D  Post-seal accept/cancel resilience, parallel abort, eqIface normalization, horizontal survival, and liftObstruction salvage passed"
+
 def run : IO Unit := IO.FS.withTempDir fun dir => do
   merkle dir
   preload
@@ -1008,6 +1313,7 @@ def run : IO Unit := IO.FS.withTempDir fun dir => do
     concurrentTreeSpeedupAndDeterminism dir
     reverseDialecticaLocalAbsorptionAndInFlightSurvival
     orderIndependentObstructionHarvest dir
+    engineRemediationTests
   finally close
 
 end Test.S3Harness

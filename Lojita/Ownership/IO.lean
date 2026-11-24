@@ -10,42 +10,80 @@ structure RunningIO (Q R M : Type) where
 structure WorkerCancel where
   cancelled : IO.Ref Bool
   promise : IO.Promise Unit
-  hooks : Std.Mutex (Array (IO Unit))
+  hooks : Std.Mutex (Nat × Array (Nat × IO Unit))
+  children : Std.Mutex (Nat × Array (Nat × BaseIO Unit × BaseIO Unit))
+  deriving Nonempty
 
 def WorkerCancel.new : IO WorkerCancel := do
-  return ⟨← IO.mkRef false, ← IO.Promise.new, ← Std.Mutex.new #[]⟩
+  return ⟨← IO.mkRef false, ← IO.Promise.new, ← Std.Mutex.new (0, #[]), ← Std.Mutex.new (0, #[])⟩
+
+def WorkerCancel.onCancelHandle (wc : WorkerCancel) (act : IO Unit) : IO (BaseIO Unit) := do
+  let id? ← wc.hooks.atomically do
+    if ← wc.cancelled.get then return none
+    let (nextId, hs) ← get
+    set (nextId + 1, hs.push (nextId, act))
+    return some nextId
+  match id? with
+  | none =>
+    act
+    return pure ()
+  | some id =>
+    return wc.hooks.atomically do
+      let (nextId, hs) ← get
+      set (nextId, hs.filter (·.1 != id))
 
 def WorkerCancel.onCancel (wc : WorkerCancel) (act : IO Unit) : IO Unit := do
-  let runNow ← wc.hooks.atomically do
-    if ← wc.cancelled.get then return true
-    modify (·.push act)
-    return false
-  if runNow then act
+  discard <| wc.onCancelHandle act
 
 def WorkerCancel.trigger (wc : WorkerCancel) : IO Unit := do
   let actions ← wc.hooks.atomically do
     if ← wc.cancelled.get then return #[]
     wc.cancelled.set true
     wc.promise.resolve ()
-    modifyGet fun hooks => (hooks, #[])
+    modifyGet fun (nextId, hooks) => (hooks, (nextId, #[]))
   -- Run hooks outside the lock, including the remaining hooks if one fails.
   let mut result : Except IO.Error Unit := .ok ()
-  for act in actions do
+  for (_, act) in actions do
     let next ← act.toBaseIO
     if result.isOk then result := next
   EIO.ofExcept result
 
+def WorkerCancel.joinChildren (wc : WorkerCancel) : BaseIO Unit := do
+  let cs ← wc.children.atomically (return (← get).2)
+  for (_, cancelIfLive, _) in cs do cancelIfLive
+  for (_, _, join) in cs do join
+
 structure WorkerIO (R M : Type) where
   cancel : WorkerCancel
   task : Task (Except IO.Error (Option R × M))
+
+def WorkerCancel.attachWorker {R M : Type} (parent : WorkerCancel) (child : WorkerIO R M) : IO Unit := do
+  if ← IO.hasFinished child.task then return
+  let alive ← IO.mkRef true
+  let cancelIfLive : BaseIO Unit := do
+    if (← alive.get) && !(← IO.hasFinished child.task) then
+      discard child.cancel.trigger.toBaseIO
+  let unregisterHook ← parent.onCancelHandle cancelIfLive
+  let childId ← parent.children.atomically do
+    let (nextId, cs) ← get
+    set (nextId + 1, cs.push (nextId, cancelIfLive, discard (IO.wait child.task)))
+    return nextId
+  let detach : BaseIO Unit := do
+    alive.set false
+    unregisterHook
+    parent.children.atomically do
+      let (nextId, cs) ← get
+      set (nextId, cs.filter (·.1 != childId))
+  discard <| BaseIO.mapTask (fun _ => detach) child.task (sync := true)
 
 def WorkerIO.awaitIO {R M : Type} (w : WorkerIO R M) : IO (Option R × M) := do
   EIO.ofExcept (← IO.wait w.task)
 
 def WorkerIO.abortIO {R M : Type} (w : WorkerIO R M) : IO M := do
   let signal ← w.cancel.trigger.toBaseIO
+  if let .error err := signal then
+    discard (IO.eprintln s!"warning: worker cancel hook failed: {err}").toBaseIO
   let result ← IO.wait w.task
-  EIO.ofExcept signal
   return (← EIO.ofExcept result).2
 
 mutual
@@ -165,6 +203,51 @@ def evalCmdIO : {s t : St} → {A : Type} → Cmd s t A → ModelIO s → IO (Mo
   | _, _, _, .stop x e, m => do
     return (putAtIO x m (← RunningIO.stopIO (asModelIO e (getAtIO x m))).2, ())
 
+private def triggerOfferIO : (S : Session) → OfferIO S → BaseIO Unit
+  | .workerI _ _ _, w => do
+    if !(← IO.hasFinished w.task) then discard w.cancel.trigger.toBaseIO
+  | _, _ => pure ()
+
+mutual
+  private def triggerModelIO : (s : St) → ModelIO s → BaseIO Unit
+    | .file _, _ => pure ()
+    | .dir es, ms => triggerModelsIO es ms
+    | .chan S, o => triggerOfferIO S o
+  termination_by structural s => s
+
+  private def triggerModelsIO : (Γ : Ctx) → ModelsIO Γ → BaseIO Unit
+    | [], _ => pure ()
+    | (_, s) :: es, (v, rest) => do
+      triggerModelIO s v
+      triggerModelsIO es rest
+  termination_by structural Γ => Γ
+end
+
+mutual
+  private partial def cleanupModelIO : (s : St) → ModelIO s → BaseIO Unit
+    | .file _, _ => pure ()
+    | .dir es, ms => cleanupModelsIO es ms
+    | .chan S, o => cleanupOfferIO S o
+
+  private partial def cleanupModelsIO : (Γ : Ctx) → ModelsIO Γ → BaseIO Unit
+    | [], _ => pure ()
+    | (_, s) :: es, (v, rest) => do
+      cleanupModelIO s v
+      cleanupModelsIO es rest
+
+  private partial def cleanupOfferIO : (S : Session) → OfferIO S → BaseIO Unit
+    | .srvI _ _ _ F, r => do
+      if let .ok ⟨i, v⟩ ← r.stopIO.toBaseIO then cleanupModelIO (F i) v
+    | .workerI _ _ F, w => do
+      if !(← IO.hasFinished w.task) then discard w.cancel.trigger.toBaseIO
+      if let .ok (_, ⟨i, v⟩) ← IO.wait w.task then cleanupModelIO (F i) v
+    | _, _ => pure ()
+end
+
+private def reclaimModelsIO (Γ : Ctx) (ms : ModelsIO Γ) : BaseIO Unit := do
+  triggerModelsIO Γ ms
+  cleanupModelsIO Γ ms
+
 def evalIO (env : EnvIO Ψ) : {s t : St} → {A : Type} → Prog Ψ s t A → ModelIO s → IO (ModelIO t × A)
   | _, _, _, .done a, m => pure (m, a)
   | _, _, _, .step c k, m => do
@@ -182,9 +265,18 @@ def evalIO (env : EnvIO Ψ) : {s t : St} → {A : Type} → Prog Ψ s t A → Mo
     let (m₁, m₂) := splitModelsIO sp m
     let left ← IO.asTask (evalIO env p₁ m₁) .dedicated
     let right ← (evalIO env p₂ m₂).toBaseIO
-    let (l, a) ← EIO.ofExcept (← IO.wait left)
-    let (r, b) ← EIO.ofExcept right
-    evalIO env (k a b) (joinModelsIO _ _ l r)
+    let leftRes ← IO.wait left
+    match leftRes, right with
+    | .ok (l, a), .ok (r, b) =>
+      evalIO env (k a b) (joinModelsIO _ _ l r)
+    | .error err, .ok (r, _) =>
+      reclaimModelsIO _ r
+      throw err
+    | .ok (l, _), .error err =>
+      reclaimModelsIO _ l
+      throw err
+    | .error err, .error _ =>
+      throw err
   | _, _, _, .awaitI c e k, m => do
     let (opt, v) ← WorkerIO.awaitIO (asModelIO e (getAtIO c m))
     evalIO env (k opt v.1) (putAtIO c m v.2)
@@ -209,14 +301,27 @@ def RunningIO.machine {State : Type} (init : State)
       finish s }
 
 private partial def runWorkerIO {State R M : Type} (wc : WorkerCancel)
-    (turn : State → IO (Option R × State)) (halt : State → IO M) (state : State) : IO (Option R × M) := do
-  if ← wc.cancelled.get then return (none, ← halt state)
-  let (opt, next) ← turn state
+    (turn : State → IO (Option R × State)) (halt : State → IO M)
+    (cleanup : State → BaseIO Unit) (state : State) : IO (Option R × M) := do
+  let runHalt (st : State) : IO M := do
+    try halt st
+    catch err =>
+      discard wc.trigger.toBaseIO
+      wc.joinChildren
+      cleanup st
+      throw err
+  if ← wc.cancelled.get then return (none, ← runHalt state)
+  let (opt, next) ← try turn state
+    catch err =>
+      discard wc.trigger.toBaseIO
+      wc.joinChildren
+      cleanup state
+      throw err
   match opt with
   | some r =>
     let cancelled ← wc.cancelled.get
-    return (if cancelled then none else some r, ← halt next)
-  | none => runWorkerIO wc turn halt next
+    return (if cancelled then none else some r, ← runHalt next)
+  | none => runWorkerIO wc turn halt cleanup next
 
 private def workerSlots (R I : Type) (F : I → St) : (names : List String) →
     ModelsIO (workCtx R I F names) → List (WorkerIO R ((i : I) × ModelIO (F i)))
@@ -251,7 +356,8 @@ private def selectWorkerIO (wc : Option WorkerCancel) (R I : Type) (F : I → St
     catch err =>
       -- Signal every sibling before joining any of them. Preserve the selected error.
       let siblings := (ms.1 :: tail).eraseIdx idx
-      for w in siblings do discard w.cancel.trigger.toBaseIO
+      for w in siblings do
+        if !(← IO.hasFinished w.task) then discard w.cancel.trigger.toBaseIO
       for w in siblings do discard (IO.wait w.task)
       throw err
 
@@ -290,8 +396,12 @@ def evalProcWithCancelIO (wc : Option WorkerCancel) (env : EnvIO Ψ) {Γ : Ctx} 
           let (opt, resource) ← (← evalProcWithCancelIO (some child) env (turn i) v)
           return (opt, (← resource).1))
         (fun ⟨i, v⟩ => do return (← (← evalProcWithCancelIO none env (halt i) v)).1)
+        (fun ⟨i, v⟩ => reclaimModelsIO (family i) v)
         ⟨j, m⟩
-    return ⟨child, task⟩
+    let w : WorkerIO _ _ := ⟨child, task⟩
+    if let some parent := wc then
+      parent.attachWorker w
+    return w
   | .abortP x e k => fun m => do
     let v ← WorkerIO.abortIO (asModelIO e (getAtIO x m))
     evalProcWithCancelIO wc env (k v.1) (putAtIO x m v.2)

@@ -263,76 +263,113 @@ private def check (ok : Bool) (message : String) : IO Unit :=
 private def home (n : Nat) (label : String) : ModelsIO homeFiles := (n, label, ())
 private def contents (m : ModelsIO homeFiles) : Nat × String := (m.1, m.2.1)
 
+-- A promise-gated worker owns its directory until its gate fires or cancellation wakes it.
+private def gatedJob (gate : IO.Promise Unit) (index : Nat) (ms : ModelsIO homeFiles)
+    (onCancelBefore : IO Unit := pure ()) : IO (OfferIO Job) := do
+  let wc ← WorkerCancel.new
+  wc.onCancel onCancelBefore
+  wc.onCancel (gate.resolve ())
+  let wait : IO (Option Nat × ((i : Nat) × ModelIO (jobHome i))) := do
+    IO.wait gate.result!
+    return (if ← wc.cancelled.get then none else some ms.1, ⟨index, ms⟩)
+  return ⟨wc, ← IO.asTask wait .dedicated⟩
+
+private abbrev spawnSpec := mkSpec "spawn" homeFiles Job
+private abbrev failSpec := mkSpec "fail" homeFiles (.ten (.dat Nat) (.ten (.res (.dir homeFiles)) .end_))
+
+private def parWithLiveWorker : Prog [spawnSpec, failSpec]
+    (.dir (side "east" ++ side "west"))
+    (.dir ([("west", .chan Job)] ++ side "east")) Unit :=
+  Prog.par sides (by decide)
+    (.exec (.here rfl) (.here rfl) () rfl (.done ()))
+    (.exec (.here rfl) (.there (.here rfl)) () rfl
+      (.step (.recvD (.here rfl) rfl) fun _ => .step (.recover (.here rfl) rfl) fun _ => .done ()))
+    (fun _ _ => .done ())
+
 private def testParallel : IO Unit := do
+  let eastEntered ← IO.Promise.new
+  let westEntered ← IO.Promise.new
   let env : EnvIO [delayed] := EnvIO.cons (spec := delayed) (fun _ ms => pure do
-    IO.sleep 150
+    if BEq.beq (α := Nat) ms.1 11 then
+      eastEntered.resolve ()
+      IO.wait westEntered.result!
+    else
+      westEntered.resolve ()
+      IO.wait eastEntered.result!
     return (ms.1, pure ((Nat.succ ms.1, ms.2), ()))) EnvIO.nil
   let input := (home 11 "east", home 37 "west", ())
-  let start ← IO.monoMsNow
   let (owned, a, b) ← evalIO env bothSides input
-  let elapsed := (← IO.monoMsNow) - start
   check ((a, b) == (37, 11) && contents owned.1 == (38, "west") &&
     contents owned.2.1 == (12, "east")) "parallel branch answers or rejoined directories"
-  check (elapsed < 260) s!"parallel 150 ms branches took {elapsed} ms"
-  IO.println s!"Parallel 150 ms branches finished in {elapsed} ms"
+  IO.println "Parallel rendezvous branches finished concurrently"
 
   let finished ← IO.mkRef false
+  let eastThrowing ← IO.Promise.new
   let failing : EnvIO [delayed] := EnvIO.cons (spec := delayed) (fun _ ms => pure do
-    if BEq.beq (α := Nat) ms.1 11 then throw (IO.userError "east failed")
-    IO.sleep 20
+    if BEq.beq (α := Nat) ms.1 11 then
+      eastThrowing.resolve ()
+      throw (IO.userError "east failed")
+    IO.wait eastThrowing.result!
     finished.set true
     return (ms.1, pure (ms, ()))) EnvIO.nil
   let .error (.userError "east failed") ← (evalIO failing bothSides input).toBaseIO
     | throw (IO.userError "lost parallel branch error")
   check (← finished.get) "parallel branch still running after its sibling threw"
 
--- A native timer service owns its directory until it fires or its cancellation hook wakes it.
-private def timedJob (delay : UInt64) (index : Nat) (ms : ModelsIO homeFiles) : IO (OfferIO Job) := do
-  let wc ← WorkerCancel.new
-  let timer ← Std.Internal.UV.Timer.mk delay false
-  let alarm ← timer.next
-  wc.onCancel do
-    timer.stop
-    alarm.resolve ()
-  let wait : IO (Option Nat × ((i : Nat) × ModelIO (jobHome i))) := do
-    IO.wait alarm.result!
-    return (if ← wc.cancelled.get then none else some ms.1, ⟨index, ms⟩)
-  return ⟨wc, ← IO.asTask wait .dedicated⟩
+  -- If one `.par` branch throws, a live worker returned by the sibling branch is cancelled and joined.
+  let spawned ← IO.mkRef (none : Option (OfferIO Job))
+  let workerReady ← IO.Promise.new
+  let parEnv : EnvIO [spawnSpec, failSpec] :=
+    EnvIO.cons (spec := spawnSpec) (fun _ ms => do
+      let w ← gatedJob (← IO.Promise.new) 5 ms
+      spawned.set (some w)
+      workerReady.resolve ()
+      return w)
+    (EnvIO.cons (spec := failSpec) (fun _ _ => pure do
+      IO.wait workerReady.result!
+      throw (IO.userError "right branch failed")) EnvIO.nil)
+  let .error (.userError "right branch failed") ← (evalIO parEnv parWithLiveWorker input).toBaseIO
+    | throw (IO.userError "lost par failure with live worker")
+  let some w ← spawned.get | throw (IO.userError "missing spawned worker")
+  check ((← w.cancel.cancelled.get) && (← IO.hasFinished w.task))
+    "par failure leaked live worker from surviving branch"
 
 private def selectIO (names : List String) (ms : ModelsIO (slots names)) (hne : names ≠ [] := by decide) :
     IO ((s : Selection names) × ModelIO (selectedDir s)) := do
   return (← (← evalProcIO EnvIO.nil (selectJob names hne) ms)).1
 
 private def testWorkerRace : IO Unit := do
-  let start ← IO.monoMsNow
-  let timer₁ ← timedJob 80 1 (home 11 "slow1")
-  let timer₂ ← timedJob 5000 3 (home 33 "slow2")
-  let slow₁ ← evalProcIO EnvIO.nil nestedJob (timer₁, ())
-  let inner ← evalProcIO EnvIO.nil nestedJob (timer₂, ())
+  let gateSlow1 ← IO.Promise.new
+  let gateSlow2 ← IO.Promise.new
+  let gateFast ← IO.Promise.new
+  let worker₁ ← gatedJob gateSlow1 1 (home 11 "slow1")
+  let worker₂ ← gatedJob gateSlow2 3 (home 33 "slow2")
+  let slow₁ ← evalProcIO EnvIO.nil nestedJob (worker₁, ())
+  let inner ← evalProcIO EnvIO.nil nestedJob (worker₂, ())
   let slow₂ ← evalProcIO EnvIO.nil nestedJob (inner, ())
-  let timerFast ← timedJob 20 2 (home 22 "fast")
-  let fast ← evalProcIO EnvIO.nil nestedJob (timerFast, ())
+  let workerFast ← gatedJob gateFast 2 (home 22 "fast")
+  let fast ← evalProcIO EnvIO.nil nestedJob (workerFast, ())
 
+  gateFast.resolve ()
   let ⟨.ready n (.there (.here _)) r i, first⟩ ←
       selectIO ["slow1", "fast", "slow2"] (slow₁, fast, slow₂, ())
     | throw (IO.userError "the middle worker did not win")
-  let fastMs := (← IO.monoMsNow) - start
-  check (n == "fast" && r == 22 && i == 2 && contents first.2.1 == (22, "fast") && fastMs < 100)
-    s!"incorrect fast worker result or latency ({fastMs} ms)"
+  check (n == "fast" && r == 22 && i == 2 && contents first.2.1 == (22, "fast") &&
+    !(← IO.hasFinished worker₁.task) && !(← IO.hasFinished worker₂.task))
+    "incorrect fast worker result or premature sibling completion"
 
+  gateSlow1.resolve ()
   let ⟨.ready n (.here _) r i, second⟩ ← selectIO ["slow1", "slow2"] (first.1, first.2.2)
     | throw (IO.userError "slow1 did not survive the first selection")
-  let slowMs := (← IO.monoMsNow) - start
   check (n == "slow1" && r == 11 && i == 1 && contents second.1 == (11, "slow1") &&
-    !(← timer₁.cancel.cancelled.get) && slowMs < 180) s!"incorrect slow1 result or latency ({slowMs} ms)"
+    !(← worker₁.cancel.cancelled.get) && !(← IO.hasFinished worker₂.task))
+    "incorrect slow1 result or cancelled surviving sibling"
 
-  let stopping ← IO.monoMsNow
   let ⟨i, recovered⟩ := (← (← evalProcIO EnvIO.nil (recoverJob "slow2") second.2)).1
-  let abortMs := (← IO.monoMsNow) - stopping
   check (i == 3 && contents recovered == (33, "slow2") && (← inner.cancel.cancelled.get) &&
-    (← timer₂.cancel.cancelled.get) && (← IO.hasFinished timer₂.task) && abortMs < 150)
-    s!"nested abort did not recover the live directory in time ({abortMs} ms)"
-  IO.println s!"Worker completion at {fastMs} and {slowMs} ms, nested abort in {abortMs} ms"
+    (← worker₂.cancel.cancelled.get) && (← IO.hasFinished worker₂.task))
+    "nested abort did not recover the live directory"
+  IO.println "Deterministic promise-barrier worker race and nested abort passed"
 
 private def waitingBeforeFailure (seen : IO.Ref (Array (OfferIO Job))) : (names : List String) →
     IO (ModelsIO (slots (names ++ ["failed"])))
@@ -347,16 +384,43 @@ private def waitingBeforeFailure (seen : IO.Ref (Array (OfferIO Job))) : (names 
 
 private def testWorkerCleanup : IO Unit := do
   let immediate : Running Unit (Option Nat) Unit := ⟨Unit, (), fun _ _ => (some 7, ()), id⟩
-  check (pollN 1000000000000 immediate == some 7) "existing server polling did not return its first answer"
+  check ((immediate.call ()).1 == some 7) "existing server call did not return its first answer"
   let w ← evalProcIO EnvIO.nil (countingJob 2048) (home 7 "turns")
   let (owned, opt, i) ← evalIO EnvIO.nil awaitOne (w, ())
   check (opt == some 2048 && i == 2048 && contents owned.1 == (7, "turns")) "autonomous worker turns"
-  let w ← timedJob 5000 9 (home 8 "abort")
+  let w ← gatedJob (← IO.Promise.new) 9 (home 8 "abort")
   let (owned, i) ← evalIO EnvIO.nil abortOne (w, ())
   check (i == 9 && contents owned.1 == (8, "abort") && (← w.cancel.cancelled.get)) "single-slot abort"
 
-  let a ← timedJob 5000 1 (home 1 "a")
-  let b ← timedJob 5000 2 (home 2 "b")
+  -- Cancel-hook failure during abortIO must still return the reclaimed directory M.
+  let hookFailed ← IO.mkRef false
+  let hooked ← gatedJob (← IO.Promise.new) 77 (home 42 "hook-fail") (onCancelBefore := do
+    hookFailed.set true
+    throw (IO.userError "cancel hook failed"))
+  let (owned, i) ← evalIO EnvIO.nil abortOne (hooked, ())
+  check (i == 77 && contents owned.1 == (42, "hook-fail") && (← hookFailed.get) &&
+    (← hooked.cancel.cancelled.get) && (← IO.hasFinished hooked.task))
+    "cancel hook failure discarded reclaimed home"
+
+  -- Cascading cancellation from a parent WorkerCancel to spawned child workers.
+  let parentWc ← WorkerCancel.new
+  let finishedGate ← IO.Promise.new
+  let doneInner ← gatedJob finishedGate 4 (home 4 "done")
+  let doneChild ← evalProcWithCancelIO (some parentWc) EnvIO.nil nestedJob (doneInner, ())
+  finishedGate.resolve ()
+  let (doneOpt, doneHome) ← WorkerIO.awaitIO doneChild
+  check (doneOpt == some 4 && doneHome.1 == 4) "completed child under parent cancel"
+  let liveInner ← gatedJob (← IO.Promise.new) 5 (home 5 "cascade")
+  let liveChild ← evalProcWithCancelIO (some parentWc) EnvIO.nil nestedJob (liveInner, ())
+  parentWc.trigger
+  let (cascadedOpt, cascadedHome) ← WorkerIO.awaitIO liveChild
+  check (cascadedOpt.isNone && cascadedHome.1 == 5 && contents cascadedHome.2 == (5, "cascade") &&
+    (← liveChild.cancel.cancelled.get) && (← liveInner.cancel.cancelled.get) &&
+    !(← doneChild.cancel.cancelled.get) && !(← doneInner.cancel.cancelled.get))
+    "cascading cancellation missed live child or spuriously cancelled completed child"
+
+  let a ← gatedJob (← IO.Promise.new) 1 (home 1 "a")
+  let b ← gatedJob (← IO.Promise.new) 2 (home 2 "b")
   let failed : OfferIO Job := ⟨← WorkerCancel.new, Task.pure (.error (.userError "child failed"))⟩
   let .error (.userError "child failed") ← (selectIO ["a", "failed", "b"] (a, failed, b, ())).toBaseIO
     | throw (IO.userError "lost selected child error")

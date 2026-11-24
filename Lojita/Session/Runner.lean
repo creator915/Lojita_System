@@ -42,14 +42,13 @@ def runNode (cfg : SessionConfig) (dir : FilePath) (task : NodeTask) (home : Fro
       let (some verdict, stopped) ← Lojita.Ownership.WorkerIO.awaitIO (← start task)
         | fail "node stopped without a verdict"
       return (verdict, freezeHome stopped.1 stopped.2)) accept (cancelOwner := fun owner => do
-        cfg.backend.cancel owner
+        if let .error err ← (cfg.backend.cancel owner).toBaseIO then
+          discard (IO.eprintln s!"warning: cancel failed for {owner}: {err}").toBaseIO
         active.modify (·.erase owner)) (childProposer := propose)
   finally
-    let mut cleanup := Except.ok (ε := IO.Error) ()
     for owner in ← active.get do
-      let result ← (try cfg.backend.cancel owner finally cfg.backend.retire owner).toBaseIO
-      if cleanup.isOk then cleanup := result
-    EIO.ofExcept cleanup
+      if let .error err ← (try cfg.backend.cancel owner finally cfg.backend.retire owner).toBaseIO then
+        discard (IO.eprintln s!"warning: cleanup failed for {owner}: {err}").toBaseIO
 
 def driveTree (cfg : SessionConfig) (name why src : String) (bases : List String)
     (lifting transport : Option String) (replaces : List String := []) : IO String := withWorkspaceLock cfg.workspace do
