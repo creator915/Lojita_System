@@ -1,71 +1,7 @@
 set_option genCtorIdx false
 
 namespace Lojita.Ownership
-universe u v
-
-/-- The immediate structural children of a syntax node. Continuations may have
-    one child for every value of their argument type. -/
-private structure Children (α : Type u) where
-  Index : Type
-  child : Index → α
-
-private def Children.empty {α : Type u} : Children α := ⟨Empty, nofun⟩
-private def Children.one {α : Type u} (a : α) : Children α := ⟨Unit, fun _ => a⟩
-private def Children.two {α : Type u} (a b : α) : Children α := ⟨Bool, fun right => if right then b else a⟩
-private abbrev FoldStep {α : Type u} (kids : α → Children α) (C : α → Sort v) :=
-  (x : α) → ((i : (kids x).Index) → C ((kids x).child i)) → C x
-private abbrev StructuralInduction {α : Type u} (kids : α → Children α) :=
-  (P : α → Prop) → FoldStep kids P → (x : α) → P x
-
-/-- Structural induction proves the child relation well founded. Compiling the
-    fold through the standard library fixpoint visits each requested child on
-    demand. The kernel uses the original inductive eliminators for reduction. -/
-private def nativeFold {α : Type u} (kids : α → Children α) (ind : StructuralInduction kids)
-    {C : α → Sort v} (step : FoldStep kids C) : (x : α) → C x :=
-  let sub y x := ∃ i, (kids x).child i = y
-  let wf : WellFounded sub := ⟨ind (Acc sub) fun x ih =>
-    .intro x fun _ ⟨i, h⟩ => h ▸ ih i⟩
-  wf.fix fun x rec => step x fun i => rec ((kids x).child i) ⟨i, rfl⟩
-
-/-- A kernel proof for every compiler simplification used by these folds. -/
-private theorem eq_nativeFold {α : Type u} (kids : α → Children α) (ind : StructuralInduction kids)
-    {C : α → Sort v} (step : FoldStep kids C) (f : (x : α) → C x)
-    (unfoldF : ∀ x, f x = step x (fun i => f ((kids x).child i))) :
-    f = nativeFold kids ind step := by
-  funext x
-  apply ind (fun y => f y = nativeFold kids ind step y) _ x
-  intro y ih
-  rw [unfoldF y]
-  unfold nativeFold
-  rw [WellFounded.fix_eq]
-  exact congrArg (step y) (funext ih)
-
-private def listChildren {α : Type u} : List α → Children (List α)
-  | [] => .empty
-  | _ :: xs => .one xs
-
-private theorem listInduction {α : Type u} : StructuralInduction (@listChildren α) := by
-  intro P step xs
-  induction xs with
-  | nil => exact step [] nofun
-  | cons x xs ih => exact step (x :: xs) fun _ => ih
-
-private def foldListNative {α : Type u} {C : List α → Sort v} (nil : C [])
-    (cons : (x : α) → (xs : List α) → (Unit → C xs) → C (x :: xs)) : (xs : List α) → C xs :=
-  nativeFold listChildren listInduction (C := C) fun
-    | [], _ => nil
-    | x :: xs, tail => cons x xs tail
-
-private noncomputable def foldList {α : Type u} {C : List α → Sort v} (nil : C [])
-    (cons : (x : α) → (xs : List α) → (Unit → C xs) → C (x :: xs)) : (xs : List α) → C xs
-  | [] => nil
-  | x :: xs => cons x xs (fun _ => foldList nil cons xs)
-
-@[csimp] private theorem foldList_eq : @foldList = @foldListNative := by
-  funext α C nil cons
-  apply eq_nativeFold
-  intro l
-  cases l <;> rfl
+universe u
 
 mutual
   inductive St : Type 1 where
@@ -108,27 +44,25 @@ inductive Position {α : Type u} (key : α → String) (n : String) : List α �
 namespace Position
 variable {α : Type u} {key : α → String} {n : String} {xs : List α}
 
-private def fold {C : {xs : List α} → Position key n xs → Sort v}
-    (here : ∀ {x xs} (h : key x = n), C (.here (xs := xs) h))
-    (there : ∀ {x xs} (p : Position key n xs), (Unit → C p) → C (.there (x := x) p))
-    {xs : List α} (p : Position key n xs) : C p :=
-  foldList (C := fun xs => (p : Position key n xs) → C p) nofun
-    (fun _ _ tail p => match p with
-      | .here h => here h
-      | .there q => there q (fun _ => tail () q)) xs p
+def value : {xs : List α} → Position key n xs → α
+  | x :: _, .here _ => x
+  | _ :: _, .there p => p.value
+termination_by structural _ p => p
 
-def value : {xs : List α} → Position key n xs → α :=
-  fold (C := fun _ => α) (fun {x _} _ => x) (fun _ tail => tail ())
+def replace (f : α → α) : {xs : List α} → Position key n xs → List α
+  | x :: xs, .here _ => f x :: xs
+  | x :: _, .there p => x :: p.replace f
+termination_by structural _ p => p
 
-def replace (f : α → α) : {xs : List α} → Position key n xs → List α :=
-  fold (C := fun _ => List α) (fun {x xs} _ => f x :: xs) (fun {x _} _ tail => x :: tail ())
+def remove : {xs : List α} → Position key n xs → List α
+  | _ :: xs, .here _ => xs
+  | x :: _, .there p => x :: p.remove
+termination_by structural _ p => p
 
-def remove : {xs : List α} → Position key n xs → List α :=
-  fold (C := fun _ => List α) (fun {_ xs} _ => xs) (fun {x _} _ tail => x :: tail ())
-
-def find (key : α → String) (n : String) : (xs : List α) → Option (Position key n xs) :=
-  foldList (C := fun xs => Option (Position key n xs)) none fun x _ tail =>
-    if h : key x = n then some (.here h) else (tail ()).map .there
+def find (key : α → String) (n : String) : (xs : List α) → Option (Position key n xs)
+  | [] => none
+  | x :: xs => if h : key x = n then some (.here h) else (find key n xs).map .there
+termination_by structural xs => xs
 
 end Position
 
@@ -144,9 +78,10 @@ abbrev setAt (x : MemCtx n Γ) (s : St) := x.replace (fun e => (e.1, s))
 abbrev removeAt (x : MemCtx n Γ) := x.remove
 
 def MemCtx.afterSet {Γ : Ctx} (x : MemCtx n Γ) (s : St) : MemCtx n (setAt x s) :=
-  Position.fold (C := fun x => MemCtx n (setAt x s))
-    (fun {e xs} h => by change MemCtx n ((e.1, s) :: xs); exact .here h)
-    (fun {e _} p tail => by change MemCtx n (e :: setAt p s); exact .there (tail ())) x
+  match x with
+  | .here h => .here h
+  | .there p => .there (MemCtx.afterSet p s)
+termination_by structural x
 
 theorem stateOf_afterSet (x : MemCtx n Γ) (s : St) : stateOf (MemCtx.afterSet x s) = s := by
   induction x with
@@ -164,8 +99,10 @@ def workCtx (R I : Type) (F : I → St) (names : List String) : Ctx :=
 
 def workPos (R I : Type) (F : I → St) {names : List String} (p : Position id n names) :
     MemCtx n (workCtx R I F names) :=
-  Position.fold (C := fun {ns} _ => MemCtx n (workCtx R I F ns))
-    (fun h => .here h) (fun _ tail => .there (tail ())) p
+  match p with
+  | .here h => .here h
+  | .there q => .there (workPos R I F q)
+termination_by structural p
 
 theorem stateOf_workPos (R I : Type) (F : I → St) {names : List String} (p : Position id n names) :
     stateOf (workPos R I F p) = .chan (.workerI R I F) := by
@@ -206,56 +143,26 @@ inductive SplitCtx : Ctx → Ctx → Ctx → Type 1 where
   | right (e : String × St) {Γ Γ₁ Γ₂ : Ctx} :
       member e.1 Γ₁ = false → SplitCtx Γ Γ₁ Γ₂ → SplitCtx (e :: Γ) Γ₁ (e :: Γ₂)
 
-private def SplitCtx.fold {C : {Γ l r : Ctx} → SplitCtx Γ l r → Sort v} (nil : C .nil)
-    (left : ∀ {Γ l r} e h (sp : SplitCtx Γ l r), (Unit → C sp) → C (.left e h sp))
-    (right : ∀ {Γ l r} e h (sp : SplitCtx Γ l r), (Unit → C sp) → C (.right e h sp))
-    {Γ l r : Ctx} (sp : SplitCtx Γ l r) : C sp :=
-  foldList (C := fun Γ => ∀ {l r}, (sp : SplitCtx Γ l r) → C sp)
-    (fun {_ _} sp => match sp with | .nil => nil)
-    (fun _ _ tail {l r} sp => match sp with
-      | .left e h rest => left e h rest (fun _ => tail () rest)
-      | .right e h rest => right e h rest (fun _ => tail () rest)) Γ sp
-
 def SplitCtx.swap {Γ Γ₁ Γ₂ : Ctx} (sp : SplitCtx Γ Γ₁ Γ₂) : SplitCtx Γ Γ₂ Γ₁ :=
-  sp.fold (C := fun {Γ l r} _ => SplitCtx Γ r l) .nil
-    (fun e h _ tail => .right e h (tail ())) (fun e h _ tail => .left e h (tail ()))
+  match sp with
+  | .nil => .nil
+  | .left e h tail => .right e h tail.swap
+  | .right e h tail => .left e h tail.swap
+termination_by structural sp
 
 inductive Prefix where
   | root
   | push (entry : String × St) (outer : Prefix)
 
-private def Prefix.children : Prefix → Children Prefix
-  | .root => .empty
-  | .push _ p => .one p
+def plug : Prefix → Ctx → Ctx
+  | .root, Γ => Γ
+  | .push e p, Γ => plug p (e :: Γ)
+termination_by structural p _ => p
 
-private theorem Prefix.structuralInduction : StructuralInduction Prefix.children := by
-  intro P step p
-  induction p with
-  | root => exact step .root nofun
-  | push e p ih => exact step (.push e p) fun _ => ih
-
-private noncomputable def Prefix.fold {C : Prefix → Sort v} (root : C .root)
-    (push : ∀ e p, (Unit → C p) → C (.push e p)) : (p : Prefix) → C p :=
-  Prefix.rec (motive := C) root (fun e p ih => push e p (fun _ => ih))
-
-private def Prefix.foldNative {C : Prefix → Sort v} (root : C .root)
-    (push : ∀ e p, (Unit → C p) → C (.push e p)) : (p : Prefix) → C p :=
-  nativeFold Prefix.children Prefix.structuralInduction (C := C) fun
-    | .root, _ => root
-    | .push e p, tail => push e p tail
-
-@[csimp] private theorem Prefix.fold_eq : @Prefix.fold = @Prefix.foldNative := by
-  funext C root push
-  apply eq_nativeFold
-  intro p
-  cases p <;> rfl
-
-def plug : Prefix → Ctx → Ctx :=
-  Prefix.fold (C := fun _ => Ctx → Ctx) id (fun e _ tail Γ => tail () (e :: Γ))
-
-def Prefix.position : (p : Prefix) → {Γ : Ctx} → MemCtx n Γ → MemCtx n (plug p Γ) :=
-  Prefix.fold (C := fun p => ∀ {Γ}, MemCtx n Γ → MemCtx n (plug p Γ))
-    (fun x => x) (fun _ _ tail {_} x => tail () (.there x))
+def Prefix.position : (p : Prefix) → {Γ : Ctx} → MemCtx n Γ → MemCtx n (plug p Γ)
+  | .root, _, x => x
+  | .push _ p, _, x => p.position (.there x)
+termination_by structural p _ _ => p
 
 def St.isFile : St → Bool | .file _ => true | _ => false
 
@@ -266,17 +173,22 @@ inductive Reorder : Ctx → Ctx → Type 1 where
   | swap {Γ : Ctx} (a b : String × St) : Reorder (a :: b :: Γ) (b :: a :: Γ)
   | trans {Γ Δ : Ctx} {Θ : Ctx} : Reorder Γ Δ → Reorder Δ Θ → Reorder Γ Θ
 
-private def Reorder.appendNil : (xs : Ctx) → Reorder xs (xs ++ []) :=
-  foldList (C := fun xs => Reorder xs (xs ++ [])) .refl (fun x _ tail => .cons x (tail ()))
+private def Reorder.appendNil : (xs : Ctx) → Reorder xs (xs ++ [])
+  | [] => .refl
+  | x :: xs => .cons x (appendNil xs)
+termination_by structural xs => xs
 
 private def Reorder.moveRight (e : String × St) (xs ys : Ctx) :
     Reorder (e :: (xs ++ ys)) (xs ++ (e :: ys)) :=
-  foldList (C := fun xs => Reorder (e :: (xs ++ ys)) (xs ++ (e :: ys))) .refl
-    (fun x _ tail => .trans (.swap e x) (.cons x (tail ()))) xs
+  match xs with
+  | [] => .refl
+  | x :: xs => .trans (.swap e x) (.cons x (moveRight e xs ys))
+termination_by structural xs
 
-def Reorder.swapAppend (Δ₁ : Ctx) : (Δ₂ : Ctx) → Reorder (Δ₂ ++ Δ₁) (Δ₁ ++ Δ₂) :=
-  foldList (C := fun Δ₂ => Reorder (Δ₂ ++ Δ₁) (Δ₁ ++ Δ₂)) (appendNil Δ₁)
-    (fun e es tail => .trans (.cons e (tail ())) (moveRight e Δ₁ es))
+def Reorder.swapAppend (Δ₁ : Ctx) : (Δ₂ : Ctx) → Reorder (Δ₂ ++ Δ₁) (Δ₁ ++ Δ₂)
+  | [] => appendNil Δ₁
+  | e :: es => .trans (.cons e (swapAppend Δ₁ es)) (moveRight e Δ₁ es)
+termination_by structural Δ₂ => Δ₂
 
 inductive Cmd : St → St → Type → Type 1 where
   | read {A : Type} : Cmd (.file A) (.file A) A
@@ -322,54 +234,17 @@ inductive Prog (Ψ : List Spec) : St → St → Type → Type 1 where
       stateOf c = .chan (.workerI R I F) →
       ((i : I) → Prog Ψ (.dir (setAt c (F i))) u A) → Prog Ψ (.dir Γ) u A
 
-private abbrev ProgTerm (Ψ : List Spec) := (s : St) × (t : St) × (A : Type) × Prog Ψ s t A
-private abbrev Prog.term (p : Prog Ψ s t A) : ProgTerm Ψ := ⟨s, t, A, p⟩
-
-private inductive ParBranch (A B : Type) where
-  | left
-  | right
-  | join (a : A) (b : B)
-
-private def progChildren : ProgTerm Ψ → Children (ProgTerm Ψ)
-  | ⟨_, _, _, .done _⟩ => .empty
-  | ⟨_, _, _, .step _ k⟩ | ⟨_, _, _, .stopI _ _ k⟩ | ⟨_, _, _, .abortI _ _ k⟩ => ⟨_, fun a => (k a).term⟩
-  | ⟨_, _, _, .focus _ p k⟩ => ⟨Option _, fun | none => p.term | some a => (k a).term⟩
-  | ⟨_, _, _, .exec _ _ _ _ k⟩ => .one k.term
-  | ⟨_, _, _, .par _ _ p q k⟩ => ⟨ParBranch _ _, fun
-      | .left => p.term | .right => q.term | .join a b => (k a b).term⟩
-  | ⟨_, _, _, .awaitI _ _ k⟩ => ⟨_ × _, fun ri => (k ri.1 ri.2).term⟩
-
-private noncomputable def foldProg {C : ProgTerm Ψ → Sort v} (step : FoldStep progChildren C)
-    (x : ProgTerm Ψ) : C x := by
-  obtain ⟨s, t, A, p⟩ := x
-  induction p with
-  | done => exact step _ nofun
-  | step _ _ ih | stopI _ _ _ ih | abortI _ _ _ ih => exact step _ ih
-  | focus _ _ _ left next => exact step _ fun | none => left | some a => next a
-  | exec _ _ _ _ _ ih => exact step _ fun _ => ih
-  | par _ _ _ _ _ left right next =>
-    exact step _ fun | .left => left | .right => right | .join a b => next a b
-  | awaitI _ _ _ ih => exact step _ fun ri => ih ri.1 ri.2
-
-private def foldProgNative {C : ProgTerm Ψ → Sort v} :=
-  nativeFold progChildren (fun P => foldProg (C := P)) (C := C)
-
-@[csimp] private theorem foldProg_eq : @foldProg = @foldProgNative := by
-  funext Ψ C step
-  apply eq_nativeFold
-  rintro ⟨_, _, _, p⟩
-  cases p <;> first | rfl | apply congrArg (step _); funext i; cases i <;> rfl
-
 def Prog.bind {s t u : St} {A B : Type} (p : Prog Ψ s t A) (f : A → Prog Ψ t u B) : Prog Ψ s u B :=
-  foldProg (C := fun ⟨s, t, A, _⟩ => (A → Prog Ψ t u B) → Prog Ψ s u B) (fun
-    | ⟨_, _, _, .done a⟩, _, f => f a
-    | ⟨_, _, _, .step c _⟩, rec, f => .step c (fun a => rec a f)
-    | ⟨_, _, _, .focus x child _⟩, rec, f => .focus x child (fun a => rec (some a) f)
-    | ⟨_, _, _, .exec x h i e _⟩, rec, f => .exec x h i e (rec () f)
-    | ⟨_, _, _, .stopI c e _⟩, rec, f => .stopI c e (fun i => rec i f)
-    | ⟨_, _, _, .par sp dj p₁ p₂ _⟩, rec, f => .par sp dj p₁ p₂ (fun a b => rec (.join a b) f)
-    | ⟨_, _, _, .awaitI c e _⟩, rec, f => .awaitI c e (fun r i => rec (r, i) f)
-    | ⟨_, _, _, .abortI c e _⟩, rec, f => .abortI c e (fun i => rec i f)) p.term f
+  match p with
+  | .done a => f a
+  | .step c k => .step c (fun a => (k a).bind f)
+  | .focus x child k => .focus x child (fun a => (k a).bind f)
+  | .exec x h i e k => .exec x h i e (k.bind f)
+  | .stopI c e k => .stopI c e (fun i => (k i).bind f)
+  | .par sp dj p₁ p₂ k => .par sp dj p₁ p₂ (fun a b => (k a b).bind f)
+  | .awaitI c e k => .awaitI c e (fun r i => (k r i).bind f)
+  | .abortI c e k => .abortI c e (fun i => (k i).bind f)
+termination_by structural p
 
 instance : Monad (Prog Ψ s s) where
   pure := .done
@@ -465,28 +340,12 @@ def Worker.stepOne {M : Type u} (w : Worker R M) : Option R × Worker R M :=
 
 def Worker.abort {M : Type u} (w : Worker R M) : M := w.finish w.init
 
-/-- Delay the predecessor so an existing server observation can return on its first answer. -/
-private def foldNat {α : Type u} (zero : α) (succ : (Unit → α) → α) : Nat → α :=
-  Nat.rec (motive := fun _ => α) zero (fun _ previous => succ (fun _ => previous))
-
-private def foldNatNative {α : Type u} (zero : α) (succ : (Unit → α) → α) : Nat → α :=
-  Nat.lt_wfRel.wf.fix (C := fun _ => α) fun
-    | 0, _ => zero
-    | n + 1, previous => succ (fun _ => previous n (Nat.lt_succ_self n))
-
-@[csimp] private theorem foldNat_eq : @foldNat = @foldNatNative := by
-  funext α zero succ n
-  induction n with
-  | zero => unfold foldNatNative; rw [WellFounded.fix_eq]; rfl
-  | succ n ih =>
-    unfold foldNatNative at ih ⊢
-    rw [WellFounded.fix_eq]
-    exact congrArg succ (funext fun _ => ih)
-
-def observeN {M : Type u} : Nat → Running Unit (Option A) M → Option A × Running Unit (Option A) M :=
-  foldNat (fun r => (none, r)) (fun again r => match r.call () with
-      | (some a, next) => (some a, next)
-      | (none, next) => again () next)
+def observeN {M : Type u} : Nat → Running Unit (Option A) M → Option A × Running Unit (Option A) M
+  | 0, r => (none, r)
+  | n+1, r => match r.call () with
+    | (some a, next) => (some a, next)
+    | (none, next) => observeN n next
+termination_by structural n _ => n
 
 def pollN {M : Type u} (n : Nat) (r : Running Unit (Option A) M) := (observeN n r).1
 
@@ -530,87 +389,36 @@ def worker (R : Type) (m : Presentation) : Presentation where
 
 end Presentation
 
-/-- Tags for the five mutually recursive parts of a resource presentation. -/
-private inductive SyntaxPart where
-  | state (s : St)
-  | context (es : Ctx)
-  | entry (e : String × St)
-  | msg (t : Ty)
-  | offer (s : Session)
-
-private def syntaxChildren : SyntaxPart → Children SyntaxPart
-  | .state (.file _) | .msg (.dat _) | .context [] | .offer .end_ => .empty
-  | .state (.dir es) => .one (.context es)
-  | .state (.chan s) => .one (.offer s)
-  | .context (e :: es) => .two (.entry e) (.context es)
-  | .entry (_, s) | .msg (.res s) => .one (.state s)
-  | .msg (.exRes _ f) | .offer (.srvI _ _ _ f) | .offer (.workerI _ _ f) => ⟨_, fun i => .state (f i)⟩
-  | .offer (.ten t s) | .offer (.arr t s) => .two (.msg t) (.offer s)
-
-section
-variable {C : SyntaxPart → Sort v} (step : FoldStep syntaxChildren C)
-
 mutual
-  private noncomputable def foldState : (s : St) → C (.state s)
-    | .file _ => step _ nofun
-    | .dir es => step _ fun _ => foldContext es
-    | .chan s => step _ fun _ => foldOffer s
+  def stateType : St → Presentation
+    | .file A => .data A
+    | .dir es => contextType es
+    | .chan S => offerType S
   termination_by structural s => s
 
-  private noncomputable def foldContext : (es : Ctx) → C (.context es)
-    | [] => step _ nofun
-    | e :: es => step _ fun | false => foldEntry e | true => foldContext es
+  def contextType : Ctx → Presentation
+    | [] => .data Unit
+    | e :: es => .pair (entryType e) (contextType es)
   termination_by structural es => es
 
-  private noncomputable def foldEntry : (e : String × St) → C (.entry e)
-    | (_, s) => step _ fun _ => foldState s
+  def entryType : String × St → Presentation
+    | (_, s) => stateType s
   termination_by structural e => e
 
-  private noncomputable def foldMsg : (t : Ty) → C (.msg t)
-    | .dat _ => step _ nofun
-    | .res s => step _ fun _ => foldState s
-    | .exRes _ f => step _ fun i => foldState (f i)
+  def msgType : Ty → Presentation
+    | .dat A => .data A
+    | .res s => stateType s
+    | .exRes I F => .existsRes I (fun i => stateType (F i))
   termination_by structural t => t
 
-  private noncomputable def foldOffer : (s : Session) → C (.offer s)
-    | .end_ => step _ nofun
-    | .ten t s | .arr t s => step _ fun | false => foldMsg t | true => foldOffer s
-    | .srvI _ _ _ f | .workerI _ _ f => step _ fun i => foldState (f i)
-  termination_by structural s => s
+  def offerType : Session → Presentation
+    | .end_ => .data Unit
+    | .ten t S => .pair (msgType t) (offerType S)
+    | .arr t S => .arrow (msgType t) (offerType S)
+    | .srvI Q R I F => .server Q R (.existsRes I (fun i => stateType (F i)))
+    | .workerI R I F => .worker R (.existsRes I (fun i => stateType (F i)))
+  termination_by structural S => S
 end
-
-private noncomputable def foldSyntax : (x : SyntaxPart) → C x
-  | .state s => foldState step s
-  | .context es => foldContext step es
-  | .entry e => foldEntry step e
-  | .msg t => foldMsg step t
-  | .offer s => foldOffer step s
-end
-
-private def foldSyntaxNative {C : SyntaxPart → Sort v} :=
-  nativeFold syntaxChildren (fun P => foldSyntax (C := P)) (C := C)
-
-@[csimp] private theorem foldSyntax_eq : @foldSyntax = @foldSyntaxNative := by
-  funext C step
-  apply eq_nativeFold
-  intro x
-  cases x <;> rename_i x <;> cases x <;> first | rfl | apply congrArg (step _); funext i; cases i <;> rfl
-
-private def present := foldSyntax (C := fun _ => Presentation) fun
-  | .state (.file A), _ | .msg (.dat A), _ => .data A
-  | .context [], _ | .offer .end_, _ => .data Unit
-  | .state (.dir _), rec | .state (.chan _), rec | .entry (_, _), rec | .msg (.res _), rec => rec ()
-  | .context (_ :: _), rec | .offer (.ten _ _), rec => .pair (rec false) (rec true)
-  | .offer (.arr _ _), rec => .arrow (rec false) (rec true)
-  | .msg (.exRes I _), rec => .existsRes I rec
-  | .offer (.srvI Q R I _), rec => .server Q R (.existsRes I rec)
-  | .offer (.workerI R I _), rec => .worker R (.existsRes I rec)
-
-def stateType (s : St) := present (.state s)
-def contextType (es : Ctx) := present (.context es)
-def entryType (e : String × St) := present (.entry e)
-def msgType (t : Ty) := present (.msg t)
-def offerType (s : Session) := present (.offer s)
 
 abbrev Model (s : St) := (stateType s).Value
 abbrev Models (Γ : Ctx) := (contextType Γ).Value
@@ -626,30 +434,37 @@ def Env.cons {spec : Spec} (f : (i : spec.Idx) → Models (spec.ctx i) → Offer
   | _, .here _ => f
   | _, .there h => env h
 
-def getAt : {Γ : Ctx} → (x : MemCtx n Γ) → Models Γ → Model (stateOf x) :=
-  Position.fold (C := fun {Γ} x => Models Γ → Model (stateOf x))
-    (fun {e _} _ ms => by cases e; exact ms.1)
-    (fun p tail ms => by change Model (stateOf p); exact tail () ms.2)
+def getAt : {Γ : Ctx} → (x : MemCtx n Γ) → Models Γ → Model (stateOf x)
+  | (_, _) :: _, .here _, ms => ms.1
+  | (_, _) :: _, .there p, ms => getAt p ms.2
+termination_by structural _ x _ => x
 
-def putAt {s : St} : {Γ : Ctx} → (x : MemCtx n Γ) → Models Γ → Model s → Models (setAt x s) :=
-  Position.fold (C := fun {Γ} x => Models Γ → Model s → Models (setAt x s))
-    (fun {e xs} _ ms v => by change Models ((e.1, s) :: xs); exact (v, ms.2))
-    (fun {e _} p tail ms v => by change Models (e :: setAt p s); exact (ms.1, tail () ms.2 v))
+def putAt {s : St} : {Γ : Ctx} → (x : MemCtx n Γ) → Models Γ → Model s → Models (setAt x s)
+  | (_, _) :: _, .here _, ms, v => (v, ms.2)
+  | (_, _) :: _, .there p, ms, v => (ms.1, putAt p ms.2 v)
+termination_by structural _ x _ _ => x
 
-def delAt : {Γ : Ctx} → (x : MemCtx n Γ) → Models Γ → Models (removeAt x) :=
-  Position.fold (C := fun {Γ} x => Models Γ → Models (removeAt x))
-    (fun {_ xs} _ ms => by change Models xs; exact ms.2)
-    (fun {e _} p tail ms => by change Models (e :: removeAt p); exact (ms.1, tail () ms.2))
+def delAt : {Γ : Ctx} → (x : MemCtx n Γ) → Models Γ → Models (removeAt x)
+  | (_, _) :: _, .here _, ms => ms.2
+  | (_, _) :: _, .there p, ms => (ms.1, delAt p ms.2)
+termination_by structural _ x _ => x
 
 def splitModels {Γ Γ₁ Γ₂ : Ctx} (sp : SplitCtx Γ Γ₁ Γ₂) : Models Γ → Models Γ₁ × Models Γ₂ :=
-  sp.fold (C := fun {Γ l r} _ => Models Γ → Models l × Models r)
-    (fun ms => (ms, ms))
-    (fun _ _ _ tail ms => let (l, r) := tail () ms.2; ((ms.1, l), r))
-    (fun _ _ _ tail ms => let (l, r) := tail () ms.2; (l, (ms.1, r)))
+  match sp with
+  | .nil => fun ms => (ms, ms)
+  | .left _ _ tail => fun ms =>
+    let (l, r) := splitModels tail ms.2
+    ((ms.1, l), r)
+  | .right _ _ tail => fun ms =>
+    let (l, r) := splitModels tail ms.2
+    (l, (ms.1, r))
+termination_by structural sp
 
 def joinModels (Δ₁ Δ₂ : Ctx) : Models Δ₁ → Models Δ₂ → Models (Δ₁ ++ Δ₂) :=
-  foldList (C := fun xs => Models xs → Models Δ₂ → Models (xs ++ Δ₂))
-    (fun _ r => r) (fun _ _ tail l r => (l.1, tail () l.2 r)) Δ₁
+  match Δ₁ with
+  | [] => fun _ r => r
+  | _ :: xs => fun l r => (l.1, joinModels xs Δ₂ l.2 r)
+termination_by structural Δ₁
 
 private theorem splitModels_swap {Γ₁ Γ₂ : Ctx} (sp : SplitCtx Γ Γ₁ Γ₂) (ms : Models Γ) :
     splitModels sp.swap ms = (splitModels sp ms).swap := by
@@ -660,41 +475,13 @@ private theorem splitModels_swap {Γ₁ Γ₂ : Ctx} (sp : SplitCtx Γ Γ₁ Γ�
   | right _ _ sp ih =>
     exact congrArg (fun lr => ((ms.1, lr.1), lr.2)) (ih ms.2)
 
-private abbrev Move := (Γ : Ctx) × (Δ : Ctx) × Reorder Γ Δ
-
-private def moveChildren : Move → Children Move
-  | ⟨_, _, .refl⟩ | ⟨_, _, .swap _ _⟩ => .empty
-  | ⟨_, _, .cons _ p⟩ => .one ⟨_, _, p⟩
-  | ⟨_, _, .trans p q⟩ => .two ⟨_, _, p⟩ ⟨_, _, q⟩
-
-private theorem moveInduction : StructuralInduction moveChildren := by
-  rintro P step ⟨Γ, Δ, p⟩
-  induction p with
-  | refl | swap => exact step _ nofun
-  | cons _ _ ih => exact step _ fun _ => ih
-  | trans _ _ first second => exact step _ fun | false => first | true => second
-
-private noncomputable def permuteMove (x : Move) : Models x.1 → Models x.2.1 := by
-  obtain ⟨Γ, Δ, p⟩ := x
-  induction p with
-  | refl => exact id
-  | cons e _ ih => exact fun ms => (ms.1, ih ms.2)
-  | swap a b => exact fun ms => (ms.2.1, ms.1, ms.2.2)
-  | trans _ _ first second => exact fun ms => second (first ms)
-
-private def permuteMoveNative :=
-  nativeFold moveChildren moveInduction (C := fun x => Models x.1 → Models x.2.1) fun
-    | ⟨_, _, .refl⟩, _, ms => ms
-    | ⟨_, _, .cons _ _⟩, rec, ms => (ms.1, rec () ms.2)
-    | ⟨_, _, .swap _ _⟩, _, ms => (ms.2.1, ms.1, ms.2.2)
-    | ⟨_, _, .trans _ _⟩, rec, ms => rec true (rec false ms)
-
-@[csimp] private theorem permuteMove_eq : permuteMove = permuteMoveNative := by
-  apply eq_nativeFold
-  rintro ⟨_, _, p⟩
-  cases p <;> rfl
-
-def permute {Γ Δ : Ctx} (p : Reorder Γ Δ) : Models Γ → Models Δ := permuteMove ⟨Γ, Δ, p⟩
+def permute {Γ Δ : Ctx} (p : Reorder Γ Δ) : Models Γ → Models Δ :=
+  match p with
+  | .refl => id
+  | .cons _ q => fun ms => (ms.1, permute q ms.2)
+  | .swap _ _ => fun ms => (ms.2.1, ms.1, ms.2.2)
+  | .trans q r => fun ms => permute r (permute q ms)
+termination_by structural p
 
 private theorem permute_appendNil (xs : Ctx) (l : Models xs) (r : Models []) :
     permute (Reorder.appendNil xs) l = joinModels xs [] l r := by
@@ -754,30 +541,31 @@ def evalCmd : {s t : St} → {A : Type} → Cmd s t A → Model s → Model t ×
   | _, _, _, .stop x e, m => (putAt x m (Running.stop (asModel e (getAt x m))).2, ())
 
 def evalProg (env : Env Ψ) {s t : St} {A : Type} (p : Prog Ψ s t A) : Model s → Model t × A :=
-  foldProg (C := fun ⟨s, t, A, _⟩ => Model s → Model t × A) (fun
-    | ⟨_, _, _, .done a⟩, _, m => (m, a)
-    | ⟨_, _, _, .step c _⟩, rec, m =>
-      let (v, a) := evalCmd c m
-      rec a v
-    | ⟨_, _, _, .focus x _ _⟩, rec, m =>
-      let (v, a) := rec none (getAt x m)
-      rec (some a) (putAt x m v)
-    | ⟨_, _, _, .exec x h i e _⟩, rec, m => rec () (putAt x m (env h i (asModel e (getAt x m))))
-    | ⟨_, _, _, .stopI x e _⟩, rec, m =>
-      let v := Running.stop (asModel e (getAt x m))
-      rec v.1 (putAt x m v.2)
-    | ⟨_, _, _, .par sp _ _ _ _⟩, rec, m =>
-      let (m₁, m₂) := splitModels sp m
-      let (l, a) := rec .left m₁
-      let (r, b) := rec .right m₂
-      rec (.join a b) (joinModels _ _ l r)
-    | ⟨_, _, _, .awaitI c e _⟩, rec, m =>
-      let (opt, next) := Worker.stepOne (asModel e (getAt c m))
-      let v := next.abort
-      rec (opt, v.1) (putAt c m v.2)
-    | ⟨_, _, _, .abortI c e _⟩, rec, m =>
-      let v := Worker.abort (asModel e (getAt c m))
-      rec v.1 (putAt c m v.2)) p.term
+  match p with
+  | .done a => fun m => (m, a)
+  | .step c k => fun m =>
+    let (v, a) := evalCmd c m
+    evalProg env (k a) v
+  | .focus x child k => fun m =>
+    let (v, a) := evalProg env child (getAt x m)
+    evalProg env (k a) (putAt x m v)
+  | .exec x h i e k => fun m => evalProg env k (putAt x m (env h i (asModel e (getAt x m))))
+  | .stopI x e k => fun m =>
+    let v := Running.stop (asModel e (getAt x m))
+    evalProg env (k v.1) (putAt x m v.2)
+  | .par sp _ p₁ p₂ k => fun m =>
+    let (m₁, m₂) := splitModels sp m
+    let (l, a) := evalProg env p₁ m₁
+    let (r, b) := evalProg env p₂ m₂
+    evalProg env (k a b) (joinModels _ _ l r)
+  | .awaitI c e k => fun m =>
+    let (opt, next) := Worker.stepOne (asModel e (getAt c m))
+    let v := next.abort
+    evalProg env (k opt v.1) (putAt c m v.2)
+  | .abortI c e k => fun m =>
+    let v := Worker.abort (asModel e (getAt c m))
+    evalProg env (k v.1) (putAt c m v.2)
+termination_by structural p
 
 private theorem eval_par {Γ₁ Γ₂ Δ₁ Δ₂ : Ctx} {C : Type} (env : Env Ψ) (sp : SplitCtx Γ Γ₁ Γ₂)
     (dj : DisjointCtx Δ₁ Δ₂ = true)
@@ -832,88 +620,51 @@ private abbrev WorkerStep (R I : Type) (F : I → St) (names : List String) :=
   Sum ((n : String) × Position id n names × R × ((i : I) × Model (F i))) (Models (workCtx R I F names))
 
 private def stepWorkers (R I : Type) (F : I → St) :
-    (names : List String) → Models (workCtx R I F names) → WorkerStep R I F names :=
-  foldList (C := fun ns => Models (workCtx R I F ns) → WorkerStep R I F ns)
-    (fun ms => .inr ms) fun n _ tail ms =>
+    (names : List String) → Models (workCtx R I F names) → WorkerStep R I F names
+  | [], ms => .inr ms
+  | n :: ns, ms =>
     let (opt, next) := Worker.stepOne ms.1
     match opt with
     | some r => .inl ⟨n, .here rfl, r, next.abort⟩
     | none =>
-      match tail () ms.2 with
+      match stepWorkers R I F ns ms.2 with
       | .inl ⟨name, p, r, v⟩ => .inl ⟨name, .there p, r, v⟩
       | .inr tail => .inr (next, tail)
+termination_by structural names _ => names
 
-private abbrev ProcTerm (Ψ : List Spec) := (Γ : Ctx) × (S : Session) × Proc Ψ Γ S
-private abbrev Proc.term (p : Proc Ψ Γ S) : ProcTerm Ψ := ⟨Γ, S, p⟩
-
-private inductive MachineBranch (J : Type) where
-  | turn (j : J)
-  | halt (j : J)
-
-private def procChildren : ProcTerm Ψ → Children (ProcTerm Ψ)
-  | ⟨_, _, .run _ k⟩ | ⟨_, _, .ask k⟩ | ⟨_, _, .stopP _ _ k⟩ | ⟨_, _, .abortP _ _ k⟩ => ⟨_, fun a => (k a).term⟩
-  | ⟨_, _, .end_⟩ | ⟨_, _, .giveExDir _ _⟩ => .empty
-  | ⟨_, _, .giveAt _ k⟩ | ⟨_, _, .tell _ k⟩ | ⟨_, _, .takeAt _ _ k⟩ | ⟨_, _, .giveExAt _ _ _ k⟩ => .one k.term
-  | ⟨_, _, @Proc.machine _ _ _ _ J _ _ turn halt _⟩ | ⟨_, _, @Proc.worker _ _ _ J _ _ turn halt _⟩ =>
-    ⟨MachineBranch J, fun | .turn j => (turn j).term | .halt j => (halt j).term⟩
-  | ⟨_, _, @Proc.awaitAnyP _ R I _ _ ns _ done pending⟩ =>
-    ⟨Option ((n : String) × Position id n ns × R × I), fun
-      | none => pending.term | some ⟨n, p, r, i⟩ => (done n p r i).term⟩
-
-private noncomputable def foldProc {C : ProcTerm Ψ → Sort v} (step : FoldStep procChildren C)
-    (x : ProcTerm Ψ) : C x := by
-  obtain ⟨Γ, S, p⟩ := x
-  induction p with
-  | end_ | giveExDir => exact step _ nofun
-  | run _ _ ih | ask _ ih | stopP _ _ _ ih | abortP _ _ _ ih => exact step _ ih
-  | giveAt _ _ ih | tell _ _ ih | takeAt _ _ _ ih | giveExAt _ _ _ _ ih => exact step _ fun _ => ih
-  | machine _ _ _ turn halt | worker _ _ _ turn halt =>
-    exact step _ fun | .turn j => turn j | .halt j => halt j
-  | awaitAnyP _ _ _ _ done pending =>
-    exact step _ fun | none => pending | some ⟨n, p, r, i⟩ => done n p r i
-
-private def foldProcNative {C : ProcTerm Ψ → Sort v} :=
-  nativeFold procChildren (fun P => foldProc (C := P)) (C := C)
-
-@[csimp] private theorem foldProc_eq : @foldProc = @foldProcNative := by
-  funext Ψ C step
-  apply eq_nativeFold
-  rintro ⟨_, _, p⟩
-  cases p <;> first | rfl | apply congrArg (step _); funext i; cases i
-  all_goals first | rfl | (rename_i v; rcases v with ⟨n, p, r, i⟩; rfl)
-
-def evalProc (env : Env Ψ) {Γ : Ctx} {S : Session} (p : Proc Ψ Γ S) : Models Γ → Offer S :=
-  foldProc (C := fun ⟨Γ, S, _⟩ => Models Γ → Offer S) (fun
-    | ⟨_, _, .run p _⟩, rec, m =>
-      let (v, a) := evalProg env p m
-      rec a v
-    | ⟨_, _, .end_⟩, _, _ => ⟨()⟩
-    | ⟨_, _, .giveAt x _⟩, rec, m => (getAt x m, rec () (delAt x m))
-    | ⟨_, _, .tell a _⟩, rec, m => (⟨a⟩, rec () m)
-    | ⟨_, _, .takeAt _ _ _⟩, rec, m => fun v => rec () (v, m)
-    | ⟨_, _, .ask _⟩, rec, m => fun a => rec a.down m
-    | ⟨_, _, .giveExAt i x e _⟩, rec, m => (⟨i, asModel e (getAt x m)⟩, rec () (delAt x m))
-    | ⟨_, _, @Proc.machine _ _ _ _ _ _ family _ _ j⟩, rec, m =>
-      machineRunning (fun i v q =>
-          let answer := rec (.turn i) v ⟨q⟩
-          (answer.1.down, answer.2.1))
-        (fun i v => (rec (.halt i) v).1) j m
-    | ⟨_, _, .giveExDir i e⟩, _, m => (⟨i, asModel e m⟩, ⟨()⟩)
-    | ⟨_, _, .stopP x e _⟩, rec, m =>
-      let v := Running.stop (asModel e (getAt x m))
-      rec v.1 (putAt x m v.2)
-    | ⟨_, _, @Proc.worker _ _ _ _ _ family _ _ j⟩, rec, m =>
-      workerRunning (fun i v =>
-          let answer := rec (.turn i) v
-          (answer.1.down, answer.2.1))
-        (fun i v => (rec (.halt i) v).1) j m
-    | ⟨_, _, .abortP x e _⟩, rec, m =>
-      let v := Worker.abort (asModel e (getAt x m))
-      rec v.1 (putAt x m v.2)
-    | ⟨_, _, @Proc.awaitAnyP _ R I F _ names _ _ _⟩, rec, m =>
-      match stepWorkers R I F names m with
-      | .inl ⟨n, pos, r, i, v⟩ => rec (some ⟨n, pos, r, i⟩) (putAt (workPos R I F pos) m v)
-      | .inr advanced => rec none advanced) p.term
+def evalProc (env : Env Ψ) {Γ : Ctx} {S : Session} (p : Proc Ψ Γ S) (m : Models Γ) : Offer S :=
+  match p with
+  | .run p k =>
+    let (v, a) := evalProg env p m
+    evalProc env (k a) v
+  | .end_ => ⟨()⟩
+  | .giveAt x k => (getAt x m, evalProc env k (delAt x m))
+  | .tell a k => (⟨a⟩, evalProc env k m)
+  | .takeAt _ _ k => fun v => evalProc env k (v, m)
+  | .ask k => fun a => evalProc env (k a.down) m
+  | .giveExAt i x e k => (⟨i, asModel e (getAt x m)⟩, evalProc env k (delAt x m))
+  | @Proc.machine _ _ _ _ _ _ family turn halt j =>
+    machineRunning (fun i v q =>
+        let answer := evalProc env (turn i) v ⟨q⟩
+        (answer.1.down, answer.2.1))
+      (fun i v => (evalProc env (halt i) v).1) j m
+  | .giveExDir i e => (⟨i, asModel e m⟩, ⟨()⟩)
+  | .stopP x e k =>
+    let v := Running.stop (asModel e (getAt x m))
+    evalProc env (k v.1) (putAt x m v.2)
+  | @Proc.worker _ _ _ _ _ family turn halt j =>
+    workerRunning (fun i v =>
+        let answer := evalProc env (turn i) v
+        (answer.1.down, answer.2.1))
+      (fun i v => (evalProc env (halt i) v).1) j m
+  | .abortP x e k =>
+    let v := Worker.abort (asModel e (getAt x m))
+    evalProc env (k v.1) (putAt x m v.2)
+  | @Proc.awaitAnyP _ R I F _ names _ done pending =>
+    match stepWorkers R I F names m with
+    | .inl ⟨n, pos, r, i, v⟩ => evalProc env (done n pos r i) (putAt (workPos R I F pos) m v)
+    | .inr advanced => evalProc env pending advanced
+termination_by structural p
 
 /-- Opening an island, receiving its value and closing it cuts to the client
     continuation with the original directory frame. -/

@@ -102,7 +102,7 @@ def reconcileChildren (s : NodeState) (c : Candidate) : IO PlanResult := do
     if seen.contains n then continue
     seen := seen.insert n
     for (o, notes) in h.memory do
-      if let .unit q := o then origins := origins.push (.ext q, notes)
+      if let .unit q := o then origins := origins.push (.ext (renameQ h.code.modName (qualified n) q), notes)
   let routed := routeChildren c.plan origins.toList (c.specs.map (·.modName))
   let mut verified : Homes := {}
   let mut births := #[]
@@ -118,14 +118,20 @@ def reconcileChildren (s : NodeState) (c : Candidate) : IO PlanResult := do
       continue
     let sub := horizontal[q]?.getD []
     let lifts := c.childLifts[q]?.getD #[]
-    let existing := [s.verified[n]?, s.salvaged[n]?, saved[n]?].reduceOption
+    let recent := [s.verified[n]?, s.salvaged[n]?].reduceOption
+    let existing := recent ++ saved[n]?.toList
     if sub.isEmpty then
       if let some h ← existing.findM? (fun h => reusableHome s.task c.deps spec h lifts) then
         verified := verified.insert n h
         continue
     let seed := existing.headD blank
+    let pinned := if recent.isEmpty && saved.contains n then
+      (s.task.otherChildHistory.bind (fun (slots,ms) => if slots.contains n then some ms else none)) <|>
+        s.task.oldBaseModules
+      else none
     let child := {s.task with
       delta := ⟨q, seed.spec.units, spec⟩, baseModules := c.deps, transports := sub,
+      oldBaseModules := pinned, otherChildHistory := none,
       allowedAncestors := permissions q, maybeLift := lifts[0]?, otherLifts := lifts.toList.drop 1}
     let home := Frozen.frozen seed.code (seed.memory ++ routed[q]?.getD []) seed.spec seed.children
     births := births.push ⟨child, home, ← IO.Promise.new⟩
@@ -133,11 +139,31 @@ def reconcileChildren (s : NodeState) (c : Candidate) : IO PlanResult := do
   let current := Frozen.frozen code (inherit c.plan s.current.memory) s.current.spec interfaces.toList
   return ⟨current, verified, births.toList⟩
 
+private def absorbDeadMemory (s : NodeState) (c : Candidate) : Memory := Id.run do
+  let slots := Std.HashSet.ofList (c.specs.map (·.modName))
+  let kept := Std.HashSet.ofList (s.task.transports.flatMap fun (_,ts) => (directKeeps ts).map Prod.fst)
+  let moved := Std.HashSet.ofList (s.task.transports.flatMap fun (_,ts) => ts.childMoves.flatMap fun
+    | .moveChildren os ns _ => os.filter (fun o => ns != [o])
+    | _ => [])
+  let mapped := Std.HashSet.ofList (c.plan.moves.map (·.src))
+  let mut seen : Std.HashSet String := {}
+  let mut dead := #[]
+  for (n,h) in s.original.children ++ s.task.transports.flatMap (·.1.children) do
+    let slot := qualified n
+    if seen.contains n || kept.contains slot || (slots.contains slot && !moved.contains slot) then continue
+    seen := seen.insert n
+    for (o, notes) in h.memory do
+      let .unit q := o | continue
+      unless mapped.contains (.ext (renameQ h.code.modName slot q)) do dead := dead ++ notes.toArray
+  if dead.isEmpty then return s.current.memory
+  let (buried, rest) := s.current.memory.partition (·.1 == .bot)
+  return rest ++ [(.bot, buried.flatMap Prod.snd ++ dead.toList)]
+
 /-- Only a closed link of all implementations in the accepted import order can return success. -/
 def finish (s : NodeState) (c : Candidate) : IO Frozen := do
   let kids := orderedHomes c.specs s.verified
   unless kids.length == c.specs.length do throw (IO.userError "MISSING_VERIFIED_CHILD")
-  let home := Frozen.frozen c.code s.current.memory s.task.delta.newIface kids
+  let home := Frozen.frozen c.code (absorbDeadMemory s c) s.task.delta.newIface kids
   verifyClosure c.deps home
   return home
 
@@ -339,7 +365,7 @@ private def proposed (f : Frame) (s : NodeState) (sub : Submission) : Proc Node�
     | .error e => failed f s e
     | .ok v@(.liftObstruction ..) => afterChildren f {s with obstructing := some v, diagnostic := none}
     | .ok v => abortAllActive f.active f.fresh s fun st =>
-      respond ⟨[], by simp⟩ {st with verdict := some v, diagnostic := none}
+      respond ⟨[], by simp⟩ {st with verdict := some v, sealedHome := some (freezeVerifiedKids st), diagnostic := none}
 
 private def proposeTurn (f : Frame) (s : NodeState) : Proc NodeΨ (Work f.active) Reply :=
   runJob f s (.propose ⟨s.task, s.current.code, s.current.memory, s.diagnostic, some s.current⟩) fun

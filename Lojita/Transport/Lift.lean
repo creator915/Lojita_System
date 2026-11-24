@@ -75,7 +75,8 @@ def liftShapeProblems (baseImpl upperCand : LeanMod) (ls : LiftSpec) : List Lift
       unless c.bases.contains s.base && c.uppers.contains s.upper do errors := errors.push (.invalidChildLift s.upper)
   return errors.toList
 
-def checkLift (baseImpl upperCand upperSpec : LeanMod) (upperSnap : Snapshot) (ls : LiftSpec) : List LiftProblem := Id.run do
+def checkLift (baseImpl upperCand upperSpec : LeanMod) (upperSnap : Snapshot) (ls : LiftSpec)
+    (upperOrigin : QName → QName := id) : List LiftProblem := Id.run do
   let mut errors := (liftShapeProblems baseImpl upperCand ls).toArray
   let tested := withTests upperCand upperSpec
   if renderLeanMod upperSnap.mod != renderLeanMod tested then return (errors.push .wrongUpper).toList
@@ -86,13 +87,15 @@ def checkLift (baseImpl upperCand upperSpec : LeanMod) (upperSnap : Snapshot) (l
   for e in ls.endpoints do
     if e.baseUnits.isEmpty || e.upperUnits.isEmpty then errors := errors.push (.emptyLiftEndpoints e.squareUnit)
     let info := publicSquare upperSnap e.squareUnit
-    let refs := info.map fun c => typeMentions upperSnap c.type (e.baseUnits ++ e.upperUnits ++ e.requiredRefs)
+    -- A forwarding alias inherits its theorem type from the retained implementation.
+    let required := e.requiredRefs.map upperOrigin
+    let refs := info.map fun c => typeMentions upperSnap c.type (e.baseUnits ++ e.upperUnits.map upperOrigin ++ required)
     for q in e.baseUnits do
       unless before.contains q && refs.all (·.contains q.toLeanName) do errors := errors.push (.missingBaseUnit q)
     for q in e.upperUnits do
-      unless after.contains q && refs.all (·.contains q.toLeanName) do errors := errors.push (.missingUpperUnit q)
+      unless after.contains q && refs.all (·.contains (upperOrigin q).toLeanName) do errors := errors.push (.missingUpperUnit q)
     let some c := info | errors := errors.push (.missingSquare e.squareUnit); continue
-    unless validSquareType upperSnap c relations e.requiredRefs && e.requiredRefs.all (fun q => refs.any (·.contains q.toLeanName)) do
+    unless validSquareType upperSnap c relations required && required.all (fun q => refs.any (·.contains q.toLeanName)) do
       errors := errors.push (.invalidSquare e.squareUnit)
   return errors.toList
 

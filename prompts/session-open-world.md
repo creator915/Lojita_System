@@ -2,9 +2,14 @@
 
 ## 二维分工
 
-**纵轴 · 跨阶段的整树精化。** 一棵树表示整个目标程序在一个抽象层级的完整所有权树。SESSION_ROOT 负责开放世界探测，每层只编写根模块规约 `Gen.<Ti>.<Root>`。从有限可判定的 T0 蓝图开始，最终层公开 `CliApp Δ` 或 `ReactiveApp Δ S` 及其 `∀ w : SimWorld` 观察定律。初始树和它的原位修复用 `(baseTrees)`。精化层只填唯一已封存的直接前驱，如 `(baseTrees "T0")`，宿主自动跟随更早各层的当前封存版本。给出根到根的 `maybeLiftSrc`，可附加 `maybeTransportSrc`。以关系方块表达精化时，根到根的 transport 也可单独满足此门槛。严禁把 CLI、解析、压缩等内部功能各建一棵外层树再自底向上拼装。
+**纵轴 Lift · 跨抽象层级的整树精化。** 一棵树表示整个目标程序在一个抽象层级的完整所有权树。SESSION_ROOT 负责开放世界探测，每层只编写根模块规约 `Gen.<Ti>.<Root>`。例如 T0 是有限可判定的蓝图，T1/T2 把它提升到流与世界规约，最终层公开 `CliApp Δ` 或 `ReactiveApp Δ S` 及其 `∀ w : SimWorld` 观察定律。初始树和它的原位修复用 `(baseTrees)`。精化层只填唯一已封存的直接前驱，如 `(baseTrees "T0")`，宿主自动跟随更早各层的当前封存版本。给出根到根的 `maybeLiftSrc`，可附加 `maybeTransportSrc`。以关系方块表达精化时，根到根的 transport 也可单独满足此门槛。严禁把 CLI、解析、压缩等内部功能各建一棵外层树再自底向上拼装。
 
-**横轴 · 树内的 import 所有权。** 收到根规约后，封闭根节点决定怎样分包。每条父子边来自父实现的孩子 `import` 和对应的 `subspecs`，每个孩子槽只有一个父所有者。内核先仅凭孩子的抽象 `axiom` 接口检查父胶水能推出根规约，再唤醒孩子独立实现；孩子也可用同样方式拆出孙包。提升整树时，`LiftSpec` 第三项 `child-map` 把底树的这些 import 子包路由到上层子包，可递归给出子 lift。上层还可增设自己的 import 子包。
+**横轴 Transport · 同一抽象层级的修补与重构。** 修复回放偏差时保持原 `baseTrees`，生成新版本、销毁旧版本。严禁为局部 bug 把旧可执行树塞进 `baseTrees`，盲目叠出 T3 → T4 → T5。
+
+- **同名原位重驱。** 对同一 `treeName` 再次 `drive-tree`，保留原 `baseTrees` 及对底树的 `maybeLiftSrc`。接口未变且复验通过的子包自动零轮复用。若需证明新旧版本的 `TransportsPoly`，用同名源和目标提交 `maybeTransportSrc`，在临时方块中引用只读快照 `Old.Gen.<Ti>.<Mod>.*`。封存后只交付新实现。
+- **换名同层替换。** 例如把 T1.Doc 换成 T1b.Doc，仍用 `(baseTrees "T0")`，将底树 lift 的目标改为 T1b.Doc。在 `maybeTransportSrc` 中写 `(poly-transport "Gen.T1.Doc" "Gen.T1b.Doc" ((keep "Gen.T1.Doc.Label" "Gen.T1b.Doc.Label") (move ("Gen.T1.Doc.Route") ("Gen.T1b.Doc.Route") ())) ())`。Label 连同孙包零轮搬迁，Route 交给新槽。在 `drive-tree` 中加 `(replaces "T1")`，新树封存成功时原子撤下旧树的引用和生成目录。若其他封存树仍以 T1 为直接底树，须先处理其依赖。
+
+**树内分包与 import 所有权。** 收到根规约后，封闭根节点决定怎样分包。每条父子边来自父实现的孩子 `import` 和对应的 `subspecs`，每个孩子槽只有一个父所有者。内核先仅凭孩子的抽象 `axiom` 接口检查父胶水能推出根规约，再唤醒孩子独立实现；孩子也可用同样方式拆出孙包。提升整树时，`LiftSpec` 第三项 `child-map` 把底树的这些 import 子包路由到上层子包，可递归给出子 lift。上层还可增设自己的 import 子包。
 
 ## Categorical Design Checklist（每棵树）
 
@@ -21,7 +26,7 @@
 | `write_draft`、`patch_draft` | `name, content` 保存完整块；`name, old_text, new_text` 替换唯一的匹配。 |
 | `read_draft`、`list_drafts` | 按名字读文本或指定行区间，或用 `{}` 列名字。草稿随本次 scratch 重试保留，接受后回收。 |
 | `run_lean_script` | `script_block:"@probe"` 运行真实探针，检查 exitCode、stdout、stderr、usedRef 和 usedCand。旧客户端的 `run_agda_script` 接收同一 Lean 源码。 |
-| `check_spec` | 用 `spec_block:"@spec", base_trees:[]` 预检类型及祖先闭包。可带 `lift_src`、`transport_src`，其值为描述符源码或草稿引用。 |
+| `check_spec` | 用 `spec_block:"@spec", base_trees:[]` 预检类型及祖先闭包。可带 `lift_src`、`transport_src` 描述符及同层替换列表 `replaces`。 |
 | `check_entry` | 封存后传 `entry:"Gen.<Epoch>.<Module>.app"` 和 `mode:"cli"` 或 `"reactive"` 检查入口类型。 |
 
 Node 在其独立 MCP 调用 `check_lean` 检查完整实现（`allow_axioms:true` 检查孩子规约），用 `check_plan` 检查声明、依赖前沿和孩子端口。双方都能读到自己权限内的上下文和本轮草稿。不要从宿主文件系统寻找 API。每轮最终答复只交一个 `session-action`，源码字段中的 `@draft` 不加引号。MCP 预检后仍须交付 drive-tree、build-exe、回放动作和 finish。

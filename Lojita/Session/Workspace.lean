@@ -42,6 +42,12 @@ def logNarrowing (path : FilePath) (source : String) (cert : NarrowingCertificat
 def checkTreeName (n : String) : IO Unit :=
   unless validSegment n do fail s!"invalid tree name {n}"
 
+private def treeNamesFile (p : FilePath) : IO (List String) := do
+  let some (.list names) := SExpr.parseSExpr (← IO.FS.readFile p) | fail s!"invalid tree list in {p}"
+  let ns ← IO.ofExcept (stringList names)
+  ns.forM checkTreeName
+  return ns
+
 /-- The ready marker is the publication intent. A writer that loses its process
     at any subsequent rename leaves enough information for the next lock holder
     to finish the same generation. All renames stay on the workspace filesystem. -/
@@ -51,6 +57,12 @@ private def recoverPublication (ws : FilePath) : IO Unit := do
   if let some name ← readOptional (stage / "ready") then
     checkTreeName name
     let tree := ws / "trees" / name
+    let retire ← if ← (stage / "retire.sexp").pathExists then treeNamesFile (stage / "retire.sexp") else pure []
+    if !retire.isEmpty then
+      let verdict ← match ← readOptional (stage / "verdict") with
+        | some v => pure (some v)
+        | none => readOptional (tree / "verdict")
+      unless verdict == some "ok" && !retire.contains name do fail "invalid retirement in publication journal"
     IO.FS.createDirAll tree
     let install := fun (src dst : FilePath) => do
       if ← src.pathExists then
@@ -68,6 +80,13 @@ private def recoverPublication (ws : FilePath) : IO Unit := do
       if ← ref.pathExists then IO.FS.removeFile ref
     for file in ["obstruction.sexp","bases.sexp","current","verdict"] do
       install (stage / file) (tree / file)
+    for peer in retire do
+      for kind in ["trees","partial"] do
+        let ref := ws / "store/refs" / kind / peer
+        if ← ref.pathExists then IO.FS.removeFile ref
+      let gen := ws / "generated" / peer
+      if ← gen.isDir then IO.FS.removeDirAll gen
+      atomicText (ws / "trees" / peer / "verdict") "retired"
   IO.FS.removeDirAll stage
 
 def withWorkspaceLock {α : Type} (ws : FilePath) (act : IO α) : IO α := do
@@ -88,6 +107,23 @@ def sealedNames (ws : FilePath) : IO (List String) := do
     let verdict ← readOptional (ws / "trees" / n / "verdict")
     if refs.contains n && verdict.isNone then fail s!"missing verdict for {n}"
     return verdict.map (·.trimAscii.toString) == some "ok"
+
+def checkReplacements (ws : FilePath) (name : String) (bases replaces : List String) : IO Unit := do
+  if replaces.isEmpty then return
+  let sealed ← sealedNames ws
+  for r in replaces do
+    checkTreeName r
+    if r == name || bases.contains r then fail s!"invalid replacement {r}: expected a distinct horizontal peer"
+    let tree := ws / "trees" / r
+    unless (← tree.isDir) || (← readRef (ws / "store") .trees r).isSome ||
+        (← readRef (ws / "store") .partial r).isSome do fail s!"unknown replacement tree {r}"
+    if (← readOptional (tree / "verdict")).any (·.trimAscii.toString == "retired") then fail s!"already retired: {r}"
+    if ← (tree / "bases.sexp").pathExists then
+      unless (← treeNamesFile (tree / "bases.sexp")) == bases do
+        fail s!"replacement {r} must have the same baseTrees as {name}"
+    for other in sealed do
+      if other != r && other != name && (← treeNamesFile (ws / "trees" / other / "bases.sexp")).contains r then
+        fail s!"cannot replace {r}: sealed tree {other} depends on it"
 
 structure SealedTree where
   name : String
@@ -140,10 +176,22 @@ private def history (dir : FilePath) (roots : List Hash) (saved : History := {})
 
 def verifyCommitDAG (dir : FilePath) (tip : Hash) : IO Unit := do discard <| history dir [tip]
 
+private def staleAncestor (ancestor name : String) (cause : IO.Error) :=
+  s!"STALE_ANCESTOR_TREE: ancestor tree {ancestor} no longer typechecks against updated upstream bases ({cause}); re-drive {ancestor} before driving {name}"
+
 /-- A same-epoch edge is provenance only. Every vertical edge follows the current
     sealed ref, even if an intermediate epoch has not yet been re-driven. -/
-def loadCurrentClosure (ws : FilePath) (names : List String) : IO BaseClosure := do
-  let tips ← names.mapM (resolveTip ws)
+private def currentTrees (ws : FilePath) (names : List String) (driving : Option String := none) :
+    IO (List Hash × List SealedTree) := do
+  let tip := fun n => do
+    checkTreeName n
+    try resolveTip ws n catch e =>
+      if let some name := driving then
+        if (← readRef (ws / "store") .trees n).isSome &&
+            (← readOptional (ws / "trees" / n / "verdict")).any (·.trimAscii.toString != "ok") then
+          fail (staleAncestor n name e)
+      throw e
+  let tips ← names.mapM tip
   let mut records ← history (ws / "store") tips
   let mut byName := Std.HashMap.ofList (names.zip tips)
   let mut todo := tips.map Visit.enter
@@ -153,27 +201,71 @@ def loadCurrentClosure (ws : FilePath) (names : List String) : IO BaseClosure :=
   while let v :: rest := todo do
     todo := rest
     match v with
-    | .leave k => active := active.erase k; done_ := done_.insert k
+    | .leave k =>
+      active := active.erase k
+      done_ := done_.insert k
+      let some c := records.commits[k]? | fail "missing ancestor commit"
+      let some home := records.homes[c.rootHome]? | fail "missing ancestor home"
+      trees := trees.push ⟨c.epoch,k,home⟩
     | .enter k =>
       if active.contains k then fail "cycle in live vertical ancestry"
       if done_.contains k then continue
       active := active.insert k
       let some c := records.commits[k]? | fail "missing ancestor commit"
-      let some home := records.homes[c.rootHome]? | fail "missing ancestor home"
-      trees := trees.push ⟨c.epoch,k,home⟩
       todo := .leave k :: todo
       for p in c.parents.reverse do
         let some parent := records.commits[p]? | fail "missing pinned parent"
         if parent.epoch == c.epoch then continue
         let live ← match byName[parent.epoch]? with
           | some key => pure key
-          | none => resolveTip ws parent.epoch
+          | none => tip parent.epoch
         byName := byName.insert parent.epoch live
         unless records.commits.contains live do
           records ← history (ws / "store") [live] records
         todo := .enter live :: todo
-  let modules ← IO.ofExcept (mergeModules (trees.toList.flatMap (exported ·.home)))
-  return ⟨tips,trees.toList,modules⟩
+  return (tips, trees.toList.reverse)
+
+def loadCurrentClosure (ws : FilePath) (names : List String) : IO BaseClosure := do
+  let (tips,trees) ← currentTrees ws names
+  return ⟨tips,trees,← IO.ofExcept (mergeModules (trees.flatMap (exported ·.home)))⟩
+
+def verifiedAncestry (ws : FilePath) (bases : List String) (name : String) : IO BaseClosure := do
+  let (tips,trees) ← currentTrees ws bases name
+  let mut modules := []
+  for anc in trees.reverse do
+    try
+      verifyClosure modules anc.home
+      modules ← IO.ofExcept (mergeModules (exported anc.home ++ modules))
+    catch e =>
+      fail (staleAncestor anc.name name e)
+  return ⟨tips,trees,modules⟩
+
+structure SealedView where
+  name : String
+  tree : Option SealedTree
+  stale : Option String
+
+/-- Keep the saved contract visible to the session even when its live link fails. -/
+def sealedViews (ws : FilePath) : IO (List SealedView) := do
+  (← sealedNames ws).mapM fun n => do
+    match ← (verifiedAncestry ws [n] n).toBaseIO with
+    | .ok closure => return ⟨n,closure.trees.head?,none⟩
+    | .error e =>
+      let saved : IO SealedTree := do
+        let tip ← resolveTip ws n
+        let c ← getObject (ws / "store") .commit tip
+        return ⟨n,tip,← loadFrozen (ws / "store") c.rootHome⟩
+      return ⟨n,(← saved.toBaseIO).toOption,some (toString e)⟩
+
+def retiredNames (ws : FilePath) : IO (Std.HashSet String) := do
+  let ns ← (← namesAt (ws / "trees")).filterM fun (n : String) => do
+    return (← readOptional (ws / "trees" / n / "verdict")).any (·.trimAscii.toString == "retired")
+  return Std.HashSet.ofList ns
+
+def publicExports (retired : Std.HashSet String) (home : Frozen) :=
+  (exported home).filter fun m => match m.modName.segments with
+    | "Gen" :: epoch :: _ => !retired.contains epoch
+    | _ => true
 
 /-- Both entry preflight and the native linker use the owning tree's live ancestry. -/
 def entryModules (ws : FilePath) (entry : QName) : IO (List LeanMod) := do
@@ -188,20 +280,44 @@ def readSealedModules (ws : FilePath) : IO (List LeanMod) := do
   lock.lock (exclusive := false)
   try
     if ← (ws / ".publication/ready").pathExists then fail "tree publication is awaiting recovery"
-    return (← loadCurrentClosure ws (← sealedNames ws)).modules
+    let retired ← retiredNames ws
+    let mut index : Std.HashMap QName LeanMod := {}
+    let mut names := #[]
+    for view in ← sealedViews ws do
+      if view.stale.isSome then continue
+      let some tree := view.tree | continue
+      for m in publicExports retired tree.home do
+        if !index.contains m.modName then names := names.push m.modName
+        else if m.modName.segments.take 2 != ["Gen",tree.name] then continue
+        index := index.insert m.modName m
+    return names.toList.filterMap (index[·]?)
   finally lock.unlock
 
-private def savedTree (ws : FilePath) (kind : RefKind) (n : String) : IO (Option Frozen) := do
+private def savedTree (ws : FilePath) (kind : RefKind) (n : String) : IO (Option (Frozen × List LeanMod)) := do
   let some key ← readRef (ws / "store") kind n | return none
   let records ← history (ws / "store") [key]
   let some c := records.commits[key]? | fail "missing saved commit"
   unless c.epoch == n do fail "saved epoch mismatch"
-  return records.homes[c.rootHome]?
+  let some home := records.homes[c.rootHome]? | fail "missing saved home"
+  -- Same-epoch edges preserve revision history. Follow only vertical edges at
+  -- every level, at their recorded hashes, to recover the old checking environment.
+  let mut todo := c.parents.map (n, ·)
+  let mut seen : Std.HashSet Hash := {}
+  let mut modules := #[]
+  while let (epoch,p) :: rest := todo do
+    todo := rest
+    let some parent := records.commits[p]? | fail "missing historical parent"
+    if parent.epoch == epoch || seen.contains p then continue
+    seen := seen.insert p
+    let some base := records.homes[parent.rootHome]? | fail "missing historical home"
+    modules := (exported base).foldl Array.push modules
+    todo := parent.parents.map (parent.epoch, ·) ++ todo
+  return some (home, ← IO.ofExcept (mergeModules modules.toList))
 
 def partialSource (ws : FilePath) (q : QName) : IO (Option Frozen) := do
   let "Gen" :: epoch :: _ := q.segments | return none
   checkTreeName epoch
-  let some h ← savedTree ws .partial epoch | return none
+  let some (h,_) ← savedTree ws .partial epoch | return none
   unless h.code.modName == q do return none
   -- A failed parent exports only its verified children. Never lend the
   -- implementation or assumptions of the parent as a horizontal endpoint.
@@ -209,22 +325,35 @@ def partialSource (ws : FilePath) (q : QName) : IO (Option Frozen) := do
   let shell := withChildIfaces ⟨q,slots,[],[]⟩ (h.children.map fun (n,c) => specAt (qualified n) c)
   return some (.frozen shell h.memory h.spec h.children)
 
-def initialHome (ws : FilePath) (n : String) (spec : LeanMod) : IO Frozen := do
+structure InitialHome where
+  home : Frozen
+  oldBaseModules : Option (List LeanMod)
+  otherChildHistory : Option (List String × List LeanMod)
+
+def initialHomeWithBases (ws : FilePath) (n : String) (spec : LeanMod) : IO InitialHome := do
   checkTreeName n
   let complete ← savedTree ws .trees n
   let kept ← savedTree ws .partial n
   let empty := Frozen.frozen ⟨spec.modName,[],[],[]⟩ [] spec []
-  let seed := (kept <|> complete).getD empty
+  let selected := kept <|> complete
+  let seed := (selected.map Prod.fst).getD empty
   unless seed.code.modName == spec.modName do fail "in-place drive changed root namespace"
   let slots := Std.HashSet.ofList (seed.children.map Prod.fst)
-  let other := complete.toList.flatMap (fun h => h.children.filter (!slots.contains ·.1))
-  return .frozen seed.code seed.memory seed.spec (seed.children ++ other)
+  let other := complete.toList.flatMap (fun (h,_) => h.children.filter (!slots.contains ·.1))
+  let pinned := selected.map Prod.snd
+  let otherHistory := complete.bind fun (_,ms) =>
+    if other.isEmpty || pinned == some ms then none else some (other.map Prod.fst, ms)
+  return ⟨.frozen seed.code seed.memory seed.spec (seed.children ++ other), pinned, otherHistory⟩
+
+def initialHome (ws : FilePath) (n : String) (spec : LeanMod) : IO Frozen :=
+  InitialHome.home <$> initialHomeWithBases ws n spec
 
 def moduleFile (root : FilePath) (m : LeanMod) := (m.modName.segments.foldl (· / ·) root).addExtension "lean"
 
 def publishTree (ws : FilePath) (name why : String) (bases : List String) (tips : List Hash)
-    (verdict : Verdict) (home : Frozen) : IO String := do
+    (verdict : Verdict) (home : Frozen) (replaces : List String := []) : IO String := do
   checkTreeName name
+  if verdict == .ok then checkReplacements ws name bases replaces
   let dir := ws / "store"
   let previous ← readRef dir .trees name
   let key ← storeTreeCommit dir (distinct (tips ++ previous.toList)) name why (thawHome home)
@@ -234,6 +363,7 @@ def publishTree (ws : FilePath) (name why : String) (bases : List String) (tips 
       for m in exported home do atomicText (moduleFile (stage / "generated") m) (renderLeanMod m)
       writeRef stage .trees name key
       atomicText (stage / "clear-partial") ""
+      if !replaces.isEmpty then atomicText (stage / "retire.sexp") (SExpr.list (replaces.map .str)).canonical
       pure ("ok","ok")
     | .liftObstruction reason culprits proof => do
       writeRef stage .partial name key
@@ -243,6 +373,9 @@ def publishTree (ws : FilePath) (name why : String) (bases : List String) (tips 
       pure ("lift-obstruction",s!"liftObstruction {reason}\nCULPRIT_BASE_UNITS {culprits.map toString}\nPRESERVED_CHILDREN {home.children.map Prod.fst}\n{renderLeanMod proof}")
     | .contradiction r => pure ("contradiction",s!"contradiction\n{renderLeanMod r}")
     | .countermodel r model proof => pure ("countermodel",s!"countermodel {r}\n{renderLeanMod model}\n{renderLeanMod proof}")
+  if verdict matches .contradiction .. | .countermodel .. then
+    if !home.children.isEmpty then writeRef stage .partial name key
+    else atomicText (stage / "clear-partial") ""
   atomicText (stage / "bases.sexp") (SExpr.list (bases.map .str)).canonical
   atomicText (stage / "current") key
   atomicText (stage / "verdict") status

@@ -391,6 +391,152 @@ private def splitChildren : IO Unit := do
   ensure (v == .ok && (lookupChild moved alias).any (fun f => f.code == left && f.spec == lex))
     "relocated slot did not link to the saved implementation"
 
+open Lojita.Session in
+private def deepKeptLift : IO Unit := do
+  let lower := "Gen.Base.R"
+  let source := "Gen.T0.R"
+  let target := "Gen.T1.R"
+  let slots := ["JsonInput","JsonRecords"]
+  let makeTree := fun (root : String) => do
+    let decode := root ++ ".Decode"
+    let mut kids := []
+    for slot in slots do
+      let name := decode ++ "." ++ slot
+      let base := lower ++ ".Decode." ++ slot
+      let impl ← if root == lower then object name "def val : Nat := 7" else
+        object name s!"def val : Nat := {base}.val\ntheorem square : val = {base}.val := rfl" [base]
+      let spec ← object name "axiom val : Nat"
+      kids := kids ++ [(name, Frozen.frozen impl [] spec [])]
+    let join := fun (n : String) (children : List (String × Frozen)) => do
+      let code ← object n ("def val : Nat := " ++ children.head!.1 ++ ".val") (children.map Prod.fst)
+      let spec ← object n "axiom val : Nat"
+      return Frozen.frozen (withChildIfaces code (children.map (·.2.spec))) [] spec children
+    join root [(decode, ← join decode kids)]
+  let base ← makeTree lower
+  let old ← makeTree source
+  let spec ← object target "axiom val : Nat"
+  let dq := fun (r : String) => q (r ++ ".Decode")
+  let draft ← object target ("def val := " ++ target ++ ".Decode.val") [target ++ ".Decode"]
+  let h := leaf (empty spec.modName)
+  let transport := TransportSpec.transportSpecTree old.code.modName spec.modName [.keepChild (dq source) (dq target)] []
+  let job := fun child => {(task spec) with
+    baseModules := exported base, transports := [(old,transport)]
+    maybeLift := some (base.code, .liftSpecTree base.code.modName spec.modName [child] [])}
+  let grand := fun (slot : String) (proof : String) =>
+    let b := lower ++ ".Decode." ++ slot
+    let u := target ++ ".Decode." ++ slot
+    ChildLift.mkChildLift (q b) (q u) (some (.liftSpecTree (q b) (q u) []
+      [endpointLift (q (b ++ ".val")) (q (u ++ ".val")) (q (u ++ "." ++ proof))]))
+  let explicit := fun cs => ChildLift.mkChildLift (dq lower) (dq target) (some (.liftSpecTree (dq lower) (dq target) cs []))
+  for child in [explicit (slots.map (grand · "square")), .mkChildLift (dq lower) (dq target) none,
+      .moveChildLifts [dq lower] [dq target] []] do
+    let t := job child
+    let (report, some c) ← checkCandidateGates t h (birthPlan draft) | throw (IO.userError "deep Lift + keep failed")
+    ensure report.certificate.isNone "deep keep certificate"
+    let st : NodeState := {task := t, original := h, current := h}
+    let r ← reconcileChildren st c
+    ensure (r.toSpawn.isEmpty && r.verified.size == 1) "Decode or its grandchildren required a worker"
+    let result ← finish {st with current := r.current, verified := r.verified} c
+    verifyClosure (exported base) result
+    let mods := exported result
+    let some alias := mods.find? (·.modName == dq target) | throw (IO.userError "missing Decode alias")
+    for slot in slots do
+      let childName := target ++ ".Decode." ++ slot
+      ensure (alias.imports.any (fun i => i.imod == q childName && i.assumes.map (·.uname) == [q (childName ++ ".val")]) &&
+        mods.any (·.modName == q childName)) "missing requalified grandchild contract"
+    ensure ((duplicates (mods.map (·.modName))).isEmpty) "duplicate deep alias"
+  for (child,kind) in [(explicit [], "missingChildMap"), (explicit (slots.map (grand · "absent")), "missingSquare")] do
+    let r ← planPreview (job child) h (birthPlan draft)
+    ensure (r.certificate.any (·.kind == kind)) s!"unchecked explicit deep lift: {repr r}"
+  IO.FS.withTempDir fun ws => do
+    initWorkspace ws
+    discard <| publishTree ws "Base" "vertical source" [] [] .ok base
+    let closure ← loadCurrentClosure ws ["Base"]
+    verifyClosure closure.modules old
+    discard <| publishTree ws "T0" "horizontal source" ["Base"] closure.directTips .ok old
+    let t := job (.mkChildLift (dq lower) (dq target) none)
+    let some (_,ls) := t.maybeLift | throw (IO.userError "missing fixture lift")
+    let lift := (encodeLiftSpec ls).canonical
+    let prepared ← prepareSpec ws "T1" (renderLeanMod spec) ["Base"] lift (encodeTransportSpec transport).canonical
+    let r ← planPreview prepared.task prepared.home (birthPlan draft)
+    ensure r.certificate.isNone s!"session preflight rejected a shorthand kept subtree: {repr r}"
+
+private def inPlaceSquare : IO Unit := do
+  let n := "Gen.T1.InPlace"
+  let operand := n ++ ".Operand"
+  let spec ← object n "open LojitaCtx.World\naxiom fn : Nat → Nat\naxiom app : CliApp []" ["LojitaCtx.World"]
+  let opSpec ← object operand "axiom fn : Nat → Nat"
+  let op ← object operand "def fn (x : Nat) := x + 1"
+  let app := "def app : CliApp [] := pure (fn 4)"
+  let old ← object n s!"open LojitaCtx.World\ndef fn := {operand}.fn\n{app}" ["LojitaCtx.World",operand]
+  let h := Frozen.frozen (withChildIfaces old [opSpec]) [] spec [(operand, .frozen op [] opSpec [])]
+  let square := q (n ++ ".square")
+  let fn := q (n ++ ".fn")
+  let ts := TransportSpec.transportSpecTree spec.modName spec.modName [.keepChild op.modName op.modName]
+    [⟨[fn],[fn],square,[fn]⟩]
+  let t := {(task spec) with transports := [(h,ts)], allowedAncestors := some []}
+  let impl := fun body => object n ("open LojitaCtx.PolyTransport LojitaCtx.World Old.Gen.T1\ndef fn (x : Nat) := " ++ body ++ "\n" ++ app ++
+    s!"\ntheorem square : TransportsPoly (idPort Nat) (idPort Nat) (fun _ => True) Old.{n}.fn fn := by
+  intro x y _ h
+  change x = y at h
+  subst y
+  rfl") ["LojitaCtx.PolyTransport","LojitaCtx.World","Old." ++ n,operand]
+  let draft ← impl "Nat.succ x"
+  let entry := q (n ++ ".app")
+  let moves : List Proarrow := [⟨.unit fn,.unit fn⟩,⟨.unit entry,.unit entry⟩,⟨.bot,.unit square⟩]
+  let p := {birthPlan draft with moves}
+  let (report,c) ← checkCandidateGates t h p
+  ensure (report.certificate.isNone && c.any (fun v => !(v.code.units.map (·.uname)).contains square))
+    s!"old snapshot square: {repr report}"
+  IO.FS.withTempDir fun dir => do
+    let repo ← IO.FS.realPath "."
+    Lojita.Session.writeContext dir ⟨t,old,h.memory,none,some h⟩
+    let rpc := fun (id : Nat) (method : String) (args : Lean.Json) => Lean.Json.mkObj [
+      ("jsonrpc","2.0"),("id",Lean.toJson id),("method","tools/call"),
+      ("params",Lean.Json.mkObj [("name",method),("arguments",args)])]
+    let queries := [
+      rpc 1 "check_lean" (Lean.Json.mkObj [("source",renderLeanMod draft),("dep_blocks",Lean.toJson [renderLeanMod opSpec])]),
+      rpc 2 "check_plan" (Lean.Json.mkObj [("submission",planText draft [] moves)])]
+    let input ← IO.mkRef {data := (String.intercalate "\n" (queries.map (·.compress)) ++ "\n").toUTF8 : IO.FS.Stream.Buffer}
+    let output ← IO.mkRef ({} : IO.FS.Stream.Buffer)
+    IO.withStdin (.ofBuffer input) <| IO.withStdout (.ofBuffer output) <| Lojita.MCP.serve {mode := .node, repo, ctx := dir}
+    let replies := (String.fromUTF8! (← output.get).data).splitOn "\n" |>.filter (!·.isEmpty)
+    ensure (replies.length == 2 && replies.all (·.contains "\"isError\":false"))
+      s!"MCP snapshot preflight disagreed with the gate: {replies}"
+  let (v,sealed) ← drive (fun req => do
+    if let some cert := req.diagnostic then throw (IO.userError (toString cert))
+    ensure (req.task.delta.child == spec.modName) "unchanged Operand was re-driven"
+    return planText draft [] moves) t h
+  verifyClosure [] sealed
+  ensure (v == .ok && (exported sealed).all (fun m => !(renderLeanMod m).contains "Old.")) "sealed snapshot dependency"
+  IO.FS.withTempDir fun dir => do
+    let bin := dir / "candidate"
+    compileVerifiedExe (exported sealed) entry .cli bin
+    ensure ((← IO.Process.output {cmd := bin.toString}).exitCode == 5) "in-place candidate did not run the sealed function"
+  let leaking ← impl ("Old." ++ n ++ ".fn x")
+  let r ← planPreview t h {p with newMod := some leaking}
+  ensure r.certificate.isSome "operational use of a retired snapshot survived sealing"
+  IO.println "   Deep kept aliases, explicit and inferred grandchild lifts, and in-place snapshot proof erasure"
+
+private def historicalFrontier : IO Unit := do
+  let base ← object "Gen.T0.Obsolete" "theorem fact : True := trivial"
+  let old ← object "Gen.T1.History" "theorem premise : True := Gen.T0.Obsolete.fact
+theorem dependent : True := by first | exact premise | trivial" [toString base.modName]
+  -- Model an old stored reference hint that missed a tactic dependency.
+  let h := leaf {old with units := old.units.map fun u => {u with synRefs := []}}
+  let spec ← object (toString old.modName) "axiom dependent : True"
+  let dep := Obj.unit (q "Gen.T1.History.dependent")
+  let p : Plan := {
+    why := "remove the obsolete premise"
+    moves := [⟨.ext base.modName,.bot⟩,⟨.unit (q "Gen.T1.History.premise"),.bot⟩]}
+  let t := {(task spec) with oldBaseModules := some [base]}
+  let pinned ← planPreview t h p
+  ensure (pinned.certificate.any (·.kind == "frontier_incomplete") && pinned.frontier == [(encObj dep).canonical])
+    "the historical semantic frontier missed the tactic dependency"
+  let acknowledged ← planPreview t h {p with moves := ⟨dep,dep⟩ :: p.moves}
+  let fallback ← planPreview {t with oldBaseModules := none} h p
+  ensure (acknowledged.certificate.isNone && fallback.certificate.isNone) "historical frontier or partial-shell fallback deadlocked"
+
 private def obstruction (dir : System.FilePath) (parserFirst := false) : IO Unit := do
   let bad ← object "Gen.T0.Doc" "def singlePass (_ : Nat) := 0\ntheorem badSinglePass : singlePass 1 = 0 := rfl"
   let fixed ← object "Gen.T0.Doc" "def singlePass (n : Nat) := n"
@@ -812,6 +958,9 @@ def run : IO Unit := IO.FS.withTempDir fun dir => do
     polyAndLift
     narrowing
     splitChildren
+    deepKeptLift
+    inPlaceSquare
+    historicalFrontier
     obstruction dir
     countermodels
     preview dir

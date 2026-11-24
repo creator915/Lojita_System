@@ -78,21 +78,25 @@ def duplicates {α : Type} [BEq α] [Hashable α] (xs : List α) : List α := Id
 
 def endpointNames (m : LeanMod) := Std.HashSet.ofList ((m.units ++ externalUnits m).flatMap (·.definedNames))
 
+def oldSnapshotPrefix (q : QName) : QName := ⟨"Old" :: q.segments⟩
+
 def polyRelations : List Name := [``Eq, `LojitaCtx.PolyTransport.PortRel,
   `LojitaCtx.PolyTransport.TransportsPoly, `LojitaCtx.PolyTransport.Transports₁, `LojitaCtx.PolyTransport.Transports₂]
 
 /-- Follow definitions mentioned by the type, including generated equation helpers.
     Proof bodies of the square itself cannot supply missing endpoints. -/
-def typeMentions (snap : Snapshot) (ty : Expr) (required : List QName) : NameSet := Id.run do
+def typeMentions (snap : Snapshot) (ty : Expr) (required : List QName) (oldOrOriginal : List QName := []) : NameSet := Id.run do
   let mut todo := ty.getUsedConstantsAsSet.toList
   let mut seen : NameSet := {}
   let mut missing := NameSet.ofList (required.map QName.toLeanName)
-  while !missing.isEmpty do
+  let mut oldMissing := NameSet.ofList (oldOrOriginal.map QName.toLeanName)
+  while !missing.isEmpty || !oldMissing.isEmpty do
     let n :: rest := todo | break
     todo := rest
     if seen.contains n then continue
     seen := seen.insert n
     missing := missing.erase n
+    oldMissing := oldMissing.erase (n.replacePrefix `Old .anonymous)
     if snap.owners.contains n || n.getRoot == `LojitaCtx then
       if let some info := snap.env.find? n then
         todo := info.getUsedConstantsAsSet.foldl (fun acc c => c :: acc) todo
@@ -153,14 +157,16 @@ def checkPolyTransport (oldImpl candImpl specMod : LeanMod) (candSnap : Snapshot
   for s in ts.squares do
     if s.oldUnits.isEmpty || s.newUnits.isEmpty then errors := errors.push (.emptySquareEndpoints s.squareUnit)
     let info := publicSquare candSnap s.squareUnit
-    let refs := info.map (fun c => typeMentions candSnap c.type (s.oldUnits ++ s.newUnits ++ s.requiredRefs))
+    let (oldRefs, otherRefs) := s.requiredRefs.partition before.contains
+    let refs := info.map (fun c => typeMentions candSnap c.type (s.newUnits ++ otherRefs) (s.oldUnits ++ oldRefs))
+    let mentionsOld := fun (ns : NameSet) (q : QName) => ns.contains q.toLeanName || ns.contains (oldSnapshotPrefix q).toLeanName
     for q in s.oldUnits do
-      unless before.contains q && refs.all (·.contains q.toLeanName) do errors := errors.push (.missingOldEndpoint q)
+      unless before.contains q && refs.all (mentionsOld · q) do errors := errors.push (.missingOldEndpoint q)
     for q in s.newUnits do
       unless after.contains q && refs.all (·.contains q.toLeanName) do errors := errors.push (.missingNewEndpoint q)
     let some c := info | errors := errors.push (.missingPolySquare s.squareUnit); continue
     unless validSquareType candSnap c polyRelations s.requiredRefs &&
-        s.requiredRefs.all (fun q => refs.any (·.contains q.toLeanName)) do
+        oldRefs.all (fun q => refs.any (mentionsOld · q)) && otherRefs.all (fun q => refs.any (·.contains q.toLeanName)) do
       errors := errors.push (.invalidPolySquare s.squareUnit)
   return errors.toList
 

@@ -48,11 +48,11 @@ def runNode (cfg : SessionConfig) (dir : FilePath) (task : NodeTask) (home : Fro
     for owner in ← active.get do cfg.backend.retire owner
 
 def driveTree (cfg : SessionConfig) (name why src : String) (bases : List String)
-    (lifting transport : Option String) : IO String := withWorkspaceLock cfg.workspace do
-  let p ← prepareSpec cfg.workspace name src bases lifting transport
+    (lifting transport : Option String) (replaces : List String := []) : IO String := withWorkspaceLock cfg.workspace do
+  let p ← prepareSpec cfg.workspace name src bases lifting transport replaces
   let (v,f) ← runNode cfg (cfg.workspace / "trees" / name) p.task p.home
   if v == .ok then verifyClosure p.closure.modules f
-  let outcome ← publishTree cfg.workspace name why bases p.closure.directTips v f
+  let outcome ← publishTree cfg.workspace name why bases p.closure.directTips v f replaces
   if let .liftObstruction reason culprits _ := v then
     logNarrowing (cfg.workspace / "narrowing-events.jsonl") "drive-tree"
       ⟨"liftObstruction",String.intercalate ", " (culprits.map toString),reason,s!"Repair the base and re-drive {name}."⟩
@@ -79,8 +79,8 @@ def executeAction (cfg : SessionConfig) (action : SessionAction) : IO ActionResu
       let r ← runScript cfg.repo cfg.workspace cfg.reference src
       if r.exitCode != 0 then return .rejected s!"probe exit {r.exitCode}\n{r.stdout}{r.stderr}"
       return .accepted s!"run-script {why}\n{r.stdout}{r.stderr}"
-    | .driveTree n why src bs l t =>
-      return .accepted s!"drive-tree {n}: {← driveTree cfg n why src bs l t}\n{why}"
+    | .driveTree n why src bs l t replaces =>
+      return .accepted s!"drive-tree {n}: {← driveTree cfg n why src bs l t replaces}\n{why}"
     | .buildExe mode why entry => withWorkspaceLock cfg.workspace do
       let ws := cfg.workspace
       let name := qualified entry
@@ -111,11 +111,14 @@ private def sessionLoop (cfg : SessionConfig) : IO String := do
     repeat
       if cfg.maxSessionTurns.any (count ≥ ·) then fail s!"session turn limit: {diagnostic}"
       count := count + 1
-      let sealed ← withWorkspaceLock ws do loadCurrentClosure ws (← sealedNames ws)
-      let summaries := sealed.trees.map fun t =>
-        t.name ++ " " ++ t.tip ++ "\n" ++ renderLeanMod t.home.spec ++
-          String.intercalate "\n" ((exported t.home).map fun m =>
-            s!"{m.modName}: " ++ String.intercalate ", " ((publicNames m).map toString))
+      let summaries ← withWorkspaceLock ws do
+        let retired ← retiredNames ws
+        return (← sealedViews ws).map fun view =>
+          let summary := view.tree.elim view.name fun t =>
+            t.name ++ " " ++ t.tip ++ "\n" ++ renderLeanMod t.home.spec ++
+              String.intercalate "\n" ((publicExports retired t.home).map fun m =>
+                s!"{m.modName}: " ++ String.intercalate ", " ((publicNames m).map toString))
+          summary ++ view.stale.elim "" (fun e => s!"\n[STATUS: STALE AGAINST UPDATED ANCESTOR — RE-DRIVE THIS TREE]\n{e}")
       let prompt := sessionPrompt cfg.goal cfg.reference summaries memory.toList diagnostic
       let reply ← cfg.backend.propose ⟨owner,ctx,prompt,!diagnostic.isEmpty,none⟩
       let drafts ← loadDrafts ctx

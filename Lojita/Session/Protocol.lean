@@ -7,7 +7,7 @@ open Lojita.Store Lojita.Harness Lojita.Kernel
 inductive SessionAction where
   | runScript (why source : String)
   | driveTree (treeName why specSrc : String) (baseTrees : List String)
-      (maybeLiftSrc maybeTransportSrc : Option String)
+      (maybeLiftSrc maybeTransportSrc : Option String) (replaces : List String := [])
   | buildExe (mode : ExeMode) (why entry : String)
   | finish (summary : String)
   deriving BEq, Repr
@@ -72,10 +72,10 @@ def parseSessionAction (text : String) (drafts : DraftStore := {}) : Except Stri
     onlyFields fs ["kind","why","source"]
     return .runScript (← field "why") (← field "source")
   | some [.sym "drive-tree"] =>
-    onlyFields fs ["kind","why","treeName","specSrc","baseTrees","maybeLiftSrc","maybeTransportSrc"]
+    onlyFields fs ["kind","why","treeName","specSrc","baseTrees","maybeLiftSrc","maybeTransportSrc","replaces"]
     let some bases := fs["baseTrees"]? | throw "missing baseTrees"
     return .driveTree (← field "treeName") (← field "why") (← field "specSrc") (← stringList bases)
-      (← optional "maybeLiftSrc") (← optional "maybeTransportSrc")
+      (← optional "maybeLiftSrc") (← optional "maybeTransportSrc") (← stringList (fs["replaces"]?.getD []))
   | some [.sym "build-exe"] =>
     if fs.contains "source" then throw "build-exe accepts only a sealed entry. Remove the legacy (source ...) field"
     onlyFields fs ["kind","why","entry","mode"]

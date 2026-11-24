@@ -12,7 +12,7 @@ def nodePrompt (req : AIRequest) : String :=
     "LOCKED SEEDS",renderLeanMod {spec with units := seeds},
     "PREVIOUS INTERFACE",(encodeIface t.delta.oldIface).canonical,
     "ANCESTORS",String.intercalate "\n" ((readableAncestors t).map renderLeanMod),
-    "ALLOWED DIRECT IMPORTS",String.intercalate " " ((t.allowedAncestors.getD (t.baseModules.map (·.modName))).map toString),
+    "ALLOWED DIRECT IMPORTS",String.intercalate " " (t.allowedImports.map toString),
     "SAVED CHILDREN",String.intercalate " " (req.home.toList.flatMap fun h => h.children.map Prod.fst),
     "LIFT",String.intercalate "\n" (t.lifts.map fun (_,s) => (encodeLiftSpec s).canonical),
     "POLY-TRANSPORT",String.intercalate "\n" (t.transports.map fun (_,s) => (encodeTransportSpec s).canonical),

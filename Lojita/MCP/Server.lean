@@ -58,7 +58,7 @@ private def tools (mode : Mode) : List Tool :=
    | .session => [
        ⟨"check_spec","Check a specification and the source side of its optional vertical and horizontal obligations.",
          [("spec_block","string"),("source","string"),("name","string"),("base_trees","array"),("lift_src","string"),
-          ("transport_src","string")],[]⟩,
+          ("transport_src","string"),("replaces","array")],[]⟩,
        ⟨"check_entry","Check a sealed executable entry and its exact mode.",[("entry","string"),("mode","string")],["entry"]⟩,
        probe "run_lean_script",probe "run_agda_script"]
 
@@ -142,9 +142,12 @@ private def checkLean (ctx : Option NodeContext) (args : Json) (ds : DraftStore)
       witnessBoundary bases spec m
       discard <| checkRefutation bases (stubOf spec) m
       return success "verified False"
-  if let some c := ctx then
-    let permissions := c.task.allowedAncestors.getD (bases.map (·.modName))
-    if let e :: _ := checkTaskImports m.modName (stubs.map (·.modName)) permissions m then fail (reprStr e)
+  let bases ← match ctx with
+    | none => pure bases
+    | some c => do
+      let slots := stubs.map (·.modName)
+      if let e :: _ := checkTaskImports m.modName slots c.task.allowedImports m then fail (reprStr e)
+      IO.ofExcept (c.task.checkingDeps m.modName slots (m.imports.any (·.imod.segments.head? == some "Old")))
   let snap ← checkConditionalGlue bases stubs m allow
   if m.imports.any (·.imod.toLeanName == `LojitaCtx.Countermodel) &&
       (synthesizeCountermodelBridge snap).isOk then
@@ -184,7 +187,10 @@ private def readContext (cfg : Config) (readNode : ReadNode) (args : Json) : IO 
   let (modules, originals) ← match cfg.mode with
     | .node => do
       let c ← readNode
-      pure (c.toList.flatMap (fun n => readableAncestors n.task), (c.map (·.originals)).getD {})
+      let modules := c.toList.flatMap fun n =>
+        let allowed := Std.HashSet.ofList n.task.allowedImports
+        readableAncestors n.task ++ n.task.snapshotModules.filter (allowed.contains ·.modName)
+      pure (modules, (c.map (·.originals)).getD {})
     | .session => do
       let sealed ← cfg.ws.mapM readSealedModules
       pure (sealed.getD [],{})
@@ -220,7 +226,10 @@ private def callTool (cfg : Config) (readNode : ReadNode) (tool : String) (args 
       let some n := m.modName.segments[1]? | fail "expected Gen.<epoch>.<path>"
       let lift ← (value args "lift_src").mapM (resolved ds)
       let transport ← (value args "transport_src").mapM (resolved ds)
-      discard <| withWorkspaceLock ws (prepareSpec ws n src ((value args "base_trees").getD []) lift transport)
+      let replaces ← match args.getObjVal? "replaces" with
+        | .ok ns => IO.ofExcept (fromJson? (α := List String) ns)
+        | .error _ => pure []
+      discard <| withWorkspaceLock ws (prepareSpec ws n src ((value args "base_trees").getD []) lift transport replaces)
       return success s!"checked specification {m.modName}"
     | "check_entry" =>
       let entry ← required args "entry"

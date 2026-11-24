@@ -9,11 +9,8 @@ abbrev Bindings := List (Frozen × TransportSpec)
 
 def lookupChild (f : Frozen) (q : QName) := f.children.lookup (toString q)
 
-/-- A relocated identity slot exports transparent aliases to the original
-    constants. Its sealed directory, including all descendants, stays intact. -/
-def slotAliases (slot : QName) (f : Frozen) : List LeanMod := Id.run do
+private def slotAlias (slot : QName) (f : Frozen) : LeanMod := Id.run do
   let src := f.code.modName
-  if slot == src then return []
   let names := publicNames f.code
   let units := names.map fun q =>
     let localName := q.toLeanName.replacePrefix src.toLeanName .anonymous
@@ -21,7 +18,25 @@ def slotAliases (slot : QName) (f : Frozen) : List LeanMod := Id.run do
     let raw := s!"abbrev {localName} := @{q}"
     {uname := target, definedNames := [target], kind := .abbrevDecl, rawSource := raw,
       sigSlice := s!"abbrev {localName}", synRefs := [q] : SynUnit}
-  return [⟨slot, [⟨src, []⟩], [], units⟩]
+  let children := Std.HashSet.ofList (f.children.map fun (n, _) => renameQ src slot (qualified n))
+  let header := requalify src slot {f.code with opens := [], units := []}
+  return ⟨slot, ⟨src, []⟩ :: header.imports.filter (children.contains ·.imod), [], units⟩
+
+mutual
+  /-- Each relocated directory exposes its original declarations and the assigned
+      interfaces of its relocated children. The saved homes retain their identity. -/
+  def slotAliases (slot : QName) (f : Frozen) : List LeanMod :=
+    match f with
+    | .frozen code _ _ kids =>
+      if slot == code.modName then [] else slotAlias slot f :: childAliases code.modName slot kids
+  termination_by structural f
+
+  private def childAliases (src slot : QName) (kids : List (String × Frozen)) : List LeanMod :=
+    match kids with
+    | [] => []
+    | (n,h) :: rest => slotAliases (renameQ src slot (qualified n)) h ++ childAliases src slot rest
+  termination_by structural kids
+end
 
 mutual
   private def exportNode (f : Frozen) (acc : Array LeanMod) : Array LeanMod :=
@@ -34,8 +49,6 @@ mutual
     | (n,f) :: xs => exportKids xs (exportNode f ((slotAliases (qualified n) f).foldl Array.push acc))
   termination_by structural ks
 end
-
-def exported (f : Frozen) := (exportNode f #[]).toList
 
 def keeps (bs : Bindings) : List (QName × Frozen) :=
   bs.flatMap fun (h,s) =>
@@ -75,6 +88,11 @@ def mergeModules (mods : List LeanMod) : Except String (List LeanMod) := do
       out := out.push m
   return out.toList
 
+def exported (f : Frozen) : List LeanMod :=
+  let mods := (exportNode f #[]).toList
+  -- Preserve conflicts for the linker's diagnostic, coalesce shared originals.
+  (mergeModules mods).toOption.getD mods
+
 def depsExcept (mods : List LeanMod) (m : LeanMod) := mods.filter (·.modName != m.modName)
 
 def specAt (q : QName) (h : Frozen) := requalify h.spec.modName q h.spec
@@ -91,6 +109,25 @@ private def dependenciesOf (index : Std.HashMap QName LeanMod) (roots : List Lea
       deps := deps.push m
       todo := m.imports ++ todo
   return deps.toList
+
+/-- Rewrite the whole owned closure, including references between modules whose
+    slots do not share the root prefix (such as Gen.T0.Root and Gen.T0.Doc). -/
+def snapshotModules (h : Frozen) (historical live : List LeanMod) : List LeanMod := Id.run do
+  let owned := exported h
+  let index := Std.HashMap.ofList (historical.map fun m => (m.modName,m))
+  let current := Std.HashMap.ofList (live.map fun m => (m.modName,m))
+  let ancestors := dependenciesOf index owned
+  -- A historical module also changes identity if one of its imports changed.
+  let mut changed := Std.HashSet.ofList ((ancestors.filter fun m => current[m.modName]? != some m).map (·.modName))
+  repeat
+    let size := changed.size
+    for m in ancestors do
+      if m.imports.any (changed.contains ·.imod) then changed := changed.insert m.modName
+    if size == changed.size then break
+  let mods := owned ++ ancestors.filter (changed.contains ·.modName)
+  let names := mods.map (·.modName)
+  let roots := names.filter fun q => !names.any (fun p => p != q && under p q)
+  return mods.map fun m => roots.foldl (fun m p => requalify p (oldSnapshotPrefix p) m) m
 
 /-- A stored subtree can come from another epoch or a partial ref. Recheck the
     actual closed link and each directory's contract, including saved grandchildren. -/
@@ -121,48 +158,37 @@ def checkSaved (bases : List LeanMod) (spec : LeanMod) (h : Frozen) : IO Unit :=
   eqIface original spec (dependenciesOf index [original,spec])
   verifyClosure bases h
 
-private abbrev InspectLift := LiftSpec → Array LiftProblem → IO (Array LiftProblem)
-
-mutual
-  private def checkRetainedLift (inspect : InspectLift) (s : LiftSpec) (acc : Array LiftProblem) : IO (Array LiftProblem) :=
-    match s with | .liftSpecTree b u cs es => do
-      let acc ← inspect (.liftSpecTree b u cs es) acc
-      checkRetainedChildren inspect cs acc
-  termination_by structural s
-
-  private def checkRetainedChildren (inspect : InspectLift) (cs : List ChildLift) (acc : Array LiftProblem) : IO (Array LiftProblem) :=
-    match cs with
-    | [] => pure acc
-    | .mkChildLift b u none :: rest => do
-      checkRetainedChildren inspect rest (← inspect (.liftSpecTree b u [] []) acc)
-    | .mkChildLift _ _ (some s) :: rest => do
-      checkRetainedChildren inspect rest (← checkRetainedLift inspect s acc)
-    | .moveChildLifts bs us ss :: rest => do
-      let acc ← checkRetainedSubs inspect ss acc
-      let acc ← (defaultChildLifts bs us ss).foldlM (fun a s => inspect s a) acc
-      checkRetainedChildren inspect rest acc
-  termination_by structural cs
-
-  private def checkRetainedSubs (inspect : InspectLift) (ss : List LiftSpec) (acc : Array LiftProblem) : IO (Array LiftProblem) :=
-    match ss with
-    | [] => pure acc
-    | s :: rest => do checkRetainedSubs inspect rest (← checkRetainedLift inspect s acc)
-  termination_by structural ss
-end
+/-- Only omitted sub-lifts may infer a matching child map. Explicit descriptors
+    retain their full shape and endpoint obligations, including explicit empty maps. -/
+private def childObligations (s : LiftSpec) : List (LiftSpec × Bool) :=
+  s.children.flatMap fun c =>
+    c.subs.map (·, false) ++ (defaultChildLifts c.bases c.uppers c.subs).map (·, true)
 
 def checkKeptLifts (bases : List LeanMod) (bs : Bindings) (ls : LiftSpec) : IO (List LiftProblem) := do
   let kept := Std.HashMap.ofList (keeps bs)
   let mut errors := #[]
-  for sub in ls.children.flatMap ChildLift.childSpecs do
+  for (sub, implicitMap) in childObligations ls do
     let some h := kept[sub.upper]? | continue
     let mods ← IO.ofExcept (mergeModules (exported h ++ slotAliases sub.upper h ++ bases))
     let index := Std.HashMap.ofList (mods.map fun m => (m.modName,m))
-    let inspect : InspectLift := fun s acc => do
-      let some base := index[s.base]? | return acc.push (.missingBaseUnit s.base)
-      let some target := index[s.upper]? | return acc.push (.missingChildImport s.upper)
+    let mut todo := [(sub, implicitMap, h)]
+    while let (s, inferChildren, home) :: rest := todo do
+      todo := rest
+      let some base := index[s.base]? | errors := errors.push (.missingBaseUnit s.base); continue
+      let some target := index[s.upper]? | errors := errors.push (.missingChildImport s.upper); continue
+      let children := home.children.map fun (n,kid) => (renameQ home.code.modName s.upper (qualified n), kid)
+      let s := if inferChildren then
+        let mapped := base.imports.filterMap fun i => do
+          guard (!i.assumes.isEmpty)
+          let (u,_) ← children.find? (fun (q,_) => q.segments.getLast? == i.imod.segments.getLast?)
+          return ChildLift.mkChildLift i.imod u none
+        LiftSpec.liftSpecTree s.base s.upper mapped []
+      else s
       let snap ← checkClosedModule (depsExcept mods target) target
-      return (checkLift base target target snap s).foldl Array.push acc
-    errors ← checkRetainedLift inspect sub errors
+      errors := (checkLift base target target snap s (renameQ s.upper home.code.modName)).foldl Array.push errors
+      for (next, auto) in childObligations s do
+        if let some kid := children.lookup next.upper then todo := (next, auto, kid) :: todo
+        else errors := errors.push (.missingChildImport next.upper)
   return errors.toList
 
 end Lojita.Harness

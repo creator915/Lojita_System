@@ -4,6 +4,20 @@ import Lojita
 
 open Lean Elab Command
 
+/-- Lean marks the compiled body of a structural definition as partial. Check it
+    against the structural equations, including calls within a mutual block. -/
+private def isStructuralRecBody (env : Environment) (info : ConstantInfo) : MetaM Bool := do
+  let .defnInfo impl := info | return false
+  let some parent := Compiler.isUnsafeRecName? impl.name | return false
+  let some (.defnInfo original) := env.find? parent | return false
+  unless original.safety == .safe && original.type == impl.type &&
+      env.getModuleIdxFor? parent == env.getModuleIdxFor? impl.name do return false
+  let some eqns := Elab.Structural.eqnInfoExt.find? env parent | return false
+  let expected := eqns.value.replace fun
+    | .const f us => if eqns.declNames.contains f then some (mkConst (Compiler.mkUnsafeRecName f) us) else none
+    | _ => none
+  Meta.isDefEq impl.value expected
+
 /- Iterate by defining module, also visiting private names, generated helpers
     and projections. The import closure is the same one exposed to nodes. -/
 run_cmd do
@@ -20,9 +34,15 @@ run_cmd do
     modules := modules.insert mod
     for ax in ← collectAxioms name do
       unless allowed.contains ax do throwError "{mod} declaration {name} depends on {ax}"
-    if info.isUnsafe || (mod == `Lojita.Ownership.Core && info.isPartial) ||
-        isExtern env name || (Compiler.getImplementedBy? env name).isSome then
+    if info.isUnsafe || isExtern env name || (Compiler.getImplementedBy? env name).isSome then
       throwError "{mod} contains a native override or unchecked declaration {name}"
+    if mod == `Lojita.Ownership.Core then
+      if isNoncomputable env name then throwError "{mod} contains a noncomputable declaration {name}"
+      if Compiler.hasCSimpAttribute env name || (Compiler.CSimp.ext.getState env).map.contains name then
+        throwError "{mod} contains a compiler simplification at {name}"
+      if info.isPartial then
+        unless ← liftTermElabM (isStructuralRecBody env info) do
+          throwError "{mod} contains an unchecked partial declaration {name}"
     for used in info.getUsedConstantsAsSet do
       if #[`IO, `BaseIO, `EIO, `EST, `EStateM.RealWorld].any (·.isPrefixOf used) then
         throwError "{name} refers to effectful constant {used}"

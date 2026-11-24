@@ -28,7 +28,10 @@ private def checkLiftSource (mods : List LeanMod) (root : LiftSpec) : IO Unit :=
     for e in s.endpoints do
       if e.baseUnits.isEmpty || e.upperUnits.isEmpty then fail "emptyLiftEndpoints"
       for q in e.baseUnits do unless before.contains q do fail s!"missingBaseUnit: {q}"
-    pending := s.children.flatMap ChildLift.childSpecs ++ rest
+    for sub in s.children.flatMap ChildLift.childSpecs do
+      unless index.contains sub.base do fail s!"missingBaseUnit: {sub.base}"
+    -- The target children of a shorthand sub-lift are known at the node gate.
+    pending := s.children.flatMap ChildLift.subs ++ rest
 
 structure Prepared where
   task : NodeTask
@@ -49,15 +52,17 @@ private def transportSource (ws : FilePath) (home : Frozen) (closure : BaseClosu
         return (tree.home,ancestors.flatMap (exported ·.home))
   fail s!"missing transport source {src}"
 
-def prepareSpec (ws : FilePath) (name src : String) (bases : List String) (liftSrc transportSrc : Option String) :
+def prepareSpec (ws : FilePath) (name src : String) (bases : List String) (liftSrc transportSrc : Option String)
+    (replaces : List String := []) :
     IO Prepared := do
   checkTreeName name
+  checkReplacements ws name bases replaces
   if bases.length > 1 then
     fail "MULTI_BASE_TREES: drive-tree refines at most one predecessor blueprint tree; decompose subsystems inside one tree via closed-world import subspecs"
   let spec ← IO.ofExcept (parseLeanMod src)
   unless spec.modName.segments.take 2 == ["Gen",name] && spec.modName.segments.length == 3 &&
       spec.modName.segments.all validSegment do fail s!"expected namespace Gen.{name}.<RootModule>"
-  let closure ← loadCurrentClosure ws bases
+  let closure ← verifiedAncestry ws bases name
   if closure.trees.any (·.name == name) then fail "cycle in requested baseTrees"
   let liftSpec ← liftSrc.mapM parseLift
   let transportSpec ← transportSrc.mapM parseTransport
@@ -66,11 +71,10 @@ def prepareSpec (ws : FilePath) (name src : String) (bases : List String) (liftS
     let baseRoot := baseTree.home.code.modName
     unless liftSpec.any (·.base == baseRoot) || transportSpec.any (·.oldMod == baseRoot) do
       fail "MISSING_REFINEMENT_MORPHISM: non-empty baseTrees requires a root-to-root maybeLiftSrc or maybeTransportSrc from the base tree root"
-  checkClosedBundle closure.modules
   let allowed := closure.modules.map (·.modName)
   if let e :: _ := checkTaskImports spec.modName [] allowed spec then fail (reprStr e)
   discard <| checkConditionalGlue closure.modules [] spec true
-  let home ← initialHome ws name spec
+  let ⟨home,oldBaseModules,otherChildHistory⟩ ← initialHomeWithBases ws name spec
   let lift ← liftSpec.mapM fun l => do
     unless l.upper == spec.modName do fail "wrongUpper"
     checkLiftSource closure.modules l
@@ -89,7 +93,7 @@ def prepareSpec (ws : FilePath) (name src : String) (bases : List String) (liftS
       pure ([(source,t)],← IO.ofExcept (mergeModules (closure.modules ++ ancestors)))
   let task : NodeTask := {
     delta := ⟨spec.modName,home.spec.units,spec⟩
-    baseModules := checkingModules, maybeLift := lift, transports, allowedAncestors := some allowed}
+    baseModules := checkingModules, oldBaseModules, otherChildHistory, maybeLift := lift, transports, allowedAncestors := some allowed}
   return ⟨task,home,closure⟩
 
 /-- A node MCP process receives precisely the frozen input of PlanPreview,
@@ -101,6 +105,8 @@ private structure ContextFile where
   allowed : Option (List String)
   lifts : List (String × String)
   transports : List (Hash × String)
+  oldBaseModules : Option (List String) := none
+  otherChildHistory : Option (List String × List String) := none
   deriving Lean.ToJson, Lean.FromJson
 
 def writeContext (ctx : FilePath) (req : AIRequest) : IO Unit := do
@@ -109,7 +115,8 @@ def writeContext (ctx : FilePath) (req : AIRequest) : IO Unit := do
   let home := req.home.getD (.frozen req.old req.memory t.delta.newIface [])
   let binds ← t.transports.mapM fun (h,s) => do return (← storeFrozen dir h,(encodeTransportSpec s).canonical)
   let wire : ContextFile := ⟨← storeFrozen dir home,encodeCanonical t.delta.newIface,t.baseModules.map encodeCanonical,
-    t.allowedAncestors.map (·.map toString),t.lifts.map (fun (b,s) => (encodeCanonical b,(encodeLiftSpec s).canonical)),binds⟩
+    t.allowedAncestors.map (·.map toString),t.lifts.map (fun (b,s) => (encodeCanonical b,(encodeLiftSpec s).canonical)),
+    binds,t.oldBaseModules.map (·.map encodeCanonical),t.otherChildHistory.map (fun (ns,ms) => (ns,ms.map encodeCanonical))⟩
   atomicText (ctx / "context.json") (Lean.toJson wire).compress
 
 private def promptSection (prompt heading : String) : Option String := do
@@ -163,11 +170,14 @@ where
     let read := fun (s : String) => match decodeCanonical s with | some m => pure m | none => fail "invalid context module"
     let spec ← read c.spec
     let bases ← c.bases.mapM read
+    let oldBaseModules ← c.oldBaseModules.mapM (·.mapM read)
+    let otherChildHistory ← c.otherChildHistory.mapM fun (ns,ms) => do return (ns,← ms.mapM read)
     let lifts ← c.lifts.mapM fun (b,s) => do return (← read b,← parseLift s)
     let binds ← c.transports.mapM fun (k,s) => do return (← loadFrozen dir k,← parseTransport s)
     let home ← loadFrozen dir c.home
     let t : NodeTask := {
-      delta := ⟨spec.modName,home.spec.units,spec⟩, baseModules := bases, allowedAncestors := c.allowed.map (·.map qualified)
+      delta := ⟨spec.modName,home.spec.units,spec⟩, baseModules := bases, oldBaseModules, otherChildHistory
+      allowedAncestors := c.allowed.map (·.map qualified)
       maybeLift := lifts.head?, otherLifts := lifts.drop 1, transports := binds}
     return {task := t,home}
 
