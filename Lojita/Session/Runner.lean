@@ -98,6 +98,28 @@ def executeAction (cfg : SessionConfig) (action : SessionAction) : IO ActionResu
     | .finish summary => finishSession cfg summary
   catch e => return .rejected (toString e)
 
+/-- Extract a clean failure message from a failed `codex exec` JSONL stream.
+    Triggers only on `codex exec (` errors and returns only the extracted
+    `error.message` / `message` field, never raw stdout tool-call payloads. -/
+def extractTurnFailure? (errMsg : String) : Option String := Id.run do
+  unless errMsg.startsWith "codex exec (" do return none
+  for line in (errMsg.splitOn "\n").reverse do
+    let trimmed := line.trimAscii.toString
+    if trimmed.startsWith "{" then
+      if let .ok event := Lean.Json.parse trimmed then
+        match (event.getObjValAs? String "type").toOption with
+        | some "turn.failed" =>
+          if let .ok errObj := event.getObjVal? "error" then
+            if let .ok msg := errObj.getObjValAs? String "message" then
+              if !msg.trimAscii.isEmpty then return some msg
+            else if let .ok msg := errObj.getStr? then
+              if !msg.trimAscii.isEmpty then return some msg
+        | some "error" =>
+          if let .ok msg := event.getObjValAs? String "message" then
+            if !msg.trimAscii.isEmpty then return some msg
+        | _ => pure ()
+  return none
+
 /-- A rejected proposal supplies only a transient diagnostic. The durable
     conversation and semantic memory advance after the authoritative action gate. -/
 private def sessionLoop (cfg : SessionConfig) : IO String := do
@@ -125,21 +147,35 @@ private def sessionLoop (cfg : SessionConfig) : IO String := do
             view.stale.elim "" (fun e => s!"\n[STATUS: STALE AGAINST UPDATED OR REPLACED BASE — RE-DRIVE THIS TREE]\n{e}")
         return sealed ++ stalePartials
       let prompt := sessionPrompt cfg.goal cfg.reference summaries memory.toList diagnostic
-      let reply ← cfg.backend.propose {owner, ctxDir := ctx, prompt, retry := !diagnostic.isEmpty}
-      let drafts ← loadDrafts ctx
-      let result ← match parseSessionAction reply drafts with
-        | .error e => pure (.rejected e)
-        | .ok act => executeAction cfg act
-      match result with
-      | .rejected e =>
-        diagnostic := e
-        logNarrowing (ws / "narrowing-events.jsonl") "session" ⟨"action_rejected",owner,e,"Revise the action and retry."⟩
-      | .accepted msg | .finished msg =>
-        memory := memory.push msg
-        atomicText file (SExpr.list (memory.toList.map .str)).canonical
-        cfg.backend.accept owner msg
-        if result matches .finished _ then return msg
-        diagnostic := ""
+      let proposed : Except String String ← try
+          pure (.ok (← cfg.backend.propose {owner, ctxDir := ctx, prompt, retry := !diagnostic.isEmpty}))
+        catch e =>
+          if let some reason := extractTurnFailure? (toString e) then
+            pure (.error reason)
+          else
+            throw e
+      match proposed with
+      | .error reason =>
+        discard (cfg.backend.retire owner).toBaseIO
+        diagnostic := s!"codex turn failed (scratch thread retired; fork cleanly and rephrase if needed): {reason}"
+        logNarrowing (ws / "narrowing-events.jsonl") "session"
+          ⟨"turn_failed",owner,reason,"Scratch thread retired; fork fresh from durable main thread and retry."⟩
+        continue
+      | .ok reply =>
+        let drafts ← loadDrafts ctx
+        let result ← match parseSessionAction reply drafts with
+          | .error e => pure (.rejected e)
+          | .ok act => executeAction cfg act
+        match result with
+        | .rejected e =>
+          diagnostic := e
+          logNarrowing (ws / "narrowing-events.jsonl") "session" ⟨"action_rejected",owner,e,"Revise the action and retry."⟩
+        | .accepted msg | .finished msg =>
+          memory := memory.push msg
+          atomicText file (SExpr.list (memory.toList.map .str)).canonical
+          cfg.backend.accept owner msg
+          if result matches .finished _ then return msg
+          diagnostic := ""
     fail "session stopped without finish"
   finally cfg.backend.retire owner
 

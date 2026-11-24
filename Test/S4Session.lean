@@ -970,6 +970,114 @@ private def concurrentCancellation (dir repo : FilePath) : IO Unit := do
     !(← (dir / "trees/T0/ai" / dropped / "drafts").pathExists)) "dropped scratch thread or drafts survived"
   IO.println s!"   Concurrent Codex tree sealed in {ms} ms, kept one fork and reaped dropped PID {pid}"
 
+private def sessionTurnResilience (ws repo : FilePath) : IO Unit := do
+  let ref : RefSpec := ⟨.local "/bin/true", [], 5000⟩
+  let seedTree := fun (dir : FilePath) => do
+    initWorkspace dir
+    let sp ← object "Gen.Base.R" "axiom v : Nat"
+    let im ← object "Gen.Base.R" "def v : Nat := 1"
+    discard <| publishTree dir "Base" "seed" [] [] .ok (Frozen.frozen im [] sp [])
+  -- Direct parser checks on extractTurnFailure?
+  let turnFailedErr := "codex exec (1): raw stderr noise\n" ++
+    "{\"type\":\"thread.started\",\"thread_id\":\"00000000-0000-0000-0000-000000000001\"}\n" ++
+    "{\"type\":\"item.completed\",\"item\":{\"type\":\"mcp_tool_call\",\"payload\":\"RAW_TOOL_CALL_PAYLOAD\"}}\n" ++
+    "{\"type\":\"turn.failed\",\"error\":{\"message\":\"transient upstream error\"}}\n"
+  ensure (extractTurnFailure? turnFailedErr == some "transient upstream error")
+    s!"extractTurnFailure? missed turn.failed: {repr (extractTurnFailure? turnFailedErr)}"
+  let bottomToTopErr := "codex exec (1): \n" ++
+    "{\"type\":\"error\",\"message\":\"earlier reconnect warning\"}\n" ++
+    "{\"type\":\"turn.failed\",\"error\":{\"message\":\"final turn failure\"}}\n"
+  ensure (extractTurnFailure? bottomToTopErr == some "final turn failure")
+    s!"extractTurnFailure? did not scan bottom-to-top: {repr (extractTurnFailure? bottomToTopErr)}"
+  let errorEventErr := "codex exec (1): \n" ++
+    "{\"type\":\"item.completed\",\"raw\":\"RAW_ERROR_STDOUT\"}\n" ++
+    "{\"type\":\"error\",\"message\":\"transient gateway reset\"}\n"
+  ensure (extractTurnFailure? errorEventErr == some "transient gateway reset")
+    s!"extractTurnFailure? missed error event: {repr (extractTurnFailure? errorEventErr)}"
+  ensure (extractTurnFailure? "{\"type\":\"turn.failed\",\"error\":{\"message\":\"missing prefix\"}}" == none)
+    "extractTurnFailure? triggered without codex exec prefix"
+  ensure (extractTurnFailure? "codex exec (1): fatal non-json cli error\n" == none)
+    "extractTurnFailure? triggered without JSON failure event"
+  ensure (extractTurnFailure? "unexpected proposal" == none)
+    "extractTurnFailure? triggered on non-codex error"
+
+  -- 1) turn.failed retires SESSION_ROOT, forwards only the clean reason in TRANSIENT DIAGNOSTIC, and finishes on turn 2.
+  let ws1 := ws / "turn-failed-recovery"
+  seedTree ws1
+  let turn1 ← IO.mkRef 0
+  let retired1 ← IO.mkRef ([] : List String)
+  let accepted1 ← IO.mkRef 0
+  let sawDiag1 ← IO.mkRef false
+  let backend1 : Backend := {
+    propose := fun req => do
+      let n ← turn1.modifyGet fun i => (i, i + 1)
+      if n == 0 then
+        ensure (!req.retry) "turn 1 should not be marked retry"
+        fail turnFailedErr
+      else if n == 1 then
+        ensure req.retry "turn 2 after turn.failed must set retry=true"
+        ensure ((← retired1.get) == ["SESSION_ROOT"])
+          s!"expected retire SESSION_ROOT before turn 2, got {← retired1.get}"
+        let diag := (req.prompt.splitOn "TRANSIENT DIAGNOSTIC").getLast!
+        ensure (diag.contains "transient upstream error")
+          s!"missing turn.failed message in TRANSIENT DIAGNOSTIC: {diag}"
+        ensure (!diag.contains "RAW_TOOL_CALL_PAYLOAD" && !diag.contains "raw stderr noise" && !diag.contains "thread.started")
+          s!"raw stdout/stderr leaked into TRANSIENT DIAGNOSTIC: {diag}"
+        sawDiag1.set true
+        return "(session-action (kind finish) (summary \"recovered after turn.failed\"))"
+      else
+        fail s!"unexpected extra turn {n}"
+    accept := fun owner _ => do
+      ensure (owner == "SESSION_ROOT") s!"unexpected accept owner: {owner}"
+      accepted1.modify (· + 1)
+    retire := fun owner => retired1.modify (· ++ [owner])
+  }
+  let summary1 ← runSession ⟨repo, ws1, "Recover from turn.failed", ref, backend1, false⟩
+  ensure (summary1 == "recovered after turn.failed" && (← turn1.get) == 2 && (← sawDiag1.get) && (← accepted1.get) == 1)
+    s!"turn.failed recovery did not finish cleanly: {summary1}"
+  ensure ((← retired1.get) == ["SESSION_ROOT", "SESSION_ROOT"])
+    s!"expected retire on turn.failed and finally, got {← retired1.get}"
+  let log1 ← IO.FS.readFile (ws1 / "narrowing-events.jsonl")
+  ensure (log1.contains "\"kind\":\"turn_failed\"" && log1.contains "transient upstream error" && !log1.contains "RAW_TOOL_CALL_PAYLOAD")
+    s!"missing or leaky turn_failed narrowing log: {log1}"
+
+  -- 2) JSON error event also retires SESSION_ROOT and recovers cleanly.
+  let ws2 := ws / "error-event-recovery"
+  seedTree ws2
+  let turn2 ← IO.mkRef 0
+  let retired2 ← IO.mkRef ([] : List String)
+  let backend2 : Backend := {
+    propose := fun req => do
+      let n ← turn2.modifyGet fun i => (i, i + 1)
+      if n == 0 then fail errorEventErr
+      ensure (req.retry && (← retired2.get) == ["SESSION_ROOT"]) "error event did not retire before retry"
+      let diag := (req.prompt.splitOn "TRANSIENT DIAGNOSTIC").getLast!
+      ensure (diag.contains "transient gateway reset" && !diag.contains "RAW_ERROR_STDOUT")
+        s!"bad diagnostic after error event: {diag}"
+      return "(session-action (kind finish) (summary \"recovered after error event\"))"
+    retire := fun owner => retired2.modify (· ++ [owner])
+  }
+  let summary2 ← runSession ⟨repo, ws2, "Recover from error event", ref, backend2, false⟩
+  ensure (summary2 == "recovered after error event" && (← turn2.get) == 2) "error event recovery failed"
+
+  -- 3) Non-turn.failed errors propagate immediately without retrying.
+  let ws3 := ws / "unexpected-proposal-propagates"
+  let calls3 ← IO.mkRef 0
+  let fatalBackend := ScriptedBackend fun _ => do
+    calls3.modify (· + 1)
+    fail "unexpected proposal"
+  expectError "unexpected proposal" (runSession ⟨repo, ws3, "Propagate non-turn.failed error", ref, fatalBackend, false⟩)
+  ensure ((← calls3.get) == 1) s!"non-turn.failed error was retried: {← calls3.get} calls"
+
+  let ws4 := ws / "codex-non-json-propagates"
+  let calls4 ← IO.mkRef 0
+  let nonJsonCodexBackend := ScriptedBackend fun _ => do
+    calls4.modify (· + 1)
+    fail "codex exec (1): fatal non-json cli error\n"
+  expectError "fatal non-json cli error" (runSession ⟨repo, ws4, "Propagate non-JSON codex error", ref, nonJsonCodexBackend, false⟩)
+  ensure ((← calls4.get) == 1) s!"non-JSON codex error was retried: {← calls4.get} calls"
+  IO.println "   Session turn.failed resilience: scratch retired, clean diagnostic forwarded, fatal errors propagate"
+
 def run (args : List String) : IO Unit := do
   let repo ← IO.FS.realPath "."
   preload (repo / ".lake/build/lib/lean")
@@ -981,10 +1089,12 @@ def run (args : List String) : IO Unit := do
   | ["recovery",ws] => do
     inPlaceTowerRecovery ws repo
     IO.FS.withTempDir fun dir => transportAuditRegressions dir repo
+    IO.FS.withTempDir fun dir => sessionTurnResilience dir repo
   | ["tower",ws] => do
     tower ws repo
     IO.FS.withTempDir fun dir => inPlaceTowerRecovery dir repo
     IO.FS.withTempDir fun dir => transportAuditRegressions dir repo
+    IO.FS.withTempDir fun dir => sessionTurnResilience dir repo
   | ["prompts",dir,ws] => promptExamples dir ws repo
   | _ => fail "test-s4-session (tower WS | recovery WS | prompts DRAFTS WS | threads DIR)"
 
