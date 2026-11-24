@@ -34,4 +34,5 @@ done
 ./test-prompts-lean4.sh
 ./test-s4-session.sh
 ./test-posix-channels.sh
+./test-concurrent-dialectica.sh
 echo 'All available Pure Lean 4 gates passed.'

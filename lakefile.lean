@@ -51,3 +51,7 @@ lean_lib PosixFixtures where
 lean_exe «test-posix-channels» where
   root := `Test.PosixChannelConformance
   supportInterpreter := true
+
+lean_exe «test-concurrent-dialectica» where
+  root := `Test.ConcurrentDialecticaReplay
+  supportInterpreter := true

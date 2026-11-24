@@ -1,0 +1,187 @@
+-- Revised root declarations for the horizontal gron peer. Kept slots forward to their
+-- original nominal types. State the public port at rewrite sites and let the
+-- kernel check each conversion against both the assigned stub and the closed link.
+import Gen.T1.Gron
+import LojitaCtx.Blueprint
+import LojitaCtx.CharClass
+import LojitaCtx.Cli
+import LojitaCtx.HttpLaws
+import LojitaCtx.ToolLaws
+import Gen.T2b.Gron.Diagnostic
+import Gen.T2b.Gron.KeyOrder
+import Gen.T2b.Gron.Decode
+import Gen.T2b.Gron.Merge
+import Gen.T2b.Gron.Values
+import Gen.T2b.Gron.Http
+namespace Gen.T2b.Gron
+open LojitaCtx.Blueprint LojitaCtx.Terminal LojitaCtx.World
+open LojitaCtx.PosixChannel (evalScanner)
+open LojitaCtx.NetSandbox (encodeHttpResp)
+open Gen.T1.Gron (Options Invocation Command Flag BoolFlag TextFlag Source Style Environment
+  Json Scalar Assignment Segment Path LineError Completion Observation Acquired DecodedInput)
+private def childElement (item : JsonElement) :=
+  Decode.JsonElement.mk item.leading item.spelling item.trailing (toDecodeJson item.value)
+private def childMember (item : JsonMember) :=
+  Decode.JsonMember.mk item.leading item.keySpelling item.key item.keyPadding (childElement item.element)
+private theorem decodeJsonMap (bs : Bytes) :
+    decodeJson bs = fromDecodeResult (Decode.decodeJson bs) := by
+  change ((oneInput (closedPipe bs)).1.value?).getD (.error "EOF") =
+    fromDecodeResult (((Decode.oneInput (closedPipe bs)).1.value?).getD (.error "EOF"))
+  rw [oneInputMap]
+  dsimp only
+  cases (Decode.oneInput (closedPipe bs)).1 <;> rfl
+theorem jsonEmpty : ∀ bs, bs.all jsonSpace = true → decodeJson bs = .error "EOF" := by
+  intro bs spaces
+  rw [decodeJsonMap, (show Decode.decodeJson _ = _ from Decode.jsonEmpty bs spaces)] <;> rfl
+theorem jsonLiteralTail : ∀ pad tail, pad.all jsonSpace = true →
+  decodeJson (pad ++ bytes "null" ++ tail) = .ok (.scalar .null) ∧
+  decodeJson (pad ++ bytes "true" ++ tail) = .ok (.scalar (.boolean true)) ∧
+  decodeJson (pad ++ bytes "false" ++ tail) = .ok (.scalar (.boolean false)) := by
+  intro pad tail spaces
+  obtain ⟨hn, ht, hf⟩ := (show Decode.decodeJson _ = _ ∧ Decode.decodeJson _ = _ ∧ Decode.decodeJson _ = _ from
+    Decode.jsonLiteralTail pad tail spaces)
+  simp only [decodeJsonMap, hn, ht, hf]
+  exact ⟨rfl, rfl, rfl⟩
+theorem jsonWellFormed : ∀ depth pad wire j, depth ≤ 10000 → pad.all jsonSpace = true →
+  JsonSpelling depth wire j → decodeJson (pad ++ wire) = .ok j := by
+  intro depth pad wire j bound spaces valid
+  rw [decodeJsonMap, (show Decode.decodeJson _ = _ from Decode.jsonWellFormed depth pad wire (toDecodeJson j) bound spaces (childSpelling valid))]
+  change Except.ok (fromDecodeJson (toDecodeJson j)) = .ok j
+  rw [decodeJsonRoundtrip]
+theorem jsonContainerReady : ∀ depth pad wire tail j closed waited, depth ≤ 10000 →
+  pad.all jsonSpace = true → JsonSpelling depth wire j → jsonContainer j = true →
+  oneInput ⟨pad ++ wire ++ tail, closed, waited⟩ = (.emit (.ok j), ⟨tail, closed, waited⟩) := by
+  intro depth pad wire tail j closed waited bound spaces valid container
+  have h := Decode.jsonContainerReady depth pad wire tail (toDecodeJson j) closed waited bound
+    spaces (childSpelling valid) ((decodeContainerRule j).trans container)
+  rw [oneInputMap, (show Decode.oneInput _ = _ from h)]
+  change ((.emit (.ok (fromDecodeJson (toDecodeJson j))) : ReadOutcome (Except String Json)),
+    (⟨tail, closed, waited⟩ : InChan)) = _
+  rw [decodeJsonRoundtrip]
+theorem jsonScalarWait : ∀ depth pad wire j waited, depth ≤ 10000 →
+  pad.all jsonSpace = true → JsonSpelling depth wire j → jsonContainer j = false →
+  oneInput ⟨pad ++ wire, false, waited⟩ = (.wouldBlock, ⟨[], false, true⟩) := by
+  intro depth pad wire j waited bound spaces valid scalar
+  have h := Decode.jsonScalarWait depth pad wire (toDecodeJson j) waited bound spaces
+    (childSpelling valid) ((decodeContainerRule j).trans scalar)
+  rw [oneInputMap, (show Decode.oneInput _ = _ from h)] <;> rfl
+theorem jsonUnpairedSurrogate : ∀ pad digits tail cp, pad.all jsonSpace = true →
+  jsonHexCode digits cp → 55296 ≤ cp → cp ≤ 57343 →
+  decodeJson (pad ++ [34, 92, 117] ++ digits ++ [34] ++ tail) =
+    .ok (.scalar (.string (String.singleton (Char.ofNat 65533)))) := by
+  intro pad digits tail cp spaces hex lo hi
+  rw [decodeJsonMap, (show Decode.decodeJson _ = _ from Decode.jsonUnpairedSurrogate pad digits tail cp spaces hex lo hi)] <;> rfl
+theorem jsonRawString : ∀ pad payload tail, pad.all jsonSpace = true →
+  (∀ b ∈ payload, 32 ≤ b.toNat ∧ b ≠ 34 ∧ b ≠ 92) →
+  decodeJson (pad ++ [34] ++ payload ++ [34] ++ tail) =
+    .ok (.scalar (.string (decodeUtf8Lossy payload))) := by
+  intro pad payload tail spaces valid
+  rw [decodeJsonMap, (show Decode.decodeJson _ = _ from Decode.jsonRawString pad payload tail spaces valid)] <;> rfl
+theorem jsonBadStart : ∀ pad b tail closed waited, pad.all jsonSpace = true →
+  jsonSpace b = false → jsonStarter b = false → b.toNat < 128 →
+  oneInput ⟨pad ++ (b :: tail), closed, waited⟩ =
+    (.emit (.error ("invalid character " ++ quoteByte b ++ " looking for beginning of value")),
+      ⟨tail, closed, waited⟩) := by
+  intro pad b tail closed waited spaces notSpace notStarter ascii
+  rw [oneInputMap, (show Decode.oneInput _ = _ from Decode.jsonBadStart pad b tail closed waited spaces notSpace notStarter ascii)] <;> rfl
+private theorem toMergeIndexBounds (p : Path) (limit : Nat)
+    (bounds : ∀ i, Segment.index i ∈ p → i < limit) :
+    ∀ i, Merge.Segment.index i ∈ toMergePath p → i < limit := by
+  intro i mem
+  obtain ⟨segment, inPath, converted⟩ := List.mem_map.mp mem
+  cases segment with
+  | key _ => cases converted
+  | index n =>
+    have same : n = i := by injection converted
+    subst i
+    exact bounds n inPath
+private theorem toDecodeIndexBounds (p : Path) (limit : Nat)
+    (bounds : ∀ i, Segment.index i ∈ p → i < limit) :
+    ∀ i, Decode.Segment.index i ∈ toDecodePath p → i < limit := by
+  intro i mem
+  obtain ⟨segment, inPath, converted⟩ := List.mem_map.mp mem
+  cases segment with
+  | key _ => cases converted
+  | index n =>
+    have same : n = i := by injection converted
+    subst i
+    exact bounds n inPath
+private theorem mergeJsPath (root : String) (p : Path) :
+    Merge.jsPath mergeAlphabet root (toMergePath p) = jsPath root p := by
+  change root ++ String.intercalate "" ((toMergePath p).map (Merge.jsSegment mergeAlphabet)) = _
+  simp only [jsPath, toMergePath, List.map_map, Function.comp_def, mergeJsSegment]
+private theorem mergeAssignmentRule (root : String) (p : Path) (a : Gen.T1.Gron.Atom) :
+    Merge.jsAssignment mergeAlphabet root (toMergePath p) (toMergeAtom a) = jsAssignment root p a := by
+  change Merge.jsPath mergeAlphabet root (toMergePath p) ++ " = " ++ Merge.renderAtom (toMergeAtom a) ++ ";" = _
+  simp only [jsAssignment, mergeJsPath, mergeAtomRule]
+private theorem mergeAssignmentSpacesRule (root : String) (p : Path) (a : Gen.T1.Gron.Atom)
+    (before after : String) :
+    Merge.jsAssignmentWithSpaces mergeAlphabet root (toMergePath p) (toMergeAtom a) before after =
+      jsAssignmentWithSpaces root p a before after := by
+  change Merge.jsPath mergeAlphabet root (toMergePath p) ++ before ++ "=" ++ after ++
+    Merge.renderAtom (toMergeAtom a) ++ ";" = _
+  simp only [jsAssignmentWithSpaces, mergeJsPath, mergeAtomRule]
+private theorem mergeStatementPathRule (root : String) (p : Path) :
+    (Merge.statementPath root (toMergePath p)).map fromMergeSegment = statementPath root p := by
+  change (if root == "json" then toMergePath p else .key root :: toMergePath p).map fromMergeSegment = _
+  unfold statementPath
+  split <;> simp only [List.map_cons, fromMergeSegment, fromMergePathTo]
+theorem reverseJSStatement : ∀ root p a before after suffix, Gen.T1.Gron.identifier alphabet root = true →
+  (∀ i, Segment.index i ∈ p → i < 9223372036854775808) →
+  validAtom a → before.toList.all (· == ' ') = true → after.toList.all (· == ' ') = true →
+  suffix.contains 10 = false →
+  reverseLine .javascript (bytes (jsAssignmentWithSpaces root p a before after) ++ suffix) =
+    .record ⟨statementPath root p, material a⟩ := by
+  intro root p a before after suffix identifier bounds valid pre post noNewline
+  have h := Merge.reverseJSStatement mergeAlphabet root (toMergePath p) (toMergeAtom a)
+    before after suffix ((mergeIdentifier root).trans identifier) (toMergeIndexBounds p _ bounds)
+    (by simpa only [mergeValidAtom] using valid) pre post noNewline
+  change Merge.reverseLine mergeAlphabet
+    (bytes (Merge.jsAssignmentWithSpaces mergeAlphabet root (toMergePath p) (toMergeAtom a) before after) ++ suffix) = _ at h
+  rw [mergeAssignmentSpacesRule] at h
+  change fromMergeLine (Merge.reverseLine mergeAlphabet
+    (bytes (jsAssignmentWithSpaces root p a before after) ++ suffix)) = _
+  rw [h]
+  change ReverseLine.record ⟨(Merge.statementPath root (toMergePath p)).map fromMergeSegment,
+    fromMergeJson (Merge.material (toMergeAtom a))⟩ = _
+  rw [mergeStatementPathRule, fromMergeMaterial]
+private theorem decodeJsonAssignmentRule (p : Path) (a : Gen.T1.Gron.Atom) :
+    Decode.jsonAssignment (toDecodePath p) (toDecodeAtom a) = jsonAssignment p a := by
+  change bytes ("[[" ++ String.intercalate "," ((toDecodePath p).map Decode.jsonSegment) ++ "]," ++
+    Decode.renderAtom (toDecodeAtom a) ++ "]") = _
+  simp only [jsonAssignment, toDecodePath, List.map_map, Function.comp_def,
+    decodeJsonSegment, decodeAtomRule]
+theorem reverseJSONStatement : ∀ p a,
+  (∀ i, Segment.index i ∈ p → i < 9007199254740992) → exactJsonStatementAtom a →
+  reverseLine .json (jsonAssignment p a) = .record ⟨p, material a⟩ := by
+  intro p a bounds exactAtom
+  have h := Decode.reverseJSONStatement (toDecodePath p) (toDecodeAtom a) (toDecodeIndexBounds p _ bounds)
+    (by simpa only [decodeExactAtom] using exactAtom)
+  change Decode.reverseLine (Decode.jsonAssignment (toDecodePath p) (toDecodeAtom a)) = _ at h
+  rw [decodeJsonAssignmentRule] at h
+  change fromDecodeLine (Decode.reverseLine (jsonAssignment p a)) = _
+  rw [h]
+  change ReverseLine.record ⟨(toDecodePath p).map fromDecodeSegment,
+    fromDecodeJson (Decode.material (toDecodeAtom a))⟩ = _
+  rw [fromDecodePathTo, fromDecodeMaterial]
+theorem valueStatement : ∀ root p a, Gen.T1.Gron.identifier alphabet root = true →
+  (∀ i, Segment.index i ∈ p → i < 9223372036854775808) →
+  validAtom a →
+  valueLine (bytes (jsAssignment root p a)) =
+    match a with
+    | .array | .object => .skip
+    | .scalar (.string s) => .emit (bytes s)
+    | .scalar v => .emit (bytes (Gen.T1.Gron.renderScalar true false v)) := by
+  intro root p a identifier bounds valid
+  have h := Merge.valueStatement mergeAlphabet root (toMergePath p) (toMergeAtom a)
+    ((mergeIdentifier root).trans identifier) (toMergeIndexBounds p _ bounds)
+    (by simpa only [mergeValidAtom] using valid)
+  change Merge.valueLine mergeAlphabet (bytes (Merge.jsAssignment mergeAlphabet root (toMergePath p) (toMergeAtom a))) = _ at h
+  rw [mergeAssignmentRule] at h
+  change fromMergeValue (Merge.valueLine mergeAlphabet (bytes (jsAssignment root p a))) = _
+  rw [h]
+  cases a with
+  | scalar s => cases s <;> rfl
+  | array => rfl
+  | object => rfl
+end Gen.T2b.Gron
