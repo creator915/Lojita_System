@@ -127,19 +127,30 @@ private def unitModules (snap : Snapshot) : Std.HashMap QName Lean.NameSet := Id
     mods := mods.insert u used
   return mods
 
+/-- All non-base, non-owned modules exported by non-base horizontal peer trees
+    (both peer roots and their transitive child modules). -/
+private def transientPeerModules (t : NodeTask) (m : LeanMod) (stubs : List LeanMod) : Std.HashSet Lean.Name := Id.run do
+  let bases := Std.HashSet.ofList (t.baseModules.map (·.modName))
+  let owned := Std.HashSet.ofList (m.modName :: stubs.map (·.modName) ++
+    m.imports.filterMap fun i => if i.assumes.isEmpty then none else some i.imod)
+  let mut out : Std.HashSet Lean.Name := {}
+  for (h, _) in t.transports do
+    if bases.contains h.code.modName then continue
+    for em in exported h do
+      unless bases.contains em.modName || owned.contains em.modName do
+        out := out.insert em.modName.toLeanName
+  return out
+
 /-- Retain any square or private Old.*/peer helper reached from the contract or another
     surviving declaration. Kernel edges include dependencies introduced by tactics and
     generated helpers. -/
-def sealedCode (t : NodeTask) (m : LeanMod) (snap : Snapshot) : LeanMod × List QName × List QName := Id.run do
+def sealedCode (t : NodeTask) (m : LeanMod) (snap : Snapshot) (stubs : List LeanMod := []) :
+    LeanMod × List QName × List QName := Id.run do
   if t.transports.isEmpty then return (m, [], [])
   let squares := Std.HashSet.ofList (t.transports.flatMap fun (_,ts) => ts.squares.map (·.squareUnit))
   let contract := Std.HashSet.ofList (t.delta.newIface.units.flatMap (·.definedNames))
   let pub := Std.HashSet.ofList (publicNames m)
-  let peers := Std.HashSet.ofList (t.transports.map (·.1.code.modName))
-  let bases := Std.HashSet.ofList (t.baseModules.map (·.modName))
-  let transientPeers := Std.HashSet.ofList (t.transports.filterMap fun (h, _) =>
-    let q := h.code.modName
-    if bases.contains q then none else some q.toLeanName)
+  let transientPeers := transientPeerModules t m stubs
   let uMods := unitModules snap
   let edges := snap.graph.semArrows
   let transientSquares := Std.HashSet.ofList ((m.units.filter fun u =>
@@ -173,7 +184,7 @@ def sealedCode (t : NodeTask) (m : LeanMod) (snap : Snapshot) : LeanMod × List 
   let leakedPeers := distinct (survivingMods.toList.filterMap fun mod =>
     if transientPeers.contains mod then some (QName.ofName mod) else none)
   let removed := m.imports.filterMap fun i =>
-    let peer := peers.contains i.imod && !bases.contains i.imod && !survivingMods.contains i.imod.toLeanName
+    let peer := transientPeers.contains i.imod.toLeanName && !survivingMods.contains i.imod.toLeanName
     if isSnapshot i.imod || peer then some i.imod else none
   let cleaned : LeanMod := {m with
     units := m.units.filter (!transient.contains ·.uname)
@@ -184,7 +195,7 @@ def sealedCode (t : NodeTask) (m : LeanMod) (snap : Snapshot) : LeanMod × List 
 def verifySealed (t : NodeTask) (deps stubs : List LeanMod) (tests : LeanMod) (snap : Snapshot) :
     IO (Except NarrowingCertificate LeanMod) := do
   let owner := t.delta.child
-  let (code, leakedSnapshots, leakedPeers) := sealedCode t tests snap
+  let (code, leakedSnapshots, leakedPeers) := sealedCode t tests snap stubs
   if let mod :: _ := leakedSnapshots then
     return .error (problem "transient_snapshot_leak" owner
       s!"Surviving declaration depends on read-only snapshot module {mod}."
@@ -194,9 +205,8 @@ def verifySealed (t : NodeTask) (deps stubs : List LeanMod) (tests : LeanMod) (s
       s!"Surviving declaration depends on non-base horizontal peer {mod}, which is retired at seal."
       "Reference the horizontal peer only inside declared transport squares or private helper lemmas used exclusively by those squares.")
   if code != tests then
-    let peers := Std.HashSet.ofList (t.transports.map (·.1.code.modName))
-    let bases := Std.HashSet.ofList (t.baseModules.map (·.modName))
-    let sealedDeps := deps.filter fun m => !(peers.contains m.modName && !bases.contains m.modName)
+    let transientPeers := transientPeerModules t tests stubs
+    let sealedDeps := deps.filter fun m => !transientPeers.contains m.modName.toLeanName
     if let .error e ← (checkConditionalGlue sealedDeps stubs code).toBaseIO then
       return .error (kernelError code (toString e))
     if let .error e ← (satisfies t.delta.newIface code sealedDeps .closedImplOK stubs).toBaseIO then
@@ -235,7 +245,7 @@ private def gatePipeline (t : NodeTask) (old : Frozen) (p : Plan) (subs : List L
     let srcs := ts.childMoves.flatMap ChildMove.sources
     let srcSet := Std.HashSet.ofList (srcs.map toString)
     for (n,_) in h.children do
-      unless srcSet.contains n do
+      unless isNestedDescendant h.code.modName (qualified n) || srcSet.contains n do
         throw (problem "unaccountedOldChild" (qualified n)
           "Saved source child slot is not covered by the TransportSpec child map."
           "The TransportSpec descriptor (set by SESSION_ROOT for the root tree, or by the parent node for nested slots) must cover every saved source child slot via keep or move.")

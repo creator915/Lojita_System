@@ -213,11 +213,17 @@ private def preserved (old cand : PlanIndex) (rs : Std.HashMap QName QName)
   | .unit x, .unit y => return same old.locals[x]? cand.locals[y]?
   | .ext x, .ext y =>
     if let (some i, some j) := (old.imports[x]?, cand.imports[y]?) then
-      let targets := byUnit j.assumes
-      return i.assumes.length == j.assumes.length && i.assumes.all fun u =>
-        same (some u) targets[(renamedRef? rs u.uname).getD (renameQ x y u.uname)]?
+      if !i.assumes.isEmpty || !j.assumes.isEmpty then
+        let targets := byUnit j.assumes
+        return i.assumes.length == j.assumes.length && i.assumes.all fun u =>
+          same (some u) targets[(renamedRef? rs u.uname).getD (renameQ x y u.uname)]?
+    let modOf (snap : Snapshot) (q : QName) : Lean.Name :=
+      (moduleOf? snap.env q.toLeanName).getD q.toLeanName
+    let sameClosedBase := match a, b with
+      | some s, some t => x == y && s.versions.find? (modOf s x) == t.versions.find? (modOf t y)
+      | _, _ => !conservative && x == y
     return same old.externals[x]? cand.externals[y]? ||
-      (!conservative && x == y && old.externals[x]?.isNone && cand.externals[y]?.isNone)
+      (sameClosedBase && old.externals[x]?.isNone && cand.externals[y]?.isNone)
   | _, _ => return false
 
 def preserves (old cand : LeanMod) (p : Plan) (arrow : Proarrow)

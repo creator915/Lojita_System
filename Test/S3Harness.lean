@@ -486,6 +486,33 @@ private def deepKeptLift : IO Unit := do
   let peerLeakRep ← planPreview (job (.mkChildLift (dq lower) (dq target) none)) h (birthPlan peerLeakDraft)
   ensure (peerLeakRep.certificate.any (·.kind == "transient_peer_leak"))
     s!"S2 operational use of non-base peer was not rejected at the gate: {repr peerLeakRep}"
+  -- S2/S3 transitive peer child modules: private helper referencing a non-base peer child module
+  -- (Gen.T0.R.Decode) for a declared square is stripped cleanly; surviving/public use of that
+  -- peer child module emits transient_peer_leak.
+  let sqName := q (target ++ ".sq")
+  let tsWithSq := TransportSpec.transportSpecTree old.code.modName spec.modName
+    [.keepChild (dq source) (dq target)] [polySquare [q (source ++ ".val")] [q (target ++ ".val")] sqName]
+  let jobSq := {(job (.mkChildLift (dq lower) (dq target) none)) with transports := [(old, tsWithSq)]}
+  let childHelperDraft ← object target
+    s!"def val := {target}.Decode.val * 0 + 7
+private theorem peerChildHelper : {source}.Decode.val = 7 := rfl
+theorem sq : {source}.val = val := by
+  change {source}.Decode.val = {target}.Decode.val * 0 + 7
+  simp [peerChildHelper]" [source, target ++ ".Decode"]
+  let (chRep, some chCand) ← checkCandidateGates jobSq h (birthPlan childHelperDraft)
+    | throw (IO.userError "private helper referencing non-base peer child module failed gate")
+  ensure (chRep.certificate.isNone &&
+    !chCand.code.units.any (fun u => [sqName, q (target ++ ".peerChildHelper")].contains u.uname) &&
+    !chCand.code.imports.any (·.imod == old.code.modName))
+    s!"non-base peer child helper or peer import survived sealing: {repr chCand.code}"
+  let stCh : NodeState := {task := jobSq, original := h, current := h}
+  let recCh ← reconcileChildren stCh chCand
+  let sealedCh ← finish {stCh with current := recCh.current, verified := recCh.verified} chCand
+  verifyClosure (exported base) sealedCh
+  let childLeakDraft ← object target s!"def val := {source}.Decode.val" [source, target ++ ".Decode"]
+  let childLeakRep ← planPreview (job (.mkChildLift (dq lower) (dq target) none)) h (birthPlan childLeakDraft)
+  ensure (childLeakRep.certificate.any (fun c => c.kind == "transient_peer_leak" && c.witness == source ++ ".Decode"))
+    s!"surviving use of non-base peer child module did not emit transient_peer_leak: {repr childLeakRep}"
 
 private def inPlaceSquare : IO Unit := do
   let n := "Gen.T1.InPlace"
@@ -650,6 +677,28 @@ theorem dependent : True := by first | exact premise | trivial" [toString base.m
   let s5Rep ← planPreview {(task (← object "Gen.T1.HistChild" "axiom b : Nat")) with oldBaseModules := some []}
     oldParentHome {why := "drop kid", newMod := some nextParent, moves := parentMoves}
   ensure s5Rep.certificate.isNone s!"S5 candidate-era child spec poisoned oldStubs: {repr s5Rep}"
+  -- Verifier #3: Empty-assumes closed base-module .ext moves must NOT vacuously preserve
+  -- across conservative fallback, renamed bases, or updated base versions.
+  let baseA ← object "Gen.T0.BaseA" "def k : Nat := 1"
+  let baseA2 ← object "Gen.T0.BaseA" "def k : Nat := 2"
+  let baseB ← object "Gen.T0.BaseB" "def k : Nat := 1"
+  let useA ← object "Gen.T1.ExtMove" "def val : Nat := Gen.T0.BaseA.k" ["Gen.T0.BaseA"]
+  let useB ← object "Gen.T1.ExtMove" "def val : Nat := Gen.T0.BaseB.k" ["Gen.T0.BaseB"]
+  let valObj := Obj.unit (q "Gen.T1.ExtMove.val")
+  let renameExt : Plan := {why := "swap base", moves := [⟨.ext baseA.modName, .ext baseB.modName⟩]}
+  ensure (!preserves useA useB renameExt ⟨.ext baseA.modName, .ext baseB.modName⟩ &&
+    frontier useA useB renameExt == [valObj])
+    "renamed closed base-module .ext move vacuously returned preserved=true"
+  let snapA1 ← checkClosedModule [baseA] useA
+  let snapA2 ← checkClosedModule [baseA2] useA
+  let idExt : Plan := {why := "keep base", moves := [⟨.ext baseA.modName, .ext baseA.modName⟩]}
+  ensure (!preserves useA useA idExt ⟨.ext baseA.modName, .ext baseA.modName⟩ none (some snapA1) &&
+    frontier useA useA idExt none (some snapA1) == [valObj])
+    "conservative frontier on closed base-module (.ext Base, .ext Base) vacuously returned preserved=true"
+  ensure (preserves useA useA idExt ⟨.ext baseA.modName, .ext baseA.modName⟩ (some snapA1) (some snapA1) &&
+    !preserves useA useA idExt ⟨.ext baseA.modName, .ext baseA.modName⟩ (some snapA1) (some snapA2) &&
+    frontier useA useA idExt (some snapA1) (some snapA2) == [valObj])
+    "semantic frontier missed updated closed base-module version on (.ext Base, .ext Base)"
 
 private def obstruction (dir : System.FilePath) (parserFirst := false) : IO Unit := do
   let bad ← object "Gen.T0.Doc" "def singlePass (_ : Nat) := 0\ntheorem badSinglePass : singlePass 1 = 0 := rfl"
@@ -1396,6 +1445,55 @@ private def engineRemediationTests : IO Unit := do
       ensure (reloaded.children.map Prod.fst == [toString keep.modName, toString sibling.modName] &&
         (lookupChild reloaded keep.modName).isSome && (lookupChild reloaded sibling.modName).isSome)
         "refs/partial lost salvaged grandchild subtree"
+      -- Verifier #1: isNestedDescendant distinguishes direct/epoch slots from salvaged grandchildren;
+      -- prepareSpec (in-place and cross-tree via partialSource) does NOT trigger unaccountedOldChild
+      -- on salvaged grandchildren, and re-driving reuses BOTH Sibling and salvaged Branch.Keep in 0 turns!
+      ensure (!isNestedDescendant (q "Gen.T0.Root") (q "Gen.T0.Doc") &&
+        isNestedDescendant (q "Gen.T0.Root") (q "Gen.T0.Doc.Keep") &&
+        !isNestedDescendant upper.modName sibling.modName &&
+        isNestedDescendant upper.modName keep.modName)
+        "isNestedDescendant misclassified direct or epoch child"
+      let some ps ← Lojita.Session.partialSource ws upper.modName | throw (IO.userError "missing partialSource")
+      ensure (ps.children.map Prod.fst == [toString sibling.modName] &&
+        ps.code.imports.map (·.imod) == [sibling.modName])
+        s!"partialSource leaked salvaged grandchild as direct slot: {ps.children.map Prod.fst}"
+      let inPlaceTs := (encodeTransportSpec (.transportSpecTree upper.modName upper.modName
+        [.keepChild sibling.modName sibling.modName] [])).canonical
+      discard <| Lojita.Session.prepareSpec ws "T1" (renderLeanMod upper) ["T0"]
+        (some (encodeLiftSpec ls).canonical) (some inPlaceTs)
+      let peerSpec ← object "Gen.T1b.Salv" "axiom value : Nat"
+      let peerSib := q "Gen.T1b.Salv.Sibling"
+      let crossTs := (encodeTransportSpec (.transportSpecTree upper.modName peerSpec.modName
+        [.keepChild sibling.modName peerSib] [])).canonical
+      let crossPrep ← Lojita.Session.prepareSpec ws "T1b" (renderLeanMod peerSpec) [] none (some crossTs)
+      let peerDraft ← object "Gen.T1b.Salv" s!"def value : Nat := {peerSib}.value" [toString peerSib]
+      let crossRep ← planPreview crossPrep.task crossPrep.home (birthPlan peerDraft)
+      ensure crossRep.certificate.isNone s!"cross-tree partialSource transport rejected: {repr crossRep}"
+      let fixedBase ← object "Gen.T0.Salv.Doc" "def singlePass (n : Nat) := n"
+      let fixedRoot := withChildIfaces lower [fixedBase]
+      let fixedT0 := Frozen.frozen fixedRoot [] fixedRoot [(toString fixedBase.modName, Frozen.frozen fixedBase [] fixedBase [])]
+      discard <| Lojita.Session.publishTree ws "T0" "fixed base" [] [] .ok fixedT0
+      let blockerImpl ← object (toString blocker.modName)
+        s!"def parse (n : Nat) := n\ntheorem law : parse 1 = {fixedBase.modName}.singlePass 1 := rfl\ntheorem atOne : parse 1 = 1 := rfl"
+        [toString fixedBase.modName]
+      let redrivePrep ← Lojita.Session.prepareSpec ws "T1" (renderLeanMod upper) ["T0"]
+        (some (encodeLiftSpec ls).canonical) none
+      let redriveEvents ← Std.Mutex.new #[]
+      let redriveAI : Proposer := fun req => do
+        if let some cert := req.diagnostic then throw (IO.userError (toString cert))
+        let n := req.task.delta.child
+        mark redriveEvents n "start"
+        if n == upper.modName then return planText main [branch, sibling]
+        if n == branch.modName then return planText branchCode [keep, blocker]
+        if n == blocker.modName then return planText blockerImpl
+        throw (IO.userError s!"salvaged child or grandchild should reuse in 0 turns: {n}")
+      let (v2, sealed2) ← drive redriveAI {redrivePrep.task with allowedAncestors := none} redrivePrep.home
+      let rlog ← eventLog redriveEvents
+      ensure (v2 == .ok && rlog.count (sibling.modName, "start") == 0 && rlog.count (keep.modName, "start") == 0 &&
+        rlog.count (upper.modName, "start") == 1 && rlog.count (branch.modName, "start") == 1 &&
+        rlog.count (blocker.modName, "start") == 1)
+        s!"re-drive failed to reuse salvaged grandchild in 0 turns: {repr rlog}"
+      verifyClosure [fixedBase, fixedRoot] sealed2
   IO.println "D  Post-seal accept/cancel resilience, parallel abort, eqIface normalization, horizontal survival, and liftObstruction salvage passed"
 
 def run : IO Unit := IO.FS.withTempDir fun dir => do

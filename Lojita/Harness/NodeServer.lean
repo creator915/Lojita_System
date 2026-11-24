@@ -452,7 +452,11 @@ private def shutdownState (j : J) : Proc NodeΨ (Work j.1.active) (Halt HomeShap
 
 private def startAgent (sh : HomeShape) (salvaged : Homes) : Proc NodeΨ (Home (HomeCtx sh)) AgentS :=
   .ask fun task => .run (drainHome sh) fun original =>
-    .worker oneTurn shutdownState (⟨[], by simp⟩, {task, original, current := original, salvaged})
+    let (nested, direct) := original.children.partition fun (n, _) =>
+      isNestedDescendant task.delta.child (qualified n)
+    let seedSalvaged := nested.foldl (fun m (n, h) => if m.contains n then m else m.insert n h) salvaged
+    let trimmed := Frozen.frozen original.code original.memory original.spec direct
+    .worker oneTurn shutdownState (⟨[], by simp⟩, {task, original := trimmed, current := trimmed, salvaged := seedSalvaged})
 
 def nodeAgent (sh : HomeShape) : Proc NodeΨ (Home (HomeCtx sh)) AgentS := startAgent sh {}
 

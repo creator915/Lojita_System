@@ -16,6 +16,14 @@ def validSegment (s : String) : Bool :=
   | c :: cs => (c.isAlpha || c == '_') && cs.all (fun x => x.isAlphanum || x == '_') &&
     !["code", "memory", "spec", "ai", "child", "dump", "lean", "import", "open", "namespace", "end"].contains s
 
+/-- Distinguish salvaged grandchildren (or deeper descendants) from direct child slots
+    that an owner may import or cover in a root `TransportSpec`. -/
+def isNestedDescendant (owner q : QName) : Bool :=
+  (under owner q && q.segments.length > owner.segments.length + 1) ||
+    match owner.segments, q.segments with
+    | ["Gen", a, "Root"], "Gen" :: b :: k :: _ :: _ => a == b && k != "Root"
+    | _, _ => false
+
 def checkTaskImports (owner : QName) (owned bases : List QName) (m : LeanMod) : List NamespaceProblem := Id.run do
   let allowed := Std.HashSet.ofList (owned ++ bases)
   let mut problems := #[]

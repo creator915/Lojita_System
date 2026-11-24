@@ -91,7 +91,8 @@ def prepareSpec (ws : FilePath) (name src : String) (bases : List String) (liftS
       let srcs := t.childMoves.flatMap ChildMove.sources
       let srcSet := Std.HashSet.ofList (srcs.map toString)
       for (n, _) in source.children do
-        unless srcSet.contains n do fail s!"unaccountedOldChild: {n}"
+        unless isNestedDescendant source.code.modName (qualified n) || srcSet.contains n do
+          fail s!"unaccountedOldChild: {n}"
       for q in srcs do
         unless (lookupChild source q).isSome do fail s!"missing transport child {q}"
       let before := endpointNames source.code

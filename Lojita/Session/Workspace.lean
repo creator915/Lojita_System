@@ -363,11 +363,13 @@ def partialSource (ws : FilePath) (q : QName) : IO (Option Frozen) := do
   checkTreeName epoch
   let some (h,_) ← savedTree ws .partial epoch | return none
   unless h.code.modName == q do return none
-  -- A failed parent exports only its verified children. Never lend the
-  -- implementation or assumptions of the parent as a horizontal endpoint.
-  let slots := h.children.map (fun (n,_) => ImportSpec.mk (qualified n) [])
-  let shell := withChildIfaces ⟨q,slots,[],[]⟩ (h.children.map fun (n,c) => specAt (qualified n) c)
-  return some (.frozen shell h.memory h.spec h.children)
+  -- A failed parent exports only its direct verified children. Never lend the
+  -- implementation or assumptions of the parent as a horizontal endpoint, nor
+  -- expose salvaged grandchildren as direct child slots.
+  let direct := h.children.filter fun (n, _) => !isNestedDescendant q (qualified n)
+  let slots := direct.map (fun (n,_) => ImportSpec.mk (qualified n) [])
+  let shell := withChildIfaces ⟨q,slots,[],[]⟩ (direct.map fun (n,c) => specAt (qualified n) c)
+  return some (.frozen shell h.memory h.spec direct)
 
 structure InitialHome where
   home : Frozen
