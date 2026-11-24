@@ -232,6 +232,83 @@ theorem injective (h : Command.read x = .read y) : x = y := by injection h" ["Ge
   satisfies base (requalify base.modName (q "Gen.BaseCopy") base)
   discard <| checkClosedModule [] (← object "Gen.Empty" "inductive Command : Type where")
 
+/-- Same-module comparisons relocate the checked spec image at the kernel level.
+    Re-elaborating it under a temporary name would let `deriving Repr` embed
+    that name in its constructor labels. -/
+private def sameModuleDerived : IO Unit := do
+  let body := fun (extra : String) => "inductive Literal where
+  | atom (s : String) | array | nested (xs : List Nat)
+  deriving Repr, BEq, DecidableEq
+structure Row where
+  key : String
+  depth : Nat
+  deriving Repr, BEq, DecidableEq
+private inductive Mark where
+  | open_ | close_
+  deriving Repr, BEq, DecidableEq
+private def markCount (m : Mark) : Nat := match m with | .open_ => 1 | .close_ => 2
+def total (r : Row) : Nat := r.depth + markCount .open_ + r.key.length
+def render (l : Literal) : String := reprStr l
+theorem reprLaw : repr Literal.array =
+    Std.Format.group (Std.Format.nest 2 (Std.Format.text \"Gen.T1.Gron.Literal.array\")) := rfl
+theorem rowLaw (r : Row) : decide (r = r) = true := decide_eq_true rfl
+" ++ extra
+  let spec ← object "Gen.T1.Gron" (body "axiom tail : Row → Nat\naxiom tailLaw : ∀ r, tail r = r.depth")
+  let impl ← object "Gen.T1.Gron" (body "def tail (r : Row) : Nat := r.depth\ntheorem tailLaw : ∀ r, tail r = r.depth := fun _ => rfl")
+  let start ← IO.monoNanosNow
+  satisfies spec impl
+  let ms := ((← IO.monoNanosNow) - start) / 1000000
+  -- Repeated calls see the same relocation; no moving-target interface name.
+  satisfies spec impl
+  satisfies spec impl [] .subspec
+  eqIface (← object "Gen.T1.Gron" (body "")) (← object "Gen.T1.Gron" (body ""))
+  -- A child stub imported below the parent's prefix keeps its own names.
+  let childSpec ← object "Gen.T1.Gron.Lines" "structure Line where
+  text : String
+  deriving Repr, BEq, DecidableEq
+axiom nextLine : String → Option Line"
+  let withChild := fun (extra : String) => do
+    let m ← object "Gen.T1.Gron" ("open Gen.T1.Gron.Lines
+inductive Literal where
+  | atom (s : String) | array
+  deriving Repr, BEq, DecidableEq
+def first (s : String) : Option Line := nextLine s
+theorem reprLaw : repr Literal.array =
+    Std.Format.group (Std.Format.nest 2 (Std.Format.text \"Gen.T1.Gron.Literal.array\")) := rfl
+" ++ extra) ["Gen.T1.Gron.Lines"]
+    return withChildIfaces m [childSpec]
+  satisfies (← withChild "axiom count : Nat") (← withChild "def count : Nat := 3") [] .closedImplOK [stubOf childSpec]
+  -- Structure flags still compare faithfully after relocation.
+  let asStruct ← object "Gen.T1.Gron" "structure Pair where\n  fst : Nat\n  snd : Nat\n  deriving Repr, BEq, DecidableEq"
+  let asInduct ← object "Gen.T1.Gron" "inductive Pair where\n  | mk (fst : Nat) (snd : Nat)\n  deriving Repr, BEq, DecidableEq"
+  expectCode "INTERFACE_MISMATCH" (satisfies asStruct asInduct)
+  expectCode "INTERFACE_MISMATCH" (satisfies asInduct asStruct)
+  -- String literals are still compared exactly.
+  let manual := fun (label : String) => object "Gen.T1.Gron" ("inductive Literal where
+  | atom (s : String) | array
+def manualRepr : Repr Literal :=
+  ⟨fun l _ => match l with | .atom _ => \"atom\" | .array => \"" ++ label ++ "\"⟩")
+  satisfies (← manual "array") (← manual "array")
+  expectCode "INTERFACE_MISMATCH" (satisfies (← manual "array") (← manual "Array"))
+  -- A one-codepoint typo in a long literal table is refuted structurally, not
+  -- by kernel unfolding, and the diagnostic names the codepoints.
+  let table := fun (typo : Bool) => Id.run do
+    let cs := (List.range 1500).map fun i => Char.ofNat (if typo && i == 1000 then 0x0C3E else 0x4E00 + i)
+    let chunks := (List.range 5).map fun k => "\"" ++ String.ofList ((cs.drop (300 * k)).take 300) ++ "\""
+    return "def ranges : Array Char := (" ++ String.intercalate " ++\n    " chunks ++ ").toList.toArray\n" ++
+      "def isRange (c : Char) : Bool := ranges.contains c"
+  let tStart ← IO.monoNanosNow
+  satisfies (← object "Gen.T1.Gron" (table false)) (← object "Gen.T1.Gron" (table false))
+  let failure ← try
+      satisfies (← object "Gen.T1.Gron" (table false)) (← object "Gen.T1.Gron" (table true))
+      pure none
+    catch e => pure (some (toString e))
+  let tableMs := ((← IO.monoNanosNow) - tStart) / 1000000
+  let some msg := failure | throw (IO.userError "accepted a one-codepoint table typo")
+  ensure (tag msg == "INTERFACE_MISMATCH" &&
+    msg.contains "text differs at index 1000: expected U+51E8, received U+0C3E") s!"table diagnostic {msg.take 400}"
+  IO.println s!"   Same-module derived Repr/BEq/DecidableEq interface relocated at the kernel level ({ms} ms); 1500-char table typo refuted in {tableMs} ms"
+
 private def quotient : IO Unit := do
   let spec ← object "Specification" "axiom rev_involutive : ∀ {α : Type} (xs : List α), List.reverse (List.reverse xs) = xs
 axiom add_comm_law : ∀ (a b : Nat), a + b = b + a"
@@ -285,6 +362,7 @@ example : True := by trivial"
   concreteInterfaces
   largeFuel
   constructorIndices
+  sameModuleDerived
   IO.println "3  Kernel quotient, polymorphism, helper bodies and specification tests"
 
 private def security : IO Unit := do

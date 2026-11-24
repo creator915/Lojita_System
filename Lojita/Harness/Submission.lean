@@ -39,9 +39,28 @@ def extractBlocks (text : String) (drafts : DraftStore) : Except String (String 
   if fence.isSome then throw "UNCLOSED_FENCE"
   return (String.intercalate "\n" env.toList, sources)
 
-def parseSubmission (text : String) (drafts : DraftStore := {}) : Except String Submission := do
+def invalidSubmission : String :=
+  "INVALID_SUBMISSION: expected one bare (submission ...) S-expression (or @draft holding one) with no surrounding prose"
+
+/-- Look up `@name` (or a draft literally named `@name`). -/
+def draftRef? (sources : DraftStore) (n : String) : Option String :=
+  if n.startsWith "@" then sources[(n.drop 1).toString]? <|> sources[n]? else none
+
+/-- The envelope of a reply that is either a bare S-expression or a single
+    `@draft` holding one. Blocks fenced inside the draft are attached too. -/
+def submissionEnvelope (text : String) (drafts : DraftStore) : Except String (SExpr × DraftStore) := do
   let (envelope, sources) ← extractBlocks text drafts
-  let some (.list (.sym "submission" :: fs)) := SExpr.parseSExpr envelope | throw "INVALID_SUBMISSION"
+  let some e := SExpr.parseSExpr envelope | throw invalidSubmission
+  let .sym n := e | return (e, sources)
+  unless n.startsWith "@" do return (e, sources)
+  let some content := draftRef? sources n | throw s!"UNRESOLVED_BLOCK: {n}"
+  let (inner, sources) ← extractBlocks content sources
+  let some e := SExpr.parseSExpr inner | throw invalidSubmission
+  return (e, sources)
+
+def parseSubmission (text : String) (drafts : DraftStore := {}) : Except String Submission := do
+  let (envelope, sources) ← submissionEnvelope text drafts
+  let .list (.sym "submission" :: fs) := envelope | throw invalidSubmission
   let mut fields : Std.HashMap String (List SExpr) := {}
   for f in fs do
     let .list (.sym k :: vs) := f | throw "INVALID_FIELD"
@@ -50,7 +69,7 @@ def parseSubmission (text : String) (drafts : DraftStore := {}) : Except String 
   let value := fun (e : SExpr) => match e with
     | .str s => Except.ok s
     | .sym n => if n.startsWith "@" then
-        match sources[(n.drop 1).toString]? <|> sources[n]? with
+        match draftRef? sources n with
         | some s => .ok s
         | none => .error s!"UNRESOLVED_BLOCK: {n}"
       else .error "INVALID_SOURCE"

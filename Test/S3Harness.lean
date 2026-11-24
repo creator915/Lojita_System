@@ -950,6 +950,46 @@ private def preview (dir : System.FilePath) : IO Unit := do
   ensure (v matches .contradiction _) "contradiction verdict"
   IO.println "5  Stateless JSON preview and live retry returned the same frontier certificate and accepted the same repair"
 
+/-- A reply naming a single draft (as `check_plan(submission="@plan")` does)
+    resolves to the submission held there, including its nested drafts. -/
+private def nodeReplyDrafts : IO Unit := do
+  let main ← object "Gen.R.Root" "def n : Nat := 1"
+  let sub ← object "Gen.R.Root.Child" "axiom k : Nat"
+  let plan := s!"(submission (kind plan) (why \"draft\") (main @main) (subspecs (\"Child\" @subspec))\n  (moves {(encMove ⟨.bot,.unit (q "Gen.R.Root.n")⟩).canonical}))"
+  let drafts : Lojita.Harness.DraftStore := Std.HashMap.ofList
+    [("plan-draft", plan), ("main", renderLeanMod main), ("subspec", renderLeanMod sub)]
+  let resolved ← IO.ofExcept (Lojita.Session.resolveNodeReply "@plan-draft" drafts)
+  let .plan p subs ← IO.ofExcept (parseSubmission resolved) | throw (IO.userError "expected a plan")
+  ensure (p.newMod == some main && subs == [sub]) s!"top-level draft resolution {resolved}"
+  ensure ((← IO.ofExcept (Lojita.Session.resolveNodeReply "  @plan-draft\n" drafts)) == resolved) "whitespace around @draft"
+  -- Fenced blocks inside the envelope draft are attached as well.
+  let fenced := Std.HashMap.ofList [("plan-draft", plan.replace "@subspec" "@inner" ++
+    "\n```lean inner\n" ++ renderLeanMod sub ++ "\n```"), ("main", renderLeanMod main)]
+  let .plan _ subs ← IO.ofExcept (parseSubmission (← IO.ofExcept (Lojita.Session.resolveNodeReply "@plan-draft" fenced)))
+    | throw (IO.userError "expected a fenced plan")
+  ensure (subs == [sub]) "fenced block inside a draft envelope"
+  -- A missing inner draft no longer aborts resolution: valid drafts are kept
+  -- and the exact missing reference is reported.
+  let partialDrafts := (drafts.insert "plan-draft" (plan.replace "@subspec" "@missing")).erase "subspec"
+  let kept ← IO.ofExcept (Lojita.Session.resolveNodeReply "@plan-draft" partialDrafts)
+  ensure (kept.contains "Gen.R.Root" && kept.contains "@missing") s!"partial draft resolution {kept}"
+  match parseSubmission kept with
+  | .error e => ensure (e == "UNRESOLVED_BLOCK: @missing") s!"expected UNRESOLVED_BLOCK: @missing, got {e}"
+  | .ok _ => throw (IO.userError "accepted an unresolved draft")
+  match parseSubmission "@typo" drafts with
+  | .error e => ensure (e == "UNRESOLVED_BLOCK: @typo") s!"expected UNRESOLVED_BLOCK: @typo, got {e}"
+  | .ok _ => throw (IO.userError "accepted an unresolved envelope draft")
+  ensure ((Lojita.Session.resolveNodeReply "@typo" drafts) matches .error _) "missing envelope draft"
+  -- Prose around the envelope gets an actionable diagnostic with a stable kind.
+  for prose in ["Here is my plan: " ++ plan, "I think we are done.", "(kind plan)"] do
+    match parseSubmission prose drafts with
+    | .error e =>
+      ensure (e.startsWith "INVALID_SUBMISSION: " && (e.splitOn ":").head! == "INVALID_SUBMISSION")
+        s!"prose diagnostic {e}"
+    | .ok _ => throw (IO.userError s!"accepted prose {prose}")
+  ensure ((Lojita.Session.resolveNodeReply "I think we are done." drafts) matches .error _) "prose reply resolved"
+  IO.println "6  Node replies resolve @draft envelopes, keep valid drafts and name missing ones"
+
 def run : IO Unit := IO.FS.withTempDir fun dir => do
   merkle dir
   preload
@@ -964,6 +1004,7 @@ def run : IO Unit := IO.FS.withTempDir fun dir => do
     obstruction dir
     countermodels
     preview dir
+    nodeReplyDrafts
     concurrentTreeSpeedupAndDeterminism dir
     reverseDialecticaLocalAbsorptionAndInFlightSurvival
     orderIndependentObstructionHarvest dir

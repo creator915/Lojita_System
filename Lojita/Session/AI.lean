@@ -227,17 +227,23 @@ where
     return reply
 
 /-- Resolve the actual envelope after the tool turn; a draft may have been
-    created or patched after the request was constructed. -/
+    created or patched after the request was constructed. A reply consisting of
+    a single `@draft` is replaced by the submission held in that draft. Missing
+    inner drafts stay as bare symbols so `parseSubmission` names them exactly. -/
 def resolveNodeReply (reply : String) (drafts : DraftStore) : Except String String := do
-  let (text, sources) ← extractBlocks reply drafts
-  let some expr := SExpr.parseSExpr text | throw "INVALID_SUBMISSION"
-  return (← resolve expr sources).canonical
+  let (expr, sources) ← submissionEnvelope reply drafts
+  return (resolve expr sources).canonical
 where
-  resolve (e : SExpr) (ds : DraftStore) : Except String SExpr := do
+  resolve (e : SExpr) (ds : DraftStore) : SExpr :=
     match e with
-    | .sym n => if n.startsWith "@" then return .str (← sourceValue ds e) else return e
-    | .list xs => return .list (← xs.mapM (resolve · ds))
-    | _ => return e
+    | .sym n => match draftRef? ds n with
+      | some src => .str src
+      | none => e
+    | .list xs => .list (xs.attach.map fun ⟨x, _⟩ => resolve x ds)
+    | _ => e
   termination_by sizeOf e
+  decreasing_by
+    have := List.sizeOf_lt_of_mem ‹x ∈ xs›
+    simp_wf; omega
 
 end Lojita.Session

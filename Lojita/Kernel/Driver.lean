@@ -51,6 +51,10 @@ private structure Resident where
   base : Environment
   modules : Std.HashMap ModuleKey Snapshot := {}
   parents : Std.HashMap (Array Nat) Environment := {}
+  /-- Successful interface comparisons of immutable, content-addressed
+      snapshots `(spec id, impl id, subspec mode)`. Only verdicts are kept;
+      the one-off comparison environments are dropped after each call. -/
+  satisfied : Std.HashSet (Nat × Nat × Bool) := {}
   preludeAudit : PreludeAudit := default
 
 private initialize session : IO.Ref (Option Resident) ← IO.mkRef none
@@ -93,15 +97,17 @@ private def coreCtx (env : Environment) : Core.Context :=
 
 /-- Import exact content-addressed module versions. A name alone cannot
     distinguish a child stub from its subsequently sealed implementation. -/
-private def importedImages (deps : Array Snapshot) : Array (Name × ModuleData) := Id.run do
+private def dedupImages (all : Array (Name × ModuleData)) : Array (Name × ModuleData) := Id.run do
   let mut images := #[]
   let mut seen : NameSet := {}
-  for dep in deps do
-    for (n,data) in dep.images do
-      unless seen.contains n do
-        seen := seen.insert n
-        images := images.push (n,data)
+  for (n,data) in all do
+    unless seen.contains n do
+      seen := seen.insert n
+      images := images.push (n,data)
   return images
+
+private def importedImages (deps : Array Snapshot) : Array (Name × ModuleData) :=
+  dedupImages (deps.flatMap (·.images))
 
 private def parentEnv (deps : Array Snapshot) (wrapper := false) : IO Environment := do
   let r ← resident
@@ -120,6 +126,16 @@ private def parentEnv (deps : Array Snapshot) (wrapper := false) : IO Environmen
     importResidentImages state images imports options
   if !wrapper then session.set <| some {r with parents := r.parents.insert ids env}
   return env
+
+/-- A one-off comparison environment. It is never cached in `Resident.parents`:
+    its images are specific to a single `satisfies` call. -/
+private def comparisonEnv (images : Array (Name × ModuleData)) (mods : Array Name) : IO Environment := do
+  let r ← resident
+  let imports := contextImports ++ mods.map ({module := ·})
+  let env ← withImportLock <| withImporting do
+    unsafe enableInitializersExecution
+    importResidentImages r.imports (dedupImages images) imports options
+  return env.setExporting false
 
 /-- Keep anonymous tests as private kernel declarations so they receive
     precisely the same footprint audit as named laws. -/
@@ -359,6 +375,61 @@ private def counterpart (spec impl : Snapshot) (n : Name) : Name :=
   let name := (privateToUserName n).replacePrefix spec.env.mainModule impl.env.mainModule
   if isPrivateName n then mkPrivateNameCore impl.env.mainModule name else name
 
+/-- Closed prelude text values: `String` (0), `List Char` (1) or `Array Char`
+    (2). The interpretation follows the definitions of these prelude functions
+    exactly, so distinct values are never definitionally equal. -/
+private def groundText? : Expr → Option (Nat × List Char)
+  | .mdata _ e => groundText? e
+  | .lit (.strVal s) => some (0, s.toList)
+  | .app (.app (.const ``String.append _) a) b => do
+    let (0, x) ← groundText? a | none
+    let (0, y) ← groundText? b | none
+    some (0, x ++ y)
+  | .app (.app (.app (.app (.app (.app (.const ``HAppend.hAppend _) t₁) t₂) t₃) inst) a) b =>
+    if isString t₁ && isString t₂ && isString t₃ && isStringAppend inst then do
+      let (0, x) ← groundText? a | none
+      let (0, y) ← groundText? b | none
+      some (0, x ++ y)
+    else none
+  | .app (.const ``String.toList _) s => do
+    let (0, x) ← groundText? s | none
+    some (1, x)
+  | .app (.const ``String.ofList _) l => do
+    let (1, x) ← groundText? l | none
+    some (0, x)
+  | .app (.app (.const ``List.toArray _) t) l | .app (.app (.const ``Array.mk _) t) l =>
+    if t.isConstOf ``Char then do
+      let (1, x) ← groundText? l | none
+      some (2, x)
+    else none
+  | .app (.const ``List.nil _) t => if t.isConstOf ``Char then some (1, []) else none
+  | .app (.app (.app (.const ``List.cons _) t) (.app (.const ``Char.ofNat _) (.lit (.natVal n)))) l =>
+    if t.isConstOf ``Char then do
+      let (1, x) ← groundText? l | none
+      some (1, Char.ofNat n :: x)
+    else none
+  | _ => none
+where
+  isString (e : Expr) : Bool := e.isConstOf ``String
+  isStringAppend (e : Expr) : Bool :=
+    e.isAppOfArity ``instHAppendOfAppend 2 && isString (e.getArg! 0) &&
+      (e.getArg! 1).isConstOf ``instAppendString
+
+/-- Two closed text values that evaluate to different contents. -/
+private def groundDistinct? (expected actual : Expr) : Option (List Char × List Char) := do
+  let (k₁, x) ← groundText? expected
+  let (k₂, y) ← groundText? actual
+  if k₁ == k₂ && x != y then some (x, y) else none
+
+private def codepoint (c : Char) : String :=
+  let hex := String.ofList (Nat.toDigits 16 c.toNat |>.map Char.toUpper)
+  "U+" ++ String.ofList (List.replicate (4 - hex.length) '0') ++ hex
+
+private def textDiff (x y : List Char) : String :=
+  let i := ((x.zip y).findIdx? fun (a, b) => a != b).getD (min x.length y.length)
+  let pointAt := fun (cs : List Char) => (cs[i]?.map codepoint).getD "end of text"
+  s!"\ntext differs at index {i}: expected {pointAt x}, received {pointAt y} (lengths {x.length} and {y.length})"
+
 private def convertible (levelParams : List Name) (actual expected : Expr) : CoreM Bool := do
   if actual.hasMVar || expected.hasMVar then return false
   -- Kernel.check accepts free universe parameters. Restrict the projection to
@@ -366,6 +437,10 @@ private def convertible (levelParams : List Name) (actual expected : Expr) : Cor
   if expected.hasLevelParam && !(collectLevelParams {} expected).params.all levelParams.contains then
     return false
   if expected == actual then return true
+  -- Kernel conversion would unfold large literal tables character by
+  -- character. Distinct closed text values are refuted structurally; this
+  -- never accepts anything.
+  if (groundDistinct? expected actual).isSome then return false
   let env ← getEnv
   unless (Lean.Kernel.check env {} expected).isOk do return false
   -- The candidate was checked in its snapshot. Kernel conversion unfolds either
@@ -392,9 +467,11 @@ private def compareExpr (a b : Snapshot) (hidden exports implHidden : NameSet) (
       | .proj n i val => .proj ((pairs.find? n).getD n) i val
       | _ => e)
     if ← convertible levelParams actual translated then return pairs.toList.map Prod.fst
-  throwError "INTERFACE_MISMATCH: {description}\nexpected {expected}\nreceived {actual}"
+  let hint := ((groundDistinct? expected actual).map fun (x, y) => textDiff x y).getD ""
+  throwError "INTERFACE_MISMATCH: {description}{hint}\nexpected {expected}\nreceived {actual}"
 
-private def compareInterface (spec impl : Snapshot) (mode : SatisfactionMode) : MetaM Unit := do
+private def compareInterface (spec impl : Snapshot) (mode : SatisfactionMode)
+    (isSpecStruct : Name → Bool) : MetaM Unit := do
   let provided := NameSet.ofArray impl.constants
   let hidden := hiddenConstants spec
   let implHidden := hiddenConstants impl
@@ -430,30 +507,120 @@ private def compareInterface (spec impl : Snapshot) (mode : SatisfactionMode) : 
       unless av.numParams == bv.numParams && av.numIndices == bv.numIndices &&
           av.ctors.map (counterpart spec impl) == bv.ctors &&
           av.all.map (counterpart spec impl) == bv.all &&
-          isStructure spec.env n == isStructure impl.env target do
+          isSpecStruct n == isStructure impl.env target do
         throwError "INTERFACE_MISMATCH: inductive parameters, structure or constructors of {target}"
       todo := av.ctors ++ av.all ++ todo
     | .ctorInfo av, .ctorInfo _ => todo := av.induct :: todo
     | .recInfo av, .recInfo _ => todo := av.all ++ todo
     | _, _ => throwError "INTERFACE_MISMATCH: declaration kind of {target}"
 
+/-- Move a constant owned by `oldMod` into the fresh scope `newMod`. Names of
+    dependencies, including child modules below the old path, are unchanged. -/
+private def relocateConstName (oldMod newMod : Name) (owned : NameSet) (n : Name) : Name :=
+  if owned.contains n then
+    let u := privateToUserName n
+    let u' := if oldMod.isPrefixOf u then u.replacePrefix oldMod newMod else newMod ++ u
+    if isPrivateName n then mkPrivateNameCore newMod u' else u'
+  else n
+
+private abbrev RelocCache := Std.HashMap Expr Expr
+
+/-- Rename constants and projection structures. Literals stay untouched, so a
+    derived `Repr` keeps the string labels of the authentic module. The cache
+    keeps shared proof terms shared. -/
+private def relocateExprM (rn : Name → Name) : Expr → StateM RelocCache Expr
+  | e@(.bvar _) | e@(.fvar _) | e@(.mvar _) | e@(.sort _) | e@(.lit _) => pure e
+  | .const n us => pure (.const (rn n) us)
+  | e@(.app f a) => memo e do return .app (← relocateExprM rn f) (← relocateExprM rn a)
+  | e@(.lam n t b bi) => memo e do
+    return .lam n (← relocateExprM rn t) (← relocateExprM rn b) bi
+  | e@(.forallE n t b bi) => memo e do
+    return .forallE n (← relocateExprM rn t) (← relocateExprM rn b) bi
+  | e@(.letE n t v b nd) => memo e do
+    return .letE n (← relocateExprM rn t) (← relocateExprM rn v) (← relocateExprM rn b) nd
+  | e@(.mdata d b) => memo e do return .mdata d (← relocateExprM rn b)
+  | e@(.proj s i b) => memo e do return .proj (rn s) i (← relocateExprM rn b)
+where
+  memo (e : Expr) (k : StateM RelocCache Expr) : StateM RelocCache Expr := do
+    if let some r := (← get)[e]? then return r
+    let r ← k
+    modify (·.insert e r)
+    return r
+
+private def relocateConstantInfo (rn : Name → Name) (c : ConstantInfo) : StateM RelocCache ConstantInfo := do
+  let ex := relocateExprM rn
+  let cv := fun (v : ConstantVal) => do
+    return ({v with name := rn v.name, type := ← ex v.type} : ConstantVal)
+  match c with
+  | .axiomInfo v => return .axiomInfo {v with toConstantVal := ← cv v.toConstantVal}
+  | .defnInfo v => return .defnInfo {v with
+      toConstantVal := ← cv v.toConstantVal, value := ← ex v.value, all := v.all.map rn}
+  | .thmInfo v => return .thmInfo {v with
+      toConstantVal := ← cv v.toConstantVal, value := ← ex v.value, all := v.all.map rn}
+  | .opaqueInfo v => return .opaqueInfo {v with
+      toConstantVal := ← cv v.toConstantVal, value := ← ex v.value, all := v.all.map rn}
+  | .quotInfo v => return .quotInfo {v with toConstantVal := ← cv v.toConstantVal}
+  | .inductInfo v => return .inductInfo {v with
+      toConstantVal := ← cv v.toConstantVal, all := v.all.map rn, ctors := v.ctors.map rn}
+  | .ctorInfo v => return .ctorInfo {v with toConstantVal := ← cv v.toConstantVal, induct := rn v.induct}
+  | .recInfo v =>
+    let rules ← v.rules.mapM fun r => do return {r with ctor := rn r.ctor, rhs := ← ex r.rhs}
+    return .recInfo {v with toConstantVal := ← cv v.toConstantVal, all := v.all.map rn, rules}
+
+/-- Give an already checked interface a fresh nominal scope at the kernel
+    level. No source is elaborated again: a second elaboration would let
+    deriving handlers embed the temporary module name in string literals. -/
+private def relocateSnapshot (a b : Snapshot) : IO (Snapshot × (Name → Bool)) := do
+  let oldMod := a.env.mainModule
+  let mut newName := Name.mkSimple s!"LojitaInterface{a.id}"
+  while a.env.isNamespace newName || b.env.isNamespace newName ||
+      a.env.contains newName || b.env.contains newName ||
+      a.images.any (·.1 == newName) || b.images.any (·.1 == newName) do
+    newName := newName.appendAfter "_"
+  let some (_, origData) := a.images.find? (·.1 == oldMod)
+    | throw (IO.userError s!"missing module image {oldMod}")
+  let owned := NameSet.ofArray origData.constNames
+  let rn := relocateConstName oldMod newName owned
+  let newData : ModuleData := {
+    isModule := origData.isModule, imports := origData.imports
+    constNames := origData.constNames.map rn
+    constants := (origData.constants.mapM (relocateConstantInfo rn)).run' {}
+    extraConstNames := #[], entries := #[] }
+  let images := (a.images.map fun (n, d) => if n == oldMod then (newName, newData) else (n, d)) ++ b.images
+  let joint ← comparisonEnv images #[newName, b.env.mainModule]
+  let rq := fun (q : QName) => QName.ofName (rn q.toLeanName)
+  let mod := {a.mod with
+    modName := QName.ofName newName
+    units := a.mod.units.map fun u => {u with uname := rq u.uname, definedNames := u.definedNames.map rq}}
+  let snap := {a with
+    mod, env := joint.setMainModule newName, constants := a.constants.map rn, images := dedupImages images}
+  -- Structure metadata lives in environment extensions, which the relocated
+  -- image omits. Read it from the original constant instead.
+  let origOf : NameMap Name := origData.constNames.foldl (fun m orig => m.insert (rn orig) orig) {}
+  let isSpecStruct := fun n => match origOf.find? n with
+    | some orig => isStructure a.env orig
+    | none => isStructure a.env n
+  return (snap, isSpecStruct)
+
 def satisfies (spec impl : LeanMod) (deps : List LeanMod := [])
     (mode := SatisfactionMode.closedImplOK) (childStubs : List LeanMod := []) : IO Unit := driverLock.atomically do
-  let a ← checked deps childStubs spec true
+  let origA ← checked deps childStubs spec true
   let b ← checked deps childStubs impl (mode == .subspec)
-  if a.id == b.id then return
-  let aName := a.env.mainModule
+  if origA.id == b.id then return
+  let verdict := (origA.id, b.id, mode == .subspec)
+  if (← resident).satisfied.contains verdict then return
+  let aName := origA.env.mainModule
   let bName := b.env.mainModule
-  let a ← if aName.isPrefixOf bName || bName.isPrefixOf aName then do
-    let mut newName := Name.mkSimple s!"LojitaInterface{a.id}"
-    while a.env.isNamespace newName || b.env.isNamespace newName ||
-        a.env.contains newName || b.env.contains newName do newName := newName.appendAfter "_"
-    let copy ← ioChecked (relocateInterface a.mod (QName.ofName newName))
-    checked deps childStubs copy true
-  else pure a
-  -- Conversion may inspect the private matchers of either checked module.
-  let joint := (← parentEnv #[a, b]).setExporting false
-  (compareInterface a b mode).run' |>.toIO' (coreCtx joint) {env := joint}
+  let (a, isSpecStruct, joint) ← if aName.isPrefixOf bName || bName.isPrefixOf aName then do
+      let (a, isSpecStruct) ← relocateSnapshot origA b
+      pure (a, isSpecStruct, a.env)
+    else do
+      -- Conversion may inspect the private matchers of either checked module.
+      let joint ← comparisonEnv (origA.images ++ b.images) #[aName, bName]
+      pure (origA, isStructure origA.env, joint)
+  (compareInterface a b mode isSpecStruct).run' |>.toIO' (coreCtx joint) {env := joint}
+  let r ← resident
+  session.set (some {r with satisfied := r.satisfied.insert verdict})
 
 def eqIface (a b : LeanMod) (deps : List LeanMod := []) : IO Unit := do
   satisfies a b deps .subspec
