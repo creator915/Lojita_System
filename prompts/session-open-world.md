@@ -6,8 +6,8 @@
 
 **横轴 Transport · 同一抽象层级的修补与重构。** 修复回放偏差时保持原 `baseTrees`，生成新版本、销毁旧版本。严禁为局部 bug 把旧可执行树塞进 `baseTrees`，盲目叠出 T3 → T4 → T5。
 
-- **同名原位重驱。** 对同一 `treeName` 再次 `drive-tree`，保留原 `baseTrees` 及对底树的 `maybeLiftSrc`。接口未变且复验通过的子包自动零轮复用。若需证明新旧版本的 `TransportsPoly`，用同名源和目标提交 `maybeTransportSrc`，在临时方块中引用只读快照 `Old.Gen.<Ti>.<Mod>.*`。封存后只交付新实现。
-- **换名同层替换。** 例如把 T1.Doc 换成 T1b.Doc，仍用 `(baseTrees "T0")`，将底树 lift 的目标改为 T1b.Doc。在 `maybeTransportSrc` 中写 `(poly-transport "Gen.T1.Doc" "Gen.T1b.Doc" ((keep "Gen.T1.Doc.Label" "Gen.T1b.Doc.Label") (move ("Gen.T1.Doc.Route") ("Gen.T1b.Doc.Route") ())) ())`。Label 连同孙包零轮搬迁，Route 交给新槽。在 `drive-tree` 中加 `(replaces "T1")`，新树封存成功时原子撤下旧树的引用和生成目录。若其他封存树仍以 T1 为直接底树，须先处理其依赖。
+- **同名原位重驱。** 对同一 `treeName` 再次 `drive-tree`，保留原 `baseTrees` 及对底树的 `maybeLiftSrc`。接口未变且复验通过的子包自动零轮复用。若需证明新旧版本的 `TransportsPoly`，用同名源和目标提交 `maybeTransportSrc`，在临时方块中显式用只读快照 `Old.Gen.<Ti>.<Mod>.<decl>` 表示旧端点（不可用同名新声明代替）。证明横向方块所需的 `Old.*` 辅助引理须标为 `private` 且仅供方块使用；封存时临时方块、仅服务于方块的 `private` 辅助声明及 `Old.*` 导入都会自动剥离，公开声明或存活实现不得依赖 `Old.*`。封存后只交付新实现。
+- **换名同层替换。** 例如把 T1.Doc 换成 T1b.Doc，仍用 `(baseTrees "T0")`，将底树 lift 的目标改为 T1b.Doc。在 `maybeTransportSrc` 中写 `(poly-transport "Gen.T1.Doc" "Gen.T1b.Doc" ((keep "Gen.T1.Doc.Label" "Gen.T1b.Doc.Label") (move ("Gen.T1.Doc.Route") ("Gen.T1b.Doc.Route") ())) ())`。Label 连同孙包零轮搬迁，Route 交给新槽。在 `drive-tree` 中加 `(replaces "T1")` 时，被替换树 `T1` **必须**是 `maybeTransportSrc` 的横向源树（禁止无 transport 证明直接删除无关对端），且 `maybeTransportSrc` 须覆盖源树的全部已保存子槽；新树封存成功时原子撤下旧树的引用和生成目录，非基底同层对端的临时 `import` 也会在封存时自动剥离。若其他已封存树（如 T2）仍以 T1 为直接底树，须先处理其依赖（可先不带 `(replaces "T1")` 封存 T1b，将下游树迁至新底树后再撤下 T1）；若未封存或 partial 树曾引用被替换或更新的底树，宿主会给出 `STALE` 诊断，需改以新底树重驱。
 
 **树内分包与 import 所有权。** 收到根规约后，封闭根节点决定怎样分包。每条父子边来自父实现的孩子 `import` 和对应的 `subspecs`，每个孩子槽只有一个父所有者。内核先仅凭孩子的抽象 `axiom` 接口检查父胶水能推出根规约，再唤醒孩子独立实现；孩子也可用同样方式拆出孙包。提升整树时，`LiftSpec` 第三项 `child-map` 把底树的这些 import 子包路由到上层子包，可递归给出子 lift。上层还可增设自己的 import 子包。
 
@@ -136,7 +136,7 @@ end Gen.T1.Doc
   (specSrc @upper-spec) (baseTrees "T0") (maybeLiftSrc (just @lifting)) (maybeTransportSrc (just @transport)))
 ```
 
-用 `check_spec` 预检。`drive-tree` 会启动封闭节点。孩子可用 `contradiction` 给出规约的 `: False`，也可用 `countermodel` 的 `CountermodelBundle` 与 `@refute` 证明开放定律不足。`refute-lift` 的 `: False` 会附上所依赖的基底单元。出现 liftObstruction 时，读诊断，原位重驱同名 T0 修正捷径，再重驱同名 T1。宿主自动加载最新祖先，并重查 `PRESERVED_CHILDREN` 中无辜孩子的契约；通过的孩子无需再提案。
+用 `check_spec` 预检。`drive-tree` 会启动封闭节点。孩子可用 `contradiction` 给出规约的 `: False`，也可用 `countermodel` 的 `CountermodelBundle` 与 `@refute` 证明开放定律不足。`refute-lift` 的 `: False` 会附上所依赖的基底单元。出现 `liftObstruction` 或上游祖先更新导致下游出现 `STALE`（含 `STALE_ANCESTOR_TREE` 与 partial 树的 `STALE_PARTIAL_TREE`）时，必须严格按自底向上顺序 `T0 → T1 → T2` 逐层修复：先原位重驱或替换最底层 `T0`，再依次重驱 `T1`、再重驱 `T2` 及每一棵标为 `STALE` 的已封存或 partial 树，不可跳过中间层。宿主自动加载最新祖先，并重查 `PRESERVED_CHILDREN` 中无辜孩子的契约；通过的孩子无需再提案。
 
 ## 构建与回放
 

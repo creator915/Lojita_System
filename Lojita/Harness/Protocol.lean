@@ -11,6 +11,8 @@ structure NodeTask where
   oldBaseModules : Option (List LeanMod) := none
   /-- A partial home may borrow missing slots from a different complete commit. -/
   otherChildHistory : Option (List String × List LeanMod) := none
+  /-- Set after a live replan advances `current.code` onto `baseModules`. -/
+  currentOnLiveBases : Bool := false
   transports : Bindings := []
   maybeLift : Option (LeanMod × LiftSpec) := none
   /-- A merge can assign more than one vertical obligation to the same child. -/

@@ -56,6 +56,7 @@ def driveTree (cfg : SessionConfig) (name why src : String) (bases : List String
   let (v,f) ← runNode cfg (cfg.workspace / "trees" / name) p.task p.home
   if v == .ok then verifyClosure p.closure.modules f
   let outcome ← publishTree cfg.workspace name why bases p.closure.directTips v f replaces
+    (p.task.transports.map (·.1.code.modName))
   if let .liftObstruction reason culprits _ := v then
     logNarrowing (cfg.workspace / "narrowing-events.jsonl") "drive-tree"
       ⟨"liftObstruction",String.intercalate ", " (culprits.map toString),reason,s!"Repair the base and re-drive {name}."⟩
@@ -113,12 +114,16 @@ private def sessionLoop (cfg : SessionConfig) : IO String := do
     repeat
       let summaries ← withWorkspaceLock ws do
         let retired ← retiredNames ws
-        return (← sealedViews ws).map fun view =>
+        let sealed := (← sealedViews ws).map fun view =>
           let summary := view.tree.elim view.name fun t =>
             t.name ++ " " ++ t.tip ++ "\n" ++ renderLeanMod t.home.spec ++
               String.intercalate "\n" ((publicExports retired t.home).map fun m =>
                 s!"{m.modName}: " ++ String.intercalate ", " ((publicNames m).map toString))
           summary ++ view.stale.elim "" (fun e => s!"\n[STATUS: STALE AGAINST UPDATED ANCESTOR — RE-DRIVE THIS TREE]\n{e}")
+        let stalePartials := (← partialStaleViews ws).map fun view =>
+          s!"{view.name} (partial/{view.verdict})" ++
+            view.stale.elim "" (fun e => s!"\n[STATUS: STALE AGAINST UPDATED OR REPLACED BASE — RE-DRIVE THIS TREE]\n{e}")
+        return sealed ++ stalePartials
       let prompt := sessionPrompt cfg.goal cfg.reference summaries memory.toList diagnostic
       let reply ← cfg.backend.propose {owner, ctxDir := ctx, prompt, retry := !diagnostic.isEmpty}
       let drafts ← loadDrafts ctx

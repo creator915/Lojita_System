@@ -545,6 +545,7 @@ private def inPlaceTowerRecovery (ws repo : FilePath) : IO Unit := do
       ("../T2","invalid tree name"),("T0","same baseTrees")] do
     expectError why (prepareSpec ws "T2b" (modSrc n runSig) ["T1"] none none [bad])
   expectError "sealed tree T2 depends on it" (prepareSpec ws "Peer" (modSrc (root "Peer") runSig) ["T0"] none none ["T1"])
+  expectError "MISSING_REPLACEMENT_TRANSPORT" (prepareSpec ws "T2b" (modSrc n runSig) ["T1"] none none ["T2"])
   let impossible ← object n "axiom impossible : False"
   let evidence ← object "ReplacementEvidence" s!"theorem witness : False := {n}.impossible" [n]
   let checkLift := LiftSpec.liftSpecTree (q (root "T1")) (q n)
@@ -572,6 +573,242 @@ private def inPlaceTowerRecovery (ws repo : FilePath) : IO Unit := do
   discard <| runSession {cfg with backend := inspect}
   for model in [false,true] do innocentOnRefutation cfg model
   IO.println "   Three-layer obstruction cascade, pinned repair, memory routing, zero-turn siblings and atomic T2 replacement"
+
+private def transportAuditRegressions (ws repo : FilePath) : IO Unit := do
+  -- Part A (C2 + S5): T0 v1 -> T1 v1 ok -> T0 v2 -> T1 liftObstruction (partial pinned to T0 v2,
+  -- root code verified against T0 v1, candidate-era Escape spec) -> T0 v3 -> T1 ok.
+  let c2Ws := ws / "c2-partial-history"
+  initWorkspace c2Ws
+  let cfg : SessionConfig := ⟨repo, c2Ws, "Test partial-seeded root history",
+    ⟨.local "/bin/true", [], 5000⟩, ScriptedBackend (fun _ => fail "unexpected proposal"), false⟩
+  let t0Root := "Gen.T0.R"
+  let t0Helper := t0Root ++ ".Helper"
+  let t0Legacy := t0Root ++ ".Legacy"
+  let t0Bad := t0Root ++ ".Bad"
+  let t0Good := t0Root ++ ".Good"
+  let t1Root := "Gen.T1.R"
+  let t1Esc := t1Root ++ ".Escape"
+  let t1Parse := t1Root ++ ".ParseLine"
+  let t0Spec ← object t0Root "axiom run : Nat"
+  let helperSpec ← object t0Helper "axiom helper : Nat"
+  let helperImpl ← object t0Helper "def helper : Nat := 10"
+  let legacySpec ← object t0Legacy "axiom api : Nat"
+  let legacyImpl ← object t0Legacy "def api : Nat := 1"
+  let badSpec ← object t0Bad "axiom api : Nat\naxiom isZero : api = 0"
+  let badImpl ← object t0Bad "def api : Nat := 0\ntheorem isZero : api = 0 := rfl"
+  let goodSpec ← object t0Good "axiom api : Nat\naxiom isOne : api = 1"
+  let goodImpl ← object t0Good "def api : Nat := 1\ntheorem isOne : api = 1 := rfl"
+  -- T0 v1
+  let t0V1Glue ← object t0Root s!"def run : Nat := {t0Helper}.helper + {t0Legacy}.api" [t0Helper, t0Legacy]
+  discard <| checkedDrive cfg t0Spec [t0Root, t0Helper, t0Legacy] fun node => do
+    if node.task.delta.child == q t0Root then return plan node.old t0V1Glue [helperSpec, legacySpec]
+    if node.task.delta.child == q t0Helper then return plan node.old helperImpl
+    return plan node.old legacyImpl
+  -- T1 v1 (sealed against T0 v1; root code directly imports Gen.T0.R.Legacy!)
+  let t1Spec1 ← object t1Root "axiom run : Nat"
+  let t1EscSpec1 ← object t1Esc "axiom escape : Nat"
+  let t1EscImpl1 ← object t1Esc s!"def escape : Nat := {t0Helper}.helper" [t0Helper]
+  let t1ParseSpec1 ← object t1Parse "axiom parse : Nat"
+  let t1ParseImpl1 ← object t1Parse s!"def parse : Nat := {t0Legacy}.api" [t0Legacy]
+  let t1Glue1 ← object t1Root
+    s!"def run : Nat := {t1Esc}.escape + {t1Parse}.parse + {t0Legacy}.api" [t1Esc, t1Parse, t0Legacy]
+  let t1Lift1 := LiftSpec.liftSpecTree (q t0Root) (q t1Root)
+    [.mkChildLift (q t0Helper) (q t1Esc) none, .mkChildLift (q t0Legacy) (q t1Parse) none] []
+  discard <| checkedDrive cfg t1Spec1 [t1Root, t1Esc, t1Parse] (fun node => do
+    if node.task.delta.child == q t1Root then return plan node.old t1Glue1 [t1EscSpec1, t1ParseSpec1]
+    if node.task.delta.child == q t1Esc then return plan node.old t1EscImpl1
+    return plan node.old t1ParseImpl1) ["T0"] t1Lift1
+  -- T0 v2 (drops Legacy, adds Bad)
+  let t0V2Glue ← object t0Root s!"def run : Nat := {t0Helper}.helper + {t0Bad}.api" [t0Helper, t0Bad]
+  discard <| checkedDrive cfg t0Spec [t0Root, t0Bad] fun node => do
+    if node.task.delta.child == q t0Root then
+      return plan node.old t0V2Glue [helperSpec, badSpec] [⟨.ext (q t0Legacy), .bot⟩]
+    return plan node.old badImpl
+  -- T1 re-drive against T0 v2: Escape seals with a candidate-era spec (S5!), ParseLine hits liftObstruction!
+  let t1EscSpec2 ← object t1Esc "axiom escape : Nat\naxiom extra : Nat"
+  let t1EscImpl2 ← object t1Esc s!"def escape : Nat := {t0Helper}.helper\ndef extra : Nat := 1" [t0Helper]
+  let t1ParseSpec2 ← object t1Parse
+    s!"axiom parse : Nat\naxiom project : parse = {t0Bad}.api\naxiom nonZero : parse = 1" [t0Bad]
+  let t1Glue2 ← object t1Root
+    s!"def run : Nat := {t1Esc}.escape + {t1Esc}.extra + {t1Parse}.parse" [t1Esc, t1Parse]
+  let t1Spec2 ← object t1Root "axiom run : Nat"
+  let t1Lift2 := LiftSpec.liftSpecTree (q t0Root) (q t1Root)
+    [.mkChildLift (q t0Helper) (q t1Esc) none, .mkChildLift (q t0Bad) (q t1Parse) none] []
+  let badProof ← object (t1Root ++ ".Evidence")
+    s!"theorem impossible : False := Nat.one_ne_zero ({t1Parse}.nonZero.symm.trans ({t1Parse}.project.trans {t0Bad}.isZero))"
+    [t0Bad, t1Parse]
+  discard <| checkedDrive cfg t1Spec2 [t1Root, t1Esc, t1Parse] (fun node => do
+    if node.task.delta.child == q t1Root then
+      return plan node.old t1Glue2 [t1EscSpec2, t1ParseSpec2] [⟨.ext (q t0Legacy), .bot⟩]
+    if node.task.delta.child == q t1Esc then return plan node.old t1EscImpl2
+    return envelope "submission" [field "kind" [.sym "refute-lift"], field "why" [.str "Bad.api is zero"],
+      field "refute" [.str (renderLeanMod badProof)]]) ["T0"] t1Lift2 none [] "lift-obstruction"
+  -- T0 v3 (drops Bad, adds Good)
+  let t0V3Glue ← object t0Root s!"def run : Nat := {t0Helper}.helper + {t0Good}.api" [t0Helper, t0Good]
+  discard <| checkedDrive cfg t0Spec [t0Root, t0Good] fun node => do
+    if node.task.delta.child == q t0Root then
+      return plan node.old t0V3Glue [helperSpec, goodSpec] [⟨.ext (q t0Bad), .bot⟩]
+    return plan node.old goodImpl
+  -- Inspect initialHomeWithBases: root code (from T1 v1) MUST pin T0 v1 (Legacy),
+  -- while otherChildHistory pins Escape (from T1 partial) to T0 v2 (Bad)!
+  let init ← initialHomeWithBases c2Ws "T1" t1Spec2
+  ensure (init.oldBaseModules.any (fun ms => ms.any (·.modName == q t0Legacy) && !ms.any (·.modName == q t0Bad)))
+    "C2: partial-seeded root did not preserve complete commit's T0 v1 vertical base"
+  ensure (init.otherChildHistory.any fun (slots, ms) => slots == [t1Esc] && ms.any (·.modName == q t0Bad))
+    "C2: partial-verified child Escape did not retain T0 v2 vertical base in otherChildHistory"
+  -- Re-drive T1 against T0 v3 -> T1 root elaborates T1 v1 code against T0 v1 (with S5 protecting oldStubs
+  -- from candidate-era Escape_v2.spec), Escape gets T0 v2 history, ParseLine gets T0 v1 history, and T1 seals!
+  let t1EscSpec3 ← object t1Esc "axiom escape : Nat\naxiom extra : Nat\naxiom tag : Nat"
+  let t1EscImpl3 ← object t1Esc s!"def escape : Nat := {t0Helper}.helper\ndef extra : Nat := 1\ndef tag : Nat := 2" [t0Helper]
+  let t1ParseSpec3 ← object t1Parse
+    s!"axiom parse : Nat\naxiom project : parse = {t0Good}.api\naxiom nonZero : parse = 1" [t0Good]
+  let t1ParseImpl3 ← object t1Parse
+    s!"def parse : Nat := {t0Good}.api\ntheorem project : parse = {t0Good}.api := rfl\ntheorem nonZero : parse = 1 := {t0Good}.isOne"
+    [t0Good]
+  let t1Glue3 ← object t1Root s!"def run : Nat := {t1Esc}.escape + {t1Parse}.parse" [t1Esc, t1Parse]
+  let t1Lift3 := LiftSpec.liftSpecTree (q t0Root) (q t1Root)
+    [.mkChildLift (q t0Helper) (q t1Esc) none, .mkChildLift (q t0Good) (q t1Parse) none] []
+  discard <| checkedDrive cfg t1Spec2 [t1Root, t1Esc, t1Parse] (fun node => do
+    let owner := node.task.delta.child
+    if owner == q t1Root then
+      ensure (node.task.oldBaseModules.any (·.any (·.modName == q t0Legacy))) "C2: T1 root lost T0 v1 history"
+      return plan node.old t1Glue3 [t1EscSpec3, t1ParseSpec3] [⟨.ext (q t0Legacy), .bot⟩]
+    if owner == q t1Esc then
+      ensure (node.task.oldBaseModules.any (·.any (·.modName == q t0Bad))) "C2: T1 Escape lost T0 v2 partial history"
+      return plan node.old t1EscImpl3
+    ensure (node.task.oldBaseModules.any (·.any (·.modName == q t0Legacy))) "C2: T1 ParseLine lost T0 v1 history"
+    return plan node.old t1ParseImpl3 [] [⟨.ext (q t0Legacy), .bot⟩]) ["T0"] t1Lift3
+  discard <| auditTrees c2Ws
+
+  -- Part B (C4): Early root descriptor validation in prepareSpec / check_spec / driveTree (0 node turns).
+  let c4Ws := ws / "c4-early-validation"
+  initWorkspace c4Ws
+  let neverCallCfg : SessionConfig := ⟨repo, c4Ws, "Reject invalid descriptors in 0 turns",
+    ⟨.local "/bin/true", [], 5000⟩, ScriptedBackend (fun req => fail s!"node should not run: {req.owner}"), false⟩
+  -- B1: Partial tree P has empty root code and verified child Escape. A TransportSpec omitting Escape
+  -- must be rejected immediately in prepareSpec / check_spec / driveTree with unaccountedOldChild.
+  let pBase ← object "Gen.B0.R" "def bad : Nat := 0\ntheorem isZero : bad = 0 := rfl"
+  discard <| publishTree c4Ws "B0" "base" [] [] .ok (Frozen.frozen pBase [] pBase [])
+  let pSpec ← object "Gen.P1.R" "axiom val : Nat"
+  let pEscSpec ← object "Gen.P1.R.Escape" "axiom v : Nat"
+  let pEscImpl ← object "Gen.P1.R.Escape" "def v : Nat := 1"
+  let pPartial := Frozen.frozen ⟨q "Gen.P1.R", [], [], []⟩ [] pSpec
+    [("Gen.P1.R.Escape", Frozen.frozen pEscImpl [] pEscSpec [])]
+  let b0Tips := (← loadCurrentClosure c4Ws ["B0"]).directTips
+  let pObsProof ← object "Gen.P1.Obs" "theorem t : True := trivial"
+  discard <| publishTree c4Ws "P1" "partial with child" ["B0"] b0Tips (.liftObstruction "bad" [q "Gen.B0.R.isZero"] pObsProof) pPartial
+  let qSpec ← object "Gen.Q1.R" "axiom val : Nat"
+  let missingChildTs := (encodeTransportSpec (.transportSpecTree (q "Gen.P1.R") (q "Gen.Q1.R") [] [])).canonical
+  expectError "unaccountedOldChild" (prepareSpec c4Ws "Q1" (renderLeanMod qSpec) [] none (some missingChildTs))
+  expectError "unaccountedOldChild" (driveTree neverCallCfg "Q1" "zero turns" (renderLeanMod qSpec) [] none (some missingChildTs))
+  let mcpCtx := c4Ws / "mcp-c4"
+  IO.FS.createDirAll mcpCtx
+  let rpcArgs := Lean.Json.mkObj [
+    ("spec_block", Lean.toJson (renderLeanMod qSpec)),
+    ("base_trees", Lean.toJson ([] : List String)),
+    ("transport_src", Lean.toJson missingChildTs)]
+  let rpcReq := (Lean.Json.mkObj [
+    ("jsonrpc", "2.0"), ("id", Lean.toJson (1 : Nat)), ("method", "tools/call"),
+    ("params", Lean.Json.mkObj [("name", "check_spec"), ("arguments", rpcArgs)])]).compress
+  let rpc ← IO.Process.output {
+    cmd := (repo / "lojita").toString
+    args := #["mcp", "--mode", "session", "--repo", repo.toString, "--workspace", c4Ws.toString, "--ctx-dir", mcpCtx.toString]
+  } (some rpcReq)
+  ensure (rpc.exitCode == 0 && rpc.stdout.contains "\"isError\":true" && rpc.stdout.contains "unaccountedOldChild")
+    s!"C4 MCP check_spec did not reject unaccountedOldChild: {rpc.stdout}"
+  -- B2: Kept child Decode with grandchild Sub whose LiftSpec fails checkKeptLifts
+  -- (explicit empty grandchild map -> missingChildMap, missing square -> missingSquare) rejected in 0 node turns.
+  let mkNested := fun (rootName : String) (withBase : Option String) => do
+    let dec := rootName ++ ".Decode"
+    let sub := dec ++ ".Sub"
+    let subSpec ← object sub "axiom val : Nat"
+    let subImpl ← match withBase with
+      | none => object sub "def val : Nat := 7"
+      | some b => object sub s!"def val : Nat := {b}.Decode.Sub.val\ntheorem sq : val = {b}.Decode.Sub.val := rfl" [b ++ ".Decode.Sub"]
+    let decSpec ← object dec "axiom val : Nat"
+    let decCode ← object dec s!"def val : Nat := {sub}.val" [sub]
+    let decHome := Frozen.frozen (withChildIfaces decCode [subSpec]) [] decSpec [(sub, Frozen.frozen subImpl [] subSpec [])]
+    let rootSpec ← object rootName "axiom val : Nat"
+    let rootCode ← object rootName s!"def val : Nat := {dec}.val" [dec]
+    return Frozen.frozen (withChildIfaces rootCode [decSpec]) [] rootSpec [(dec, decHome)]
+  let lowerHome ← mkNested "Gen.Base2.R" none
+  let oldHome ← mkNested "Gen.Old2.R" (some "Gen.Base2.R")
+  discard <| publishTree c4Ws "Base2" "base2" [] [] .ok lowerHome
+  let base2Closure ← loadCurrentClosure c4Ws ["Base2"]
+  verifyClosure base2Closure.modules oldHome
+  discard <| publishTree c4Ws "Old2" "old2" ["Base2"] base2Closure.directTips .ok oldHome
+  let new2Spec ← object "Gen.New2.R" "axiom val : Nat"
+  let keepDec := (encodeTransportSpec (.transportSpecTree (q "Gen.Old2.R") (q "Gen.New2.R")
+    [.keepChild (q "Gen.Old2.R.Decode") (q "Gen.New2.R.Decode")] [])).canonical
+  let badEmptySubLift := (encodeLiftSpec (.liftSpecTree (q "Gen.Base2.R") (q "Gen.New2.R")
+    [.mkChildLift (q "Gen.Base2.R.Decode") (q "Gen.New2.R.Decode")
+      (some (.liftSpecTree (q "Gen.Base2.R.Decode") (q "Gen.New2.R.Decode") [] []))] [])).canonical
+  let badMissingSqLift := (encodeLiftSpec (.liftSpecTree (q "Gen.Base2.R") (q "Gen.New2.R")
+    [.mkChildLift (q "Gen.Base2.R.Decode") (q "Gen.New2.R.Decode")
+      (some (.liftSpecTree (q "Gen.Base2.R.Decode") (q "Gen.New2.R.Decode")
+        [.mkChildLift (q "Gen.Base2.R.Decode.Sub") (q "Gen.New2.R.Decode.Sub")
+          (some (.liftSpecTree (q "Gen.Base2.R.Decode.Sub") (q "Gen.New2.R.Decode.Sub") []
+            [endpointLift (q "Gen.Base2.R.Decode.Sub.val") (q "Gen.New2.R.Decode.Sub.val") (q "Gen.New2.R.Decode.Sub.absent")]))] []))] [])).canonical
+  expectError "missingChildMap" (driveTree neverCallCfg "New2" "bad sub lift" (renderLeanMod new2Spec) ["Base2"]
+    (some badEmptySubLift) (some keepDec))
+  expectError "missingSquare" (driveTree neverCallCfg "New2" "bad sq lift" (renderLeanMod new2Spec) ["Base2"]
+    (some badMissingSqLift) (some keepDec))
+
+  -- Part C (S4a/b): replaces transport-source enforcement & STALE diagnostics for unsealed/partial trees.
+  let s4Ws := ws / "s4-replaces-stale"
+  initWorkspace s4Ws
+  let s4Cfg : SessionConfig := ⟨repo, s4Ws, "Check replaces and partial STALE diagnostics",
+    ⟨.local "/bin/true", [], 5000⟩, ScriptedBackend (fun _ => fail "unexpected proposal"), false⟩
+  let bSpec ← object "Gen.Base.R" "axiom v : Nat"
+  let bImpl ← object "Gen.Base.R" "def v : Nat := 1"
+  discard <| publishTree s4Ws "Base" "base" [] [] .ok (Frozen.frozen bImpl [] bSpec [])
+  let bTips := (← loadCurrentClosure s4Ws ["Base"]).directTips
+  let mkPeer := fun (epoch : String) (v : Nat) => do
+    let r := "Gen." ++ epoch ++ ".R"
+    let sp ← object r "axiom v : Nat"
+    let im ← object r s!"def v : Nat := Gen.Base.R.v + {v}" ["Gen.Base.R"]
+    return Frozen.frozen im [] sp []
+  let p1Home ← mkPeer "Peer1" 1
+  let p2Home ← mkPeer "Peer2" 2
+  discard <| publishTree s4Ws "Peer1" "peer1" ["Base"] bTips .ok p1Home
+  discard <| publishTree s4Ws "Peer2" "peer2" ["Base"] bTips .ok p2Home
+  let newPeerSpec ← object "Gen.Peer1b.R" "axiom v : Nat"
+  let wrongTs := (encodeTransportSpec (.transportSpecTree (q "Gen.Peer2.R") (q "Gen.Peer1b.R") [] [])).canonical
+  let peer1Lift := (encodeLiftSpec (.liftSpecTree (q "Gen.Base.R") (q "Gen.Peer1b.R") [] [])).canonical
+  expectError "MISSING_REPLACEMENT_TRANSPORT" (prepareSpec s4Ws "Peer1b" (renderLeanMod newPeerSpec) ["Base"] (some peer1Lift) none ["Peer1"])
+  expectError "MISSING_REPLACEMENT_TRANSPORT" (prepareSpec s4Ws "Peer1b" (renderLeanMod newPeerSpec) ["Base"] (some peer1Lift) (some wrongTs) ["Peer1"])
+  -- Create a partial/obstructed tree Dep depending on Peer1.
+  let depSpec ← object "Gen.Dep.R" "axiom v : Nat"
+  let depPartial := Frozen.frozen ⟨q "Gen.Dep.R", [], [], []⟩ [] depSpec []
+  let p1Tips := (← loadCurrentClosure s4Ws ["Peer1"]).directTips
+  discard <| publishTree s4Ws "Dep" "partial dep" ["Peer1"] p1Tips (.liftObstruction "blocked" [q "Gen.Peer1.R.v"] pObsProof) depPartial
+  -- Before Peer1 changes, Dep is not stale.
+  ensure (← partialStaleViews s4Ws).isEmpty "unchanged partial tree should not be stale"
+  -- Driving a downstream tree against unsealed partial Dep surfaces STALE_ANCESTOR_TREE (not bare unsealed base).
+  expectError "STALE_ANCESTOR_TREE" (prepareSpec s4Ws "AboveDep" (modSrc "Gen.AboveDep.R" "axiom v : Nat") ["Dep"] none none)
+  -- Update Peer1 in place -> partialStaleViews flags Dep with STALE_PARTIAL_TREE!
+  let p1HomeV2 ← mkPeer "Peer1" 3
+  discard <| publishTree s4Ws "Peer1" "peer1 v2" ["Base"] bTips .ok p1HomeV2
+  let staleAfterUpdate ← partialStaleViews s4Ws
+  ensure (staleAfterUpdate.any fun v => v.name == "Dep" && v.stale.any (·.contains "STALE_PARTIAL_TREE"))
+    s!"S4b: partialStaleViews missed updated base for Dep: {staleAfterUpdate.map (·.stale)}"
+  -- Replace Peer1 with Peer1b -> Dep now references retired Peer1!
+  let p1bHome ← mkPeer "Peer1b" 4
+  discard <| publishTree s4Ws "Peer1b" "replace peer1" ["Base"] bTips .ok p1bHome ["Peer1"] [q "Gen.Peer1.R"]
+  let staleAfterReplace ← partialStaleViews s4Ws
+  ensure (staleAfterReplace.any fun v => v.name == "Dep" && v.stale.any (fun s => s.contains "STALE_ANCESTOR_TREE" && s.contains "retired/replaced"))
+    s!"S4b: partialStaleViews missed retired base for Dep: {staleAfterReplace.map (·.stale)}"
+  expectError "STALE_ANCESTOR_TREE" (prepareSpec s4Ws "Dep" (renderLeanMod depSpec) ["Peer1"] none none)
+  let sawStalePartial ← IO.mkRef false
+  let sessionInspect := ScriptedBackend fun req => do
+    if req.prompt.contains "Dep (partial/lift-obstruction)" &&
+        req.prompt.contains "[STATUS: STALE AGAINST UPDATED OR REPLACED BASE — RE-DRIVE THIS TREE]" &&
+        req.prompt.contains "retired/replaced" then
+      sawStalePartial.set true
+    return "(session-action (kind finish) (summary \"inspected stale partial\"))"
+  discard <| runSession {s4Cfg with backend := sessionInspect}
+  ensure (← sawStalePartial.get) "S4b: SESSION_ROOT did not see STALE status for partial Dep"
+  IO.println "   C2/S5 partial-seeded root history, C4 0-turn descriptor checks, and S4a/b replaces/STALE diagnostics passed"
 
 private def promptExamples (dir ws repo : FilePath) : IO Unit := do
   let ds ← loadDrafts dir
@@ -741,10 +978,13 @@ def run (args : List String) : IO Unit := do
   | ["threads",dir] => do
     threadLifecycle dir repo
     concurrentCancellation dir repo
-  | ["recovery",ws] => inPlaceTowerRecovery ws repo
+  | ["recovery",ws] => do
+    inPlaceTowerRecovery ws repo
+    IO.FS.withTempDir fun dir => transportAuditRegressions dir repo
   | ["tower",ws] => do
     tower ws repo
     IO.FS.withTempDir fun dir => inPlaceTowerRecovery dir repo
+    IO.FS.withTempDir fun dir => transportAuditRegressions dir repo
   | ["prompts",dir,ws] => promptExamples dir ws repo
   | _ => fail "test-s4-session (tower WS | recovery WS | prompts DRAFTS WS | threads DIR)"
 

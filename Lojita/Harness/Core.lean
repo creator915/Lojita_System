@@ -115,31 +115,93 @@ private def routeLifts (t : NodeTask) (deps : List LeanMod) (owned : Std.HashSet
 
 private def isSnapshot (q : QName) := q.segments.head? == some "Old"
 
-/-- Retain any square reached from the contract or another surviving declaration.
-    Kernel edges include dependencies introduced by tactics and generated helpers. -/
-private def sealedCode (t : NodeTask) (m : LeanMod) (snap : Snapshot) : LeanMod := Id.run do
-  if t.transports.isEmpty then return m
+private def unitModules (snap : Snapshot) : Std.HashMap QName Lean.NameSet := Id.run do
+  let mut mods : Std.HashMap QName Lean.NameSet := {}
+  for n in snap.constants do
+    let some u := snap.owners.find? n | continue
+    let some info := snap.env.find? n | continue
+    let mut used := mods[u]?.getD {}
+    for c in info.getUsedConstantsAsSet do
+      if let some origin := moduleOf? snap.env c then
+        used := used.insert origin
+    mods := mods.insert u used
+  return mods
+
+/-- Retain any square or private Old.*/peer helper reached from the contract or another
+    surviving declaration. Kernel edges include dependencies introduced by tactics and
+    generated helpers. -/
+def sealedCode (t : NodeTask) (m : LeanMod) (snap : Snapshot) : LeanMod × List QName × List QName := Id.run do
+  if t.transports.isEmpty then return (m, [], [])
   let squares := Std.HashSet.ofList (t.transports.flatMap fun (_,ts) => ts.squares.map (·.squareUnit))
   let contract := Std.HashSet.ofList (t.delta.newIface.units.flatMap (·.definedNames))
-  let mut transient := Std.HashSet.ofList ((m.units.filter fun u =>
-    u.kind == .theoremDecl && squares.contains u.uname && !contract.contains u.uname).map (·.uname))
+  let pub := Std.HashSet.ofList (publicNames m)
+  let peers := Std.HashSet.ofList (t.transports.map (·.1.code.modName))
+  let bases := Std.HashSet.ofList (t.baseModules.map (·.modName))
+  let transientPeers := Std.HashSet.ofList (t.transports.filterMap fun (h, _) =>
+    let q := h.code.modName
+    if bases.contains q then none else some q.toLeanName)
+  let uMods := unitModules snap
   let edges := snap.graph.semArrows
+  let transientSquares := Std.HashSet.ofList ((m.units.filter fun u =>
+    u.kind == .theoremDecl && squares.contains u.uname && !contract.contains u.uname).map (·.uname))
+  let mut touchesTransient : Std.HashSet QName := transientSquares
+  for u in m.units do
+    let mods := uMods[u.uname]?.getD {}
+    if mods.any (fun mod => mod.getRoot == `Old || transientPeers.contains mod) then
+      touchesTransient := touchesTransient.insert u.uname
+  repeat
+    let size := touchesTransient.size
+    for edge in edges do
+      let (.unit user, .unit dep) := edge | continue
+      if touchesTransient.contains dep then touchesTransient := touchesTransient.insert user
+    if size == touchesTransient.size then break
+  let mut transient := Std.HashSet.ofList ((m.units.filter fun u =>
+    transientSquares.contains u.uname ||
+      (u.definedNames.all (!pub.contains ·) && touchesTransient.contains u.uname)).map (·.uname))
   repeat
     let size := transient.size
     for edge in edges do
       let (.unit user, .unit dep) := edge | continue
       unless transient.contains user do transient := transient.erase dep
     if size == transient.size then break
-  let peers := t.transports.map (·.1.code.modName)
-  let bases := t.baseModules.map (·.modName)
+  let mut survivingMods : Lean.NameSet := {}
+  for u in m.units do
+    unless transient.contains u.uname do
+      survivingMods := survivingMods ++ (uMods[u.uname]?.getD {})
+  let leakedSnapshots := distinct (survivingMods.toList.filterMap fun mod =>
+    if mod.getRoot == `Old then some (QName.ofName mod) else none)
+  let leakedPeers := distinct (survivingMods.toList.filterMap fun mod =>
+    if transientPeers.contains mod then some (QName.ofName mod) else none)
   let removed := m.imports.filterMap fun i =>
-    let peer := peers.contains i.imod && !bases.contains i.imod && !squares.isEmpty &&
-      !edges.any (fun | (.unit u, .ext q) => !transient.contains u && under i.imod q | _ => false)
+    let peer := peers.contains i.imod && !bases.contains i.imod && !survivingMods.contains i.imod.toLeanName
     if isSnapshot i.imod || peer then some i.imod else none
-  return {m with
+  let cleaned : LeanMod := {m with
     units := m.units.filter (!transient.contains ·.uname)
     imports := m.imports.filter (!removed.contains ·.imod)
     opens := opensAfterRemoval m (if removed.any isSnapshot then qualified "Old" :: removed else removed)}
+  return (cleaned, leakedSnapshots, leakedPeers)
+
+def verifySealed (t : NodeTask) (deps stubs : List LeanMod) (tests : LeanMod) (snap : Snapshot) :
+    IO (Except NarrowingCertificate LeanMod) := do
+  let owner := t.delta.child
+  let (code, leakedSnapshots, leakedPeers) := sealedCode t tests snap
+  if let mod :: _ := leakedSnapshots then
+    return .error (problem "transient_snapshot_leak" owner
+      s!"Surviving declaration depends on read-only snapshot module {mod}."
+      "Reference Old.* only inside declared horizontal transport squares or private helper lemmas used exclusively by those squares.")
+  if let mod :: _ := leakedPeers then
+    return .error (problem "transient_peer_leak" mod
+      s!"Surviving declaration depends on non-base horizontal peer {mod}, which is retired at seal."
+      "Reference the horizontal peer only inside declared transport squares or private helper lemmas used exclusively by those squares.")
+  if code != tests then
+    let peers := Std.HashSet.ofList (t.transports.map (·.1.code.modName))
+    let bases := Std.HashSet.ofList (t.baseModules.map (·.modName))
+    let sealedDeps := deps.filter fun m => !(peers.contains m.modName && !bases.contains m.modName)
+    if let .error e ← (checkConditionalGlue sealedDeps stubs code).toBaseIO then
+      return .error (kernelError code (toString e))
+    if let .error e ← (satisfies t.delta.newIface code sealedDeps .closedImplOK stubs).toBaseIO then
+      return .error (kernelError code (toString e))
+  return .ok code
 
 private def gatePipeline (t : NodeTask) (old : Frozen) (p : Plan) (subs : List LeanMod) : GateM Candidate := do
   let kept := keeps t.transports
@@ -173,7 +235,10 @@ private def gatePipeline (t : NodeTask) (old : Frozen) (p : Plan) (subs : List L
     let srcs := ts.childMoves.flatMap ChildMove.sources
     let srcSet := Std.HashSet.ofList (srcs.map toString)
     for (n,_) in h.children do
-      unless srcSet.contains n do throw (problem "unaccountedOldChild" (qualified n) "Old slot has no move." "Cover the source slot.")
+      unless srcSet.contains n do
+        throw (problem "unaccountedOldChild" (qualified n)
+          "Saved source child slot is not covered by the TransportSpec child map."
+          "The TransportSpec descriptor (set by SESSION_ROOT for the root tree, or by the parent node for nested slots) must cover every saved source child slot via keep or move.")
     for q in srcs do unless kids.contains (toString q) do throw (scope q "No such saved source slot")
     for q in ts.childMoves.flatMap ChildMove.targets do unless ownedSet.contains q do
       throw (problem "missingTargetChildImport" q "Missing owned target." "Import the target and supply its specification.")
@@ -197,12 +262,30 @@ private def gatePipeline (t : NodeTask) (old : Frozen) (p : Plan) (subs : List L
   passed "checkConditionalGlue"
   if !p.moves.isEmpty && !old.code.units.isEmpty then
     let saved := Std.HashMap.ofList (oldSpecs.map fun s => (s.modName,s))
+    let stubNames := Std.HashSet.ofList (old.code.imports.filterMap fun i =>
+      if i.assumes.isEmpty then none else some i.imod)
+    let historicalBases := if t.currentOnLiveBases then none else t.oldBaseModules
+    let histDeps := (historicalBases.getD deps).filter fun m => !stubNames.contains m.modName
+    let histNames := Std.HashSet.ofList (histDeps.map (·.modName))
     let oldStubs := old.code.imports.filterMap fun i => if i.assumes.isEmpty then none else
-      some (saved[i.imod]?.getD ⟨i.imod, [], [], i.assumes⟩)
-    let stubNames := Std.HashSet.ofList (oldStubs.map (·.modName))
-    let histDeps := (t.oldBaseModules.getD deps).filter fun m => !stubNames.contains m.modName
-    let oldSnap ← (checkConditionalGlue histDeps oldStubs old.code).toBaseIO
-    checkFrontier (validate old.code p cand oldSnap.toOption snap)
+      let compat := saved[i.imod]?.filter fun s =>
+        s.units == i.assumes &&
+          s.imports.all fun j => j.imod.toLeanName.getRoot == `LojitaCtx || histNames.contains j.imod
+      let fallbackMods := distinct (
+        (old.code.imports.filterMap fun j =>
+          if j.imod.toLeanName.getRoot == `LojitaCtx &&
+              i.assumes.any (fun u => u.synRefs.any (under j.imod ·)) then some j.imod else none) ++
+        (histDeps.filterMap fun m =>
+          if i.assumes.any (fun u => u.synRefs.any (under m.modName ·)) then some m.modName else none))
+      some (compat.getD ⟨i.imod, fallbackMods.map (⟨·, []⟩), [], i.assumes⟩)
+    match ← (checkConditionalGlue histDeps oldStubs old.code).toBaseIO with
+    | .ok oldSnap =>
+      checkFrontier (validate old.code p cand (some oldSnap) (some snap))
+    | .error err =>
+      if historicalBases.isSome then
+        throw (problem "historical_elaboration_failed" owner (toString err)
+          "Pinned historical base modules could not elaborate CURRENT CODE; ensure upstream ancestry is consistent before re-driving.")
+      checkFrontier (validate old.code p cand none (some snap))
   checked (satisfies t.delta.newIface tests proofDeps .closedImplOK stubs) fun msg =>
     problem "interface_mismatch" owner msg "Implement the specification's public signatures and concrete helpers."
   passed "satisfies"
@@ -218,12 +301,11 @@ private def gatePipeline (t : NodeTask) (old : Frozen) (p : Plan) (subs : List L
     if let some err := (checkLift base cand t.delta.newIface snap ls).head? then
       throw (problem err.code owner (reprStr err) "Repair the vertical endpoint square or child map.")
     let errors ← checked (checkKeptLifts deps t.transports ls) (kernelError cand)
-    if let some err := errors.head? then throw (problem err.code owner (reprStr err) "Repair the retained child's lift.")
+    if let some err := errors.head? then
+      throw (problem err.code owner (reprStr err)
+        "The retained child's LiftSpec obligation failed against the vertical base; update the LiftSpec or replace (keep ...) with (move ...) in the transport descriptor (set by SESSION_ROOT for the root tree, or by the parent node for nested slots).")
   passed "Lift"
-  let code := sealedCode t tests snap
-  if code != tests then
-    discard <| checked (checkConditionalGlue deps stubs code) (kernelError code)
-    checked (satisfies t.delta.newIface code deps .closedImplOK stubs) (kernelError code)
+  let code ← plain (← verifySealed t deps stubs tests snap)
   return ⟨code, specs, deps, p, kept, childLifts⟩
 
 def checkCandidateGates (t : NodeTask) (old : Frozen) (p : Plan) (subs : List LeanMod := []) :

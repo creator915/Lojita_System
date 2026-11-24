@@ -200,10 +200,12 @@ private def indexMod (m : LeanMod) (includeOwners := true) : PlanIndex := Id.run
 
 private def preserved (old cand : PlanIndex) (rs : Std.HashMap QName QName)
     (a b : Option Snapshot) (arrow : Proarrow) : Bool := Id.run do
+  let conservative := a.isNone && b.isSome
   let same := fun (x y : Option SynUnit) => Id.run do
     let some u := x | return false
     let some v := y | return false
     if let (some s, some t) := (a,b) then return kernelSignature s t u v rs
+    if conservative then return false
     return sigTokens u rs == sigTokens v {}
   match arrow.src, arrow.tgt with
   | _, .bot => return false
@@ -214,7 +216,8 @@ private def preserved (old cand : PlanIndex) (rs : Std.HashMap QName QName)
       let targets := byUnit j.assumes
       return i.assumes.length == j.assumes.length && i.assumes.all fun u =>
         same (some u) targets[(renamedRef? rs u.uname).getD (renameQ x y u.uname)]?
-    return same old.externals[x]? cand.externals[y]? || (x == y && old.externals[x]?.isNone && cand.externals[y]?.isNone)
+    return same old.externals[x]? cand.externals[y]? ||
+      (!conservative && x == y && old.externals[x]?.isNone && cand.externals[y]?.isNone)
   | _, _ => return false
 
 def preserves (old cand : LeanMod) (p : Plan) (arrow : Proarrow)
@@ -233,6 +236,13 @@ def frontier (old cand : LeanMod) (p : Plan) (oldSnap? candSnap? : Option Snapsh
       if let .ext q := a.src then
         if let some i := x.imports[q]? then changedImports := changedImports.insert i.imod.toLeanName
   if changed.isEmpty then return []
+  let src := Std.HashSet.ofList (p.moves.map (·.src))
+  -- Without a checked historical snapshot during post-elaboration verification,
+  -- syntactic references cannot prove a tactic or kernel dependent stayed unaffected.
+  if oldSnap?.isNone && candSnap?.isSome then
+    return old.units.filterMap fun u =>
+      let o := Obj.unit u.uname
+      if !src.contains o then some o else none
   let edges : List (Obj × Obj) := match oldSnap? with
     | some snap => snap.graph.semArrows
     | none => old.units.flatMap fun (u : SynUnit) => u.synRefs.map fun r => (.unit u.uname, x.owners[r]?.getD (.ext r))
@@ -245,7 +255,6 @@ def frontier (old cand : LeanMod) (p : Plan) (oldSnap? candSnap? : Option Snapsh
         n := n.getPrefix
     return false
   let deps := Std.HashSet.ofList (edges.filterMap fun (s,t) => if affected t then some s else none)
-  let src := Std.HashSet.ofList (p.moves.map (·.src))
   return old.units.filterMap fun u =>
     let o := Obj.unit u.uname
     if deps.contains o && !src.contains o then some o else none

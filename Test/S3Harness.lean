@@ -471,6 +471,21 @@ private def deepKeptLift : IO Unit := do
     let prepared ← prepareSpec ws "T1" (renderLeanMod spec) ["Base"] lift (encodeTransportSpec transport).canonical
     let r ← planPreview prepared.task prepared.home (birthPlan draft)
     ensure r.certificate.isNone s!"session preflight rejected a shorthand kept subtree: {repr r}"
+  -- S2: Strip a dead non-base peer root import even when squares are empty and a kept child
+  -- under that root prefix is used; reject operational use of the non-base peer at the gate.
+  let deadPeerDraft ← object target ("def val := " ++ target ++ ".Decode.val") [source, target ++ ".Decode"]
+  let (deadRep, some deadCand) ← checkCandidateGates (job (.mkChildLift (dq lower) (dq target) none)) h (birthPlan deadPeerDraft)
+    | throw (IO.userError "S2 dead peer import with empty squares was rejected")
+  ensure (deadRep.certificate.isNone && !deadCand.code.imports.any (·.imod == old.code.modName))
+    s!"S2 dead peer root import survived sealing: {repr deadCand.code.imports}"
+  let stDead : NodeState := {task := job (.mkChildLift (dq lower) (dq target) none), original := h, current := h}
+  let recDead ← reconcileChildren stDead deadCand
+  let sealedDead ← finish {stDead with current := recDead.current, verified := recDead.verified} deadCand
+  verifyClosure (exported base) sealedDead
+  let peerLeakDraft ← object target ("def val := " ++ source ++ ".val") [source, target ++ ".Decode"]
+  let peerLeakRep ← planPreview (job (.mkChildLift (dq lower) (dq target) none)) h (birthPlan peerLeakDraft)
+  ensure (peerLeakRep.certificate.any (·.kind == "transient_peer_leak"))
+    s!"S2 operational use of non-base peer was not rejected at the gate: {repr peerLeakRep}"
 
 private def inPlaceSquare : IO Unit := do
   let n := "Gen.T1.InPlace"
@@ -499,6 +514,62 @@ private def inPlaceSquare : IO Unit := do
   let (report,c) ← checkCandidateGates t h p
   ensure (report.certificate.isNone && c.any (fun v => !(v.code.units.map (·.uname)).contains square))
     s!"old snapshot square: {repr report}"
+  -- C1: Same-name in-place squares MUST reference Old.*, never only the shadowed new name.
+  let reflexiveEq ← object n ("open LojitaCtx.World\ndef fn (x : Nat) := Nat.succ x\n" ++ app ++
+    "\ntheorem square : ∀ x, fn x = fn x := fun _ => rfl") ["LojitaCtx.World", operand]
+  let reflexivePoly ← object n ("open LojitaCtx.PolyTransport LojitaCtx.World\ndef fn (x : Nat) := Nat.succ x\n" ++ app ++
+    "\ntheorem square : TransportsPoly (idPort Nat) (idPort Nat) (fun _ => True) fn fn := by
+  intro x y _ h
+  change x = y at h
+  subst y
+  rfl") ["LojitaCtx.PolyTransport", "LojitaCtx.World", operand]
+  let tsNoRefs := TransportSpec.transportSpecTree spec.modName spec.modName [.keepChild op.modName op.modName]
+    [polySquare [fn] [fn] square]
+  for fake in [reflexiveEq, reflexivePoly] do
+    for taskVar in [t, {t with transports := [(h, tsNoRefs)]}] do
+      let fakeRep ← planPreview taskVar h {p with newMod := some fake}
+      ensure (fakeRep.certificate.any (fun cert => cert.kind == "missingOldEndpoint" && cert.cause.contains (reprStr fn)))
+        s!"C1 reflexive same-name square bypassed Old.* check: {repr fakeRep}"
+  -- S3: Private helper lemmas referencing Old.* (transitively) for a square are stripped at seal;
+  -- public helpers or operational private helpers referencing Old.* are rejected at the gate and in MCP check_lean.
+  let helperDraft ← object n ("open LojitaCtx.PolyTransport LojitaCtx.World Old.Gen.T1\ndef fn (x : Nat) := Nat.succ x\n" ++ app ++
+    s!"\nprivate theorem helper1 (x : Nat) : Old.{n}.fn x = x + 1 := rfl
+private theorem helper2 (x : Nat) : Old.{n}.fn x = fn x := helper1 x
+theorem square : TransportsPoly (idPort Nat) (idPort Nat) (fun _ => True) Old.{n}.fn fn := by
+  intro x y _ h
+  change x = y at h
+  subst y
+  exact helper2 x") ["LojitaCtx.PolyTransport","LojitaCtx.World","Old." ++ n,operand]
+  let helperMoves : List Proarrow := [⟨.unit fn,.unit fn⟩,⟨.unit entry,.unit entry⟩,
+    ⟨.bot,.unit (q (n ++ ".helper1"))⟩,⟨.bot,.unit (q (n ++ ".helper2"))⟩,⟨.bot,.unit square⟩]
+  let (helperRep, some helperCand) ← checkCandidateGates t h {birthPlan helperDraft with moves := helperMoves}
+    | throw (IO.userError "S3 private Old.* helper lemmas failed gate")
+  ensure (helperRep.certificate.isNone &&
+    !helperCand.code.units.any (fun u => [square, q (n ++ ".helper1"), q (n ++ ".helper2")].contains u.uname) &&
+    !helperCand.code.imports.any (·.imod == q ("Old." ++ n)))
+    s!"S3 private Old.* helper survived sealing: {repr helperCand.code}"
+  let pubHelperDraft ← object n ("open LojitaCtx.PolyTransport LojitaCtx.World Old.Gen.T1\ndef fn (x : Nat) := Nat.succ x\n" ++ app ++
+    s!"\ntheorem helperPub (x : Nat) : Old.{n}.fn x = fn x := rfl
+theorem square : TransportsPoly (idPort Nat) (idPort Nat) (fun _ => True) Old.{n}.fn fn := by
+  intro x y _ h
+  change x = y at h
+  subst y
+  exact helperPub x") ["LojitaCtx.PolyTransport","LojitaCtx.World","Old." ++ n,operand]
+  let pubHelperRep ← planPreview t h {birthPlan pubHelperDraft with moves :=
+    [⟨.unit fn,.unit fn⟩,⟨.unit entry,.unit entry⟩,⟨.bot,.unit (q (n ++ ".helperPub"))⟩,⟨.bot,.unit square⟩]}
+  ensure (pubHelperRep.certificate.any (·.kind == "transient_snapshot_leak"))
+    s!"S3 public Old.* helper was not rejected: {repr pubHelperRep}"
+  let privLeakDraft ← object n ("open LojitaCtx.PolyTransport LojitaCtx.World Old.Gen.T1\nprivate def leak (x : Nat) := Old." ++ n ++
+    ".fn x\ndef fn (x : Nat) := leak x\n" ++ app ++
+    s!"\ntheorem square : TransportsPoly (idPort Nat) (idPort Nat) (fun _ => True) Old.{n}.fn fn := by
+  intro x y _ h
+  change x = y at h
+  subst y
+  rfl") ["LojitaCtx.PolyTransport","LojitaCtx.World","Old." ++ n,operand]
+  let privLeakRep ← planPreview t h {birthPlan privLeakDraft with moves :=
+    [⟨.unit fn,.unit fn⟩,⟨.unit entry,.unit entry⟩,⟨.bot,.unit (q (n ++ ".leak"))⟩,⟨.bot,.unit square⟩]}
+  ensure (privLeakRep.certificate.any (·.kind == "transient_snapshot_leak"))
+    s!"S3 operational private Old.* helper was not rejected: {repr privLeakRep}"
   IO.FS.withTempDir fun dir => do
     let repo ← IO.FS.realPath "."
     Lojita.Session.writeContext dir ⟨t,old,h.memory,none,some h⟩
@@ -507,12 +578,16 @@ private def inPlaceSquare : IO Unit := do
       ("params",Lean.Json.mkObj [("name",method),("arguments",args)])]
     let queries := [
       rpc 1 "check_lean" (Lean.Json.mkObj [("source",renderLeanMod draft),("dep_blocks",Lean.toJson [renderLeanMod opSpec])]),
-      rpc 2 "check_plan" (Lean.Json.mkObj [("submission",planText draft [] moves)])]
+      rpc 2 "check_plan" (Lean.Json.mkObj [("submission",planText draft [] moves)]),
+      rpc 3 "check_lean" (Lean.Json.mkObj [("source",renderLeanMod helperDraft),("dep_blocks",Lean.toJson [renderLeanMod opSpec])]),
+      rpc 4 "check_lean" (Lean.Json.mkObj [("source",renderLeanMod privLeakDraft),("dep_blocks",Lean.toJson [renderLeanMod opSpec])])]
     let input ← IO.mkRef {data := (String.intercalate "\n" (queries.map (·.compress)) ++ "\n").toUTF8 : IO.FS.Stream.Buffer}
     let output ← IO.mkRef ({} : IO.FS.Stream.Buffer)
     IO.withStdin (.ofBuffer input) <| IO.withStdout (.ofBuffer output) <| Lojita.MCP.serve {mode := .node, repo, ctx := dir}
     let replies := (String.fromUTF8! (← output.get).data).splitOn "\n" |>.filter (!·.isEmpty)
-    ensure (replies.length == 2 && replies.all (·.contains "\"isError\":false"))
+    ensure (replies.length == 4 &&
+      (replies.take 3).all (·.contains "\"isError\":false") &&
+      replies[3]!.contains "\"isError\":true" && replies[3]!.contains "transient_snapshot_leak")
       s!"MCP snapshot preflight disagreed with the gate: {replies}"
   let (v,sealed) ← drive (fun req => do
     if let some cert := req.diagnostic then throw (IO.userError (toString cert))
@@ -526,8 +601,8 @@ private def inPlaceSquare : IO Unit := do
     ensure ((← IO.Process.output {cmd := bin.toString}).exitCode == 5) "in-place candidate did not run the sealed function"
   let leaking ← impl ("Old." ++ n ++ ".fn x")
   let r ← planPreview t h {p with newMod := some leaking}
-  ensure r.certificate.isSome "operational use of a retired snapshot survived sealing"
-  IO.println "   Deep kept aliases, explicit and inferred grandchild lifts, and in-place snapshot proof erasure"
+  ensure (r.certificate.any (·.kind == "transient_snapshot_leak")) "operational use of a retired snapshot survived sealing"
+  IO.println "   Deep kept aliases, explicit and inferred grandchild lifts, C1/S2/S3 sealing, and in-place snapshot proof erasure"
 
 private def historicalFrontier : IO Unit := do
   let base ← object "Gen.T0.Obsolete" "theorem fact : True := trivial"
@@ -545,8 +620,36 @@ theorem dependent : True := by first | exact premise | trivial" [toString base.m
   ensure (pinned.certificate.any (·.kind == "frontier_incomplete") && pinned.frontier == [(encObj dep).canonical])
     "the historical semantic frontier missed the tactic dependency"
   let acknowledged ← planPreview t h {p with moves := ⟨dep,dep⟩ :: p.moves}
+  ensure acknowledged.certificate.isNone s!"acknowledged historical frontier failed: {repr acknowledged}"
+  -- C3: Broken pinned historical bases emit an explicit gate certificate; unpinned elaboration failure
+  -- falls back conservatively so unmoved old units are never silently skipped.
+  let brokenPinned ← planPreview {t with oldBaseModules := some []} h p
+  ensure (brokenPinned.certificate.any (·.kind == "historical_elaboration_failed"))
+    s!"broken pinned oldBaseModules did not emit historical_elaboration_failed: {repr brokenPinned}"
   let fallback ← planPreview {t with oldBaseModules := none} h p
-  ensure (acknowledged.certificate.isNone && fallback.certificate.isNone) "historical frontier or partial-shell fallback deadlocked"
+  ensure (fallback.certificate.any (·.kind == "frontier_incomplete") && fallback.frontier == [(encObj dep).canonical])
+    s!"unpinned elaboration failure silently bypassed conservative frontier: {repr fallback}"
+  let fallbackAck ← planPreview {t with oldBaseModules := none} h {p with moves := ⟨dep,dep⟩ :: p.moves}
+  ensure fallbackAck.certificate.isNone s!"conservative frontier deadlocked when all old units moved: {repr fallbackAck}"
+  -- S5: Candidate-era saved child spec whose units differ from old.code's import assumptions
+  -- must not poison historical elaboration of old.code.
+  let kidName := "Gen.T1.HistChild.Kid"
+  let oldKidSpec ← object kidName "axiom val : Nat"
+  let candKidSpec ← object kidName "axiom val : Bool\naxiom extra : Nat"
+  let candKidImpl ← object kidName "def val : Bool := true\ndef extra : Nat := 0"
+  let oldParent ← object "Gen.T1.HistChild"
+    s!"def a : Nat := {kidName}.val\ndef b : Nat := a + 1" [kidName]
+  let oldParentHome := Frozen.frozen (withChildIfaces oldParent [oldKidSpec]) []
+    (← object "Gen.T1.HistChild" "axiom b : Nat")
+    [(kidName, Frozen.frozen candKidImpl [] candKidSpec [])]
+  let nextParent ← object "Gen.T1.HistChild" "def b : Nat := 42"
+  let parentMoves : List Proarrow := [
+    ⟨.ext (q kidName), .bot⟩,
+    ⟨.unit (q "Gen.T1.HistChild.a"), .bot⟩,
+    ⟨.unit (q "Gen.T1.HistChild.b"), .unit (q "Gen.T1.HistChild.b")⟩]
+  let s5Rep ← planPreview {(task (← object "Gen.T1.HistChild" "axiom b : Nat")) with oldBaseModules := some []}
+    oldParentHome {why := "drop kid", newMod := some nextParent, moves := parentMoves}
+  ensure s5Rep.certificate.isNone s!"S5 candidate-era child spec poisoned oldStubs: {repr s5Rep}"
 
 private def obstruction (dir : System.FilePath) (parserFirst := false) : IO Unit := do
   let bad ← object "Gen.T0.Doc" "def singlePass (_ : Nat) := 0\ntheorem badSinglePass : singlePass 1 = 0 := rfl"

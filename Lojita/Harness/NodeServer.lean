@@ -137,7 +137,7 @@ def reconcileChildren (s : NodeState) (c : Candidate) : IO PlanResult := do
       else none
     let child := {s.task with
       delta := ⟨q, seed.spec.units, spec⟩, baseModules := c.deps, transports := sub,
-      oldBaseModules := pinned, otherChildHistory := none,
+      oldBaseModules := pinned, otherChildHistory := none, currentOnLiveBases := false,
       allowedAncestors := permissions q, maybeLift := lifts[0]?, otherLifts := lifts.toList.drop 1}
     let home := Frozen.frozen seed.code (seed.memory ++ routed[q]?.getD []) seed.spec seed.children
     births := births.push ⟨child, home, ← IO.Promise.new, ← IO.Promise.new⟩
@@ -395,6 +395,7 @@ private def proposed (f : Frame) (s : NodeState) (sub : Submission) : Proc Node�
       runJob next st (.reconcile st c) fun r =>
         let saved := st.verified.fold (fun m n h => m.insert n h) st.salvaged
         birthChildren next {st with
+          task := {st.task with currentOnLiveBases := true}
           candidate := some c, current := r.current, verified := r.verified, diagnostic := none, salvaged := saved} r.toSpawn
     | _, _ => failed f s "MISSING_CANDIDATE"
   | sub => runJob f s (.witness s.task sub) fun

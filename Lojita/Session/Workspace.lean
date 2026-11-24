@@ -113,7 +113,8 @@ def sealedNames (ws : FilePath) : IO (List String) := do
     if refs.contains n && verdict.isNone then fail s!"missing verdict for {n}"
     return verdict.map (·.trimAscii.toString) == some "ok"
 
-def checkReplacements (ws : FilePath) (name : String) (bases replaces : List String) : IO Unit := do
+def checkReplacements (ws : FilePath) (name : String) (bases replaces : List String)
+    (transportSources : List QName := []) : IO Unit := do
   if replaces.isEmpty then return
   let sealed ← sealedNames ws
   for r in replaces do
@@ -129,6 +130,8 @@ def checkReplacements (ws : FilePath) (name : String) (bases replaces : List Str
     for other in sealed do
       if other != r && other != name && (← treeNamesFile (ws / "trees" / other / "bases.sexp")).contains r then
         fail s!"cannot replace {r}: sealed tree {other} depends on it"
+    unless transportSources.any (fun q => q.segments.take 2 == ["Gen", r] && q.segments.length == 3) do
+      fail s!"MISSING_REPLACEMENT_TRANSPORT: replacement {r} must be the horizontal transport source tree in maybeTransportSrc"
 
 structure SealedTree where
   name : String
@@ -192,8 +195,11 @@ private def currentTrees (ws : FilePath) (names : List String) (driving : Option
     checkTreeName n
     try resolveTip ws n catch e =>
       if let some name := driving then
-        if (← readRef (ws / "store") .trees n).isSome &&
-            (← readOptional (ws / "trees" / n / "verdict")).any (·.trimAscii.toString != "ok") then
+        let verdict := (← readOptional (ws / "trees" / n / "verdict")).map (·.trimAscii.toString)
+        if verdict == some "retired" then
+          fail s!"STALE_ANCESTOR_TREE: ancestor tree {n} was retired/replaced ({e}); re-drive {name} against the replacement base tree"
+        if ((← readRef (ws / "store") .trees n).isSome || (← readRef (ws / "store") .partial n).isSome) &&
+            verdict.any (· != "ok") then
           fail (staleAncestor n name e)
       throw e
   let tips ← names.mapM tip
@@ -261,6 +267,39 @@ def sealedViews (ws : FilePath) : IO (List SealedView) := do
         let c ← getObject (ws / "store") .commit tip
         return ⟨n,tip,← loadFrozen (ws / "store") c.rootHome⟩
       return ⟨n,(← saved.toBaseIO).toOption,some (toString e)⟩
+
+structure PartialTreeView where
+  name : String
+  verdict : String
+  bases : List String
+  stale : Option String
+
+/-- Inspect unsealed/partial trees whose recorded bases were retired, unsealed,
+    or updated so SESSION_ROOT and audits see STALE diagnostics for them too. -/
+def partialStaleViews (ws : FilePath) : IO (List PartialTreeView) := do
+  let mut out := #[]
+  for n in ← namesAt (ws / "trees") do
+    checkTreeName n
+    let some verdict := (← readOptional (ws / "trees" / n / "verdict")).map (·.trimAscii.toString) | continue
+    if verdict == "ok" || verdict == "retired" then continue
+    let basesFile := ws / "trees" / n / "bases.sexp"
+    unless ← basesFile.pathExists do continue
+    let bases ← treeNamesFile basesFile
+    if bases.isEmpty then continue
+    let stale ← match ← (verifiedAncestry ws bases n).toBaseIO with
+      | .ok closure =>
+        match ← readRef (ws / "store") .partial n with
+        | none => pure none
+        | some key =>
+          let c ← getObject (ws / "store") .commit key
+          let recorded := c.parents.filter (· != key)
+          if closure.directTips.any (!recorded.contains ·) then
+            pure (some s!"STALE_PARTIAL_TREE: partial tree {n} ({verdict}) was recorded against earlier base commits; re-drive {n} against updated bases {bases}")
+          else pure none
+      | .error e => pure (some (toString e))
+    if stale.isSome then
+      out := out.push ⟨n, verdict, bases, stale⟩
+  return out.toList
 
 def retiredNames (ws : FilePath) : IO (Std.HashSet String) := do
   let ns ← (← namesAt (ws / "trees")).filterM fun (n : String) => do
@@ -345,9 +384,16 @@ def initialHomeWithBases (ws : FilePath) (n : String) (spec : LeanMod) : IO Init
   unless seed.code.modName == spec.modName do fail "in-place drive changed root namespace"
   let slots := Std.HashSet.ofList (seed.children.map Prod.fst)
   let other := complete.toList.flatMap (fun (h,_) => h.children.filter (!slots.contains ·.1))
-  let pinned := selected.map Prod.snd
-  let otherHistory := complete.bind fun (_,ms) =>
-    if other.isEmpty || pinned == some ms then none else some (other.map Prod.fst, ms)
+  let (pinned, otherHistory) := match kept, complete with
+    | some (kh, kms), some (ch, cms) =>
+      if kh.code == ch.code then
+        -- Partial commits retain the previously sealed root code (`s.original.code`),
+        -- which was verified against `complete`'s vertical parents (`cms`), while
+        -- `kh.children` were verified during the partial drive against `kms`.
+        (some cms, if kh.children.isEmpty || cms == kms then none else some (kh.children.map Prod.fst, kms))
+      else
+        (some kms, if other.isEmpty || kms == cms then none else some (other.map Prod.fst, cms))
+    | _, _ => (selected.map Prod.snd, none)
   return ⟨.frozen seed.code seed.memory seed.spec (seed.children ++ other), pinned, otherHistory⟩
 
 def initialHome (ws : FilePath) (n : String) (spec : LeanMod) : IO Frozen :=
@@ -356,9 +402,10 @@ def initialHome (ws : FilePath) (n : String) (spec : LeanMod) : IO Frozen :=
 def moduleFile (root : FilePath) (m : LeanMod) := (m.modName.segments.foldl (· / ·) root).addExtension "lean"
 
 def publishTree (ws : FilePath) (name why : String) (bases : List String) (tips : List Hash)
-    (verdict : Verdict) (home : Frozen) (replaces : List String := []) : IO String := do
+    (verdict : Verdict) (home : Frozen) (replaces : List String := [])
+    (transportSources : List QName := []) : IO String := do
   checkTreeName name
-  if verdict == .ok then checkReplacements ws name bases replaces
+  if verdict == .ok then checkReplacements ws name bases replaces transportSources
   let dir := ws / "store"
   let previous ← readRef dir .trees name
   let key ← storeTreeCommit dir (distinct (tips ++ previous.toList)) name why (thawHome home)

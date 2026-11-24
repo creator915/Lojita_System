@@ -156,7 +156,14 @@ private def checkLean (ctx : Option NodeContext) (args : Json) (ds : DraftStore)
   if allow then
     if let some cert := launderingCertificate snap then fail (toString cert)
   else if let some spec := spec? then
-    if spec.modName == m.modName then satisfies spec m bases .closedImplOK stubs
+    if spec.modName == m.modName then
+      satisfies spec m bases .closedImplOK stubs
+      if let some c := ctx then
+        if !c.task.transports.isEmpty then
+          let cleanDeps ← IO.ofExcept (c.task.checkingDeps m.modName (stubs.map (·.modName)) false)
+          match ← verifySealed c.task cleanDeps stubs m snap with
+          | .ok _ => pure ()
+          | .error cert => fail (toString cert)
   return success s!"checked {m.modName}"
 
 private def observed (cfg : Config) (cert : NarrowingCertificate) (report : Option GateReport := none) : IO Json := do

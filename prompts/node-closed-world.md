@@ -199,6 +199,8 @@ end Gen.T1.Doc.Route
 
 横向以 `LojitaCtx.PolyTransport.PortRel` 表示端口间的关系，以 `TransportsPoly` 给出运算保持关系的方块，用 `cut₁` 把一个输出接入下一个运算。计划中每条 proarrow `src ⇝ tgt` 记录一个接口变化。`bot` 是产生或删除的空端，`unit` 是本地声明，`ext` 是导入的端点。拆分可由同一源指向多个目标，合并相反。改动签名后，继续处理依赖端直至 `frontier` 为空。`check_plan` 返回 KIND、WITNESS、CAUSE、DETOUR。它不唤醒孩子。`CURRENT CODE` 中保留的同名声明用身份箭头更新。
 
+带有 `POLY-TRANSPORT` 时，`ALLOWED DIRECT IMPORTS` 会提供只读旧版快照 `Old.Gen.<Ti>.<Mod>`（可用 `read_context` 读取）。**同名原位横向方块**中（旧模块与当前模块同名，或旧名被当前声明遮蔽），旧端点必须显式写成 `Old.<mod>.<decl>`，新端点写成 `<decl>`；仅写自反等式（如 `∀ x, fn x = fn x`）会因未引用旧端点而触发 `missingOldEndpoint`。不在 `SPECIFICATION` 契约中的已声明横向方块定理，以及仅被这些方块使用且依赖 `Old.*` 或非基底同层对端模块的 `private` 辅助引理，在封存（seal）时会自动剥离，相应的 `Old.*` 与不再被存活声明使用的非基底同层对端 `import`/`open` 也会一并移除；任何公开声明或可存活的实现代码都不得引用 `Old.*` 或非基底同层对端，辅助引理须标为 `private`。当 `POLY-TRANSPORT` 以 `(keep oldSlot newSlot)` 保留旧孩子时，父节点直接导入 `newSlot` 并保持等价接口即可零轮复用原孩子及其全部孙包；若 `oldSlot ≠ newSlot`，内核会在 `newSlot` 及孙槽自动生成指向原实现的公开 `abbrev` 转发别名，并检查该保留孩子上的纵向 `LiftSpec` 义务。
+
 ## 对偶证据
 
 规约自身矛盾时，`(kind contradiction)` 的 `refute` 导入规约并给出公开定理 `: False`。开放接口定律不足时，`(kind countermodel)` 提交模型与 `@refute`。独立的 Glyph 反模型练习中，原生 Char 上的可证性质在每一阶段的开放字符代数中都可能失败。模型只导入 `LojitaCtx.Countermodel`。见证将接口承诺接到内核从 bundle 生成的 `CountermodelCheck.VerifiedClaim` 上。

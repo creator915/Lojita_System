@@ -56,7 +56,8 @@ def prepareSpec (ws : FilePath) (name src : String) (bases : List String) (liftS
     (replaces : List String := []) :
     IO Prepared := do
   checkTreeName name
-  checkReplacements ws name bases replaces
+  let transportSpec ← transportSrc.mapM parseTransport
+  checkReplacements ws name bases replaces (transportSpec.toList.map (·.oldMod))
   if bases.length > 1 then
     fail "MULTI_BASE_TREES: drive-tree refines at most one predecessor blueprint tree; decompose subsystems inside one tree via closed-world import subspecs"
   let spec ← IO.ofExcept (parseLeanMod src)
@@ -65,7 +66,6 @@ def prepareSpec (ws : FilePath) (name src : String) (bases : List String) (liftS
   let closure ← verifiedAncestry ws bases name
   if closure.trees.any (·.name == name) then fail "cycle in requested baseTrees"
   let liftSpec ← liftSrc.mapM parseLift
-  let transportSpec ← transportSrc.mapM parseTransport
   if let [baseName] := bases then
     let some baseTree := closure.trees.find? (·.name == baseName) | fail s!"unsealed base {baseName}"
     let baseRoot := baseTree.home.code.modName
@@ -88,9 +88,21 @@ def prepareSpec (ws : FilePath) (name src : String) (bases : List String) (liftS
       let targets := t.childMoves.flatMap ChildMove.targets
       let target : LeanMod := ⟨t.newMod,targets.map (⟨·,[]⟩),[],[]⟩
       if let e :: _ := polyShapeProblems source.code target t then fail (reprStr e)
-      for q in t.childMoves.flatMap ChildMove.sources do
+      let srcs := t.childMoves.flatMap ChildMove.sources
+      let srcSet := Std.HashSet.ofList (srcs.map toString)
+      for (n, _) in source.children do
+        unless srcSet.contains n do fail s!"unaccountedOldChild: {n}"
+      for q in srcs do
         unless (lookupChild source q).isSome do fail s!"missing transport child {q}"
+      let before := endpointNames source.code
+      for s in t.squares do
+        if s.oldUnits.isEmpty || s.newUnits.isEmpty then fail s!"emptySquareEndpoints: {s.squareUnit}"
+        for q in s.oldUnits do unless before.contains q do fail s!"missingOldEndpoint: {q}"
       pure ([(source,t)],← IO.ofExcept (mergeModules (closure.modules ++ ancestors)))
+  if let some (_, l) := lift then
+    if !transports.isEmpty then
+      if let err :: _ := (← checkKeptLifts checkingModules transports l) then
+        fail s!"{err.code}: {reprStr err}"
   let task : NodeTask := {
     delta := ⟨spec.modName,home.spec.units,spec⟩
     baseModules := checkingModules, oldBaseModules, otherChildHistory, maybeLift := lift, transports, allowedAncestors := some allowed}
@@ -107,6 +119,7 @@ private structure ContextFile where
   transports : List (Hash × String)
   oldBaseModules : Option (List String) := none
   otherChildHistory : Option (List String × List String) := none
+  currentOnLiveBases : Bool := false
   deriving Lean.ToJson, Lean.FromJson
 
 def writeContext (ctx : FilePath) (req : AIRequest) : IO Unit := do
@@ -116,7 +129,8 @@ def writeContext (ctx : FilePath) (req : AIRequest) : IO Unit := do
   let binds ← t.transports.mapM fun (h,s) => do return (← storeFrozen dir h,(encodeTransportSpec s).canonical)
   let wire : ContextFile := ⟨← storeFrozen dir home,encodeCanonical t.delta.newIface,t.baseModules.map encodeCanonical,
     t.allowedAncestors.map (·.map toString),t.lifts.map (fun (b,s) => (encodeCanonical b,(encodeLiftSpec s).canonical)),
-    binds,t.oldBaseModules.map (·.map encodeCanonical),t.otherChildHistory.map (fun (ns,ms) => (ns,ms.map encodeCanonical))⟩
+    binds,t.oldBaseModules.map (·.map encodeCanonical),t.otherChildHistory.map (fun (ns,ms) => (ns,ms.map encodeCanonical)),
+    t.currentOnLiveBases⟩
   atomicText (ctx / "context.json") (Lean.toJson wire).compress
 
 private def promptSection (prompt heading : String) : Option String := do
@@ -177,6 +191,7 @@ where
     let home ← loadFrozen dir c.home
     let t : NodeTask := {
       delta := ⟨spec.modName,home.spec.units,spec⟩, baseModules := bases, oldBaseModules, otherChildHistory
+      currentOnLiveBases := c.currentOnLiveBases
       allowedAncestors := c.allowed.map (·.map qualified)
       maybeLift := lifts.head?, otherLifts := lifts.drop 1, transports := binds}
     return {task := t,home}

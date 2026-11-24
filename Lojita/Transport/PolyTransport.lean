@@ -154,12 +154,18 @@ def checkPolyTransport (oldImpl candImpl specMod : LeanMod) (candSnap : Snapshot
   if renderLeanMod candSnap.mod != renderLeanMod tested then return (errors.push .wrongNewMod).toList
   let before := endpointNames oldImpl
   let after := endpointNames tested
+  let sameMod := oldImpl.modName == candImpl.modName
+  let shadowed (q : QName) : Bool := sameMod || after.contains q
+  let mentionsOld (ns : NameSet) (q : QName) : Bool :=
+    if shadowed q then ns.contains (oldSnapshotPrefix q).toLeanName
+    else ns.contains q.toLeanName || ns.contains (oldSnapshotPrefix q).toLeanName
   for s in ts.squares do
     if s.oldUnits.isEmpty || s.newUnits.isEmpty then errors := errors.push (.emptySquareEndpoints s.squareUnit)
     let info := publicSquare candSnap s.squareUnit
     let (oldRefs, otherRefs) := s.requiredRefs.partition before.contains
-    let refs := info.map (fun c => typeMentions candSnap c.type (s.newUnits ++ otherRefs) (s.oldUnits ++ oldRefs))
-    let mentionsOld := fun (ns : NameSet) (q : QName) => ns.contains q.toLeanName || ns.contains (oldSnapshotPrefix q).toLeanName
+    let (shadowedOld, unshadowedOld) := (s.oldUnits ++ oldRefs).partition shadowed
+    let refs := info.map (fun c =>
+      typeMentions candSnap c.type (s.newUnits ++ otherRefs ++ shadowedOld.map oldSnapshotPrefix) unshadowedOld)
     for q in s.oldUnits do
       unless before.contains q && refs.all (mentionsOld · q) do errors := errors.push (.missingOldEndpoint q)
     for q in s.newUnits do

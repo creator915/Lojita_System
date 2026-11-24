@@ -8,9 +8,9 @@ from pathlib import Path
 import re
 
 
-RUN = Path("/root/Documents/Codex/handoffs/CodeTransport-730010e3/worktrees/"
-           "v9-pure-lean4/tmp/runs/gron-v9-posix")
-FIXTURE = Path(__file__).resolve().parents[1] / "Test/Concurrent/gron_t0_t3_fixture.json"
+ROOT = Path(__file__).resolve().parents[1]
+RUN = ROOT / "tmp/runs/gron-v9-posix"
+FIXTURE = ROOT / "Test/Concurrent/gron_t0_t3_fixture.json"
 TIPS = {
     "T0": "34d4cbdbeb94c5ace6a7d7b59fcd9e0b9fac4eee6fd0d78d1a8df05c22f3fb6a",
     "T1": "f5bd513cc00039f46e9430453463c6a4b4a806ea4967175feaad77409836751b",

@@ -13,7 +13,7 @@ suite=.lake/build/bin/test-concurrent-dialectica
 "$suite" faults "$scratch"
 "$suite" stress "$scratch"
 
-serial=/root/Documents/Codex/handoffs/CodeTransport-730010e3/worktrees/v9-pure-lean4/tmp/runs/gron-v9-posix
+serial="tmp/runs/gron-v9-posix"
 if [[ -f "$serial/store/refs/trees/T3" ]]; then
   python3 scripts/extract_trace_fixture.py --check
 fi
