@@ -12,8 +12,6 @@ structure SessionConfig where
   reference : RefSpec
   backend : Backend
   requireBuild : Bool := true
-  maxSessionTurns : Option Nat := none
-  maxNodePolls : Option Nat := none
 
 inductive ActionResult where
   | accepted (outcome : String)
@@ -23,13 +21,13 @@ inductive ActionResult where
 
 def runNode (cfg : SessionConfig) (dir : FilePath) (task : NodeTask) (home : Frozen) : IO (Verdict × Frozen) := do
   let active ← IO.mkRef ({} : Std.HashSet String)
-  let propose : Proposer := fun req => do
+  let propose (stopping : BaseIO Bool) : Proposer := fun req => do
     let owner := toString req.task.delta.child
     let ctx := dir / "ai" / owner
     writeContext ctx req
     if let some cert := req.diagnostic then logNarrowing (cfg.workspace / "narrowing-events.jsonl") "node" cert
     active.modify (·.insert owner)
-    let reply ← cfg.backend.propose ⟨owner,ctx,nodePrompt req,req.diagnostic.isSome,some req⟩
+    let reply ← cfg.backend.propose ⟨owner,ctx,nodePrompt req,req.diagnostic.isSome,some req,stopping⟩
     let drafts ← loadDrafts ctx
     return (resolveNodeReply reply drafts).toOption.getD reply
   let accept : AcceptNode := fun t semantic => do
@@ -38,14 +36,20 @@ def runNode (cfg : SessionConfig) (dir : FilePath) (task : NodeTask) (home : Fro
     active.modify (·.erase owner)
   try
     IO.FS.createDirAll (dir / "ai")
-    withNodeEnvIO propose (fun env => do
+    withNodeEnvIO (propose (pure false)) (fun env => do
       let v := thawHome home
       let start ← Lojita.Ownership.evalProcIO env (nodeAgent v.1) v.2
       let (some verdict, stopped) ← Lojita.Ownership.WorkerIO.awaitIO (← start task)
         | fail "node stopped without a verdict"
-      return (verdict, freezeHome stopped.1 stopped.2)) accept
+      return (verdict, freezeHome stopped.1 stopped.2)) accept (cancelOwner := fun owner => do
+        cfg.backend.cancel owner
+        active.modify (·.erase owner)) (childProposer := propose)
   finally
-    for owner in ← active.get do cfg.backend.retire owner
+    let mut cleanup := Except.ok (ε := IO.Error) ()
+    for owner in ← active.get do
+      let result ← (try cfg.backend.cancel owner finally cfg.backend.retire owner).toBaseIO
+      if cleanup.isOk then cleanup := result
+    EIO.ofExcept cleanup
 
 def driveTree (cfg : SessionConfig) (name why src : String) (bases : List String)
     (lifting transport : Option String) (replaces : List String := []) : IO String := withWorkspaceLock cfg.workspace do
@@ -103,14 +107,11 @@ private def sessionLoop (cfg : SessionConfig) : IO String := do
   let some (.list saved) := SExpr.parseSExpr (← IO.FS.readFile file) | fail "corrupt session memory"
   let mut memory := (← IO.ofExcept (stringList saved)).toArray
   let mut diagnostic := ""
-  let mut count := 0
   let owner := "SESSION_ROOT"
   let ctx := ws / "ai" / owner
   IO.FS.createDirAll ctx
   try
     repeat
-      if cfg.maxSessionTurns.any (count ≥ ·) then fail s!"session turn limit: {diagnostic}"
-      count := count + 1
       let summaries ← withWorkspaceLock ws do
         let retired ← retiredNames ws
         return (← sealedViews ws).map fun view =>
@@ -120,7 +121,7 @@ private def sessionLoop (cfg : SessionConfig) : IO String := do
                 s!"{m.modName}: " ++ String.intercalate ", " ((publicNames m).map toString))
           summary ++ view.stale.elim "" (fun e => s!"\n[STATUS: STALE AGAINST UPDATED ANCESTOR — RE-DRIVE THIS TREE]\n{e}")
       let prompt := sessionPrompt cfg.goal cfg.reference summaries memory.toList diagnostic
-      let reply ← cfg.backend.propose ⟨owner,ctx,prompt,!diagnostic.isEmpty,none⟩
+      let reply ← cfg.backend.propose {owner, ctxDir := ctx, prompt, retry := !diagnostic.isEmpty}
       let drafts ← loadDrafts ctx
       let result ← match parseSessionAction reply drafts with
         | .error e => pure (.rejected e)

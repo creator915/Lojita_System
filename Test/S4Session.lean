@@ -1,4 +1,5 @@
 import Lojita.Session.Runner
+import Std.Async.System
 
 namespace Test.S4
 open System Lojita.Session Lojita.Kernel Lojita.Store Lojita.Transport Lojita.Harness
@@ -124,7 +125,7 @@ def app : CliApp [.stdioCap] := do
   let counts ← IO.mkRef ({} : Std.HashMap (Nat × String) Nat)
   let innocent ← IO.mkRef ""
   let cfg : SessionConfig := ⟨repo,ws,"Build the observed Markdown dialect",ref,
-    ScriptedBackend (fun _ => fail "unexpected proposal"),true,some 12,some 40⟩
+    ScriptedBackend (fun _ => fail "unexpected proposal"),true⟩
   let ai := ScriptedBackend fun req => do
     let i ← turn.get
     if let some node := req.node then
@@ -382,7 +383,7 @@ def bundle : CountermodelBundle := .charCountermodel claim phantomCharModel (by
 private def inPlaceTowerRecovery (ws repo : FilePath) : IO Unit := do
   initWorkspace ws
   let cfg : SessionConfig := ⟨repo,ws,"Repair the three-layer tower",⟨.local "/bin/true",[],5000⟩,
-    ScriptedBackend (fun _ => fail "unexpected proposal"),false,some 4,none⟩
+    ScriptedBackend (fun _ => fail "unexpected proposal"),false⟩
   let root := fun (n : String) => "Gen." ++ n ++ ".R"
   let base := root "T0"
   let escape0 := base ++ ".Escape"
@@ -580,7 +581,7 @@ private def promptExamples (dir ws repo : FilePath) : IO Unit := do
     "label-spec","route-spec","dispatch","dispatch-plan","label-impl","route-impl"]
   ensure (known.all ds.contains && ds.size == known.length) "every teaching block needs an executable example check"
   let read := fun n => ds[n]!.trimAscii.toString
-  let actions := #[drive "Count" (read "measure-spec"),drive "Glyph" (read "char-spec"),read "observe-action",
+  let actions := #[read "observe-action",drive "Count" (read "measure-spec"),drive "Glyph" (read "char-spec"),
     read "drive-base",read "drive-upper",read "build",read "replay-action",read "done"]
   let turn ← IO.mkRef 0
   let ai := ScriptedBackend fun req => do
@@ -602,7 +603,8 @@ private def promptExamples (dir ws repo : FilePath) : IO Unit := do
       | _ => fail s!"unexpected teaching node {req.owner}"
     let i ← turn.get
     let some act := actions[i]? | fail "example actions exhausted"
-    if i == 2 then ensure (req.prompt.contains "countermodel") "countermodel did not reach root"
+    if i == 1 then ensure (req.prompt.contains "32 samples agree") "pre-spec fuzz observations did not reach root"
+    if i == 3 then ensure (req.prompt.contains "countermodel") "countermodel did not reach root"
     turn.set (i+1)
     return act
   let reference := r#"if [ "${LOJITA_TAG+x}" = x ]; then
@@ -611,7 +613,11 @@ private def promptExamples (dir ws repo : FilePath) : IO Unit := do
 fi
 exec /bin/cat"#
   let ref : RefSpec := ⟨.local "/bin/sh",["-c",reference],5000⟩
-  let cfg : SessionConfig := ⟨repo,ws,"Exercise the teaching examples",ref,ai,true,some 10,some 20⟩
+  let cfg : SessionConfig := ⟨repo,ws,"Exercise the teaching examples",ref,ai,true⟩
+  -- This reference passes the old "abc\n" probe but deletes byte 105 from the fuzz corpus.
+  let divergent ← runScript repo ws {ref with arguments := ["-c", "exec tr -d i"]} (read "observe")
+  ensure (divergent.exitCode == 1 && divergent.usedRef && !divergent.usedCand &&
+    divergent.stderr.endsWith " -> [105]") s!"observe missed or failed to shrink the mismatch: {divergent.stderr}"
   discard <| runSession cfg
   for tag in [none,some "",some "label:"] do
     let result ← IO.Process.output {cmd := (ws / "bin/candidate").toString, env := #[("LOJITA_TAG",tag)]} (some "sample\n")
@@ -639,7 +645,7 @@ private def threadLifecycle (dir repo : FilePath) : IO Unit := do
   let cfg : CodexConfig := {
     repo, workspace := dir, refFile := dir / "ref.sexp"
     rolloutDir := some (dir / "sessions")}
-  let req : TurnRequest := ⟨"SESSION_ROOT",dir / "ctx","proposal",false,none⟩
+  let req : TurnRequest := {owner := "SESSION_ROOT", ctxDir := dir / "ctx", prompt := "proposal", retry := false}
   let b ← CodexCLIBackend cfg
   let scratch ← b.propose req
   let main ← IO.FS.readFile (dir / "threads/SESSION_ROOT.id")
@@ -664,16 +670,77 @@ private def threadLifecycle (dir repo : FilePath) : IO Unit := do
   let task : NodeTask := {delta := ⟨spec.modName,[],spec⟩}
   let owner := toString spec.modName
   let node : AIRequest := ⟨task,spec,[],none,none⟩
-  discard <| restarted.propose ⟨owner,dir / "node-ctx","proposal node",false,some node⟩
+  discard <| restarted.propose {owner, ctxDir := dir / "node-ctx", prompt := "proposal node", retry := false, node := some node}
   restarted.accept owner "node semantic"
   ensure ((← IO.FS.readFile (dir / "threads" / (owner ++ ".id"))) != main) "node reused the session thread"
+
+private def concurrentCancellation (dir repo : FilePath) : IO Unit := do
+  initWorkspace dir
+  let root := "Gen.T0.CancelRoot"
+  let bad := root ++ ".FastBad"
+  let kept := root ++ ".SlowKept"
+  let dropped := root ++ ".VerySlowDropped"
+  let spec ← object root "axiom value : Nat"
+  let innocent ← object kept "axiom value : Nat"
+  let obsolete ← object dropped "axiom value : Nat"
+  let impossible ← object bad "def zero : Nat := 0\naxiom impossible : zero = 1"
+  let first ← object root s!"def value := {kept}.value + {dropped}.value" [kept,dropped,bad]
+  let repaired ← object root s!"def value := {kept}.value" [kept]
+  let removals : List Proarrow := [⟨.ext (q bad), .bot⟩, ⟨.ext (q dropped), .bot⟩]
+  let evidence ← object "CancelEvidence" s!"theorem witness : False := Nat.zero_ne_one {bad}.impossible" [bad]
+  let refute := envelope "submission" [field "kind" [.sym "contradiction"], field "refute" [.str (renderLeanMod evidence)]]
+  let blank := fun (m : LeanMod) => LeanMod.mk m.modName [] [] []
+  let leaf := fun (name : String) => do
+    let m ← object name "def value : Nat := 42"
+    return plan (blank m) m
+  let step := fun (ms : Nat) (reply : String) => Lean.Json.mkObj [("sleepMs", Lean.toJson ms), ("reply", Lean.toJson reply)]
+  let script := Lean.Json.mkObj [
+    (root, .arr #[step 0 (plan (blank first) first [innocent,obsolete,impossible]),
+      step 0 (plan first repaired [innocent] removals)]),
+    (kept, .arr #[step 250 (← leaf kept)]),
+    (dropped, .arr #[(step 15000 (← leaf dropped)).setObjVal! "pidFile" "dropped.pid"]),
+    (bad, .arr #[step 10 refute])]
+  let path := dir / "cancel-plan.json"
+  atomicText path script.compress
+  let backend ← CodexCLIBackend {repo, workspace := dir, refFile := dir / "ref.sexp", rolloutDir := dir / "sessions"}
+  let cfg : SessionConfig := ⟨repo,dir,"Cancel the obsolete child",⟨.local "/bin/true",[],5000⟩,backend,false⟩
+  let previous ← IO.getEnv "LOJITA_FAKE_CODEX_PLAN"
+  Std.Async.System.setEnvVar "LOJITA_FAKE_CODEX_PLAN" path.toString
+  let start ← IO.monoMsNow
+  let result ← try driveTree cfg "T0" "repair while siblings run" (renderLeanMod spec) [] none none
+    finally
+      match previous with
+      | some p => Std.Async.System.setEnvVar "LOJITA_FAKE_CODEX_PLAN" p
+      | none => Std.Async.System.unsetEnvVar "LOJITA_FAKE_CODEX_PLAN"
+  let ms := (← IO.monoMsNow) - start
+  ensure (result == "ok" && ms < 4000) s!"cancellation tree returned {result} after {ms} ms"
+  let calls := (← IO.FS.readFile (dir / "calls")).splitOn "\n"
+  let fork := fun (owner : String) => do
+    let [line] := calls.filter (·.startsWith (owner ++ " propose fork ")) | fail s!"expected one {owner} fork: {calls}"
+    return (line.splitOn " ").getLast!
+  let keepId ← fork kept
+  let dropId ← fork dropped
+  let rootId ← fork root
+  ensure (calls.contains s!"{kept} replied fork {keepId}" &&
+    calls.idxOf s!"{root} replied resume {rootId}" < calls.idxOf s!"{kept} replied fork {keepId}")
+    "SlowKept did not survive the parent's repair in flight"
+  let some pid := (← IO.FS.readFile (dir / "dropped.pid")).toNat? | fail "missing dropped subprocess PID"
+  let alive ← IO.Process.output {cmd := "kill", args := #["-0",toString pid]}
+  let main ← IO.FS.readFile (dir / "threads" / (dropped ++ ".id"))
+  ensure (alive.exitCode != 0 && !calls.contains s!"{dropped} replied fork {dropId}") "dropped subprocess survived"
+  ensure (main != dropId && (← (dir / "sessions" / (main ++ ".jsonl")).pathExists)) "dropped owner's durable thread lost"
+  ensure (!(← (dir / "sessions" / (dropId ++ ".jsonl")).pathExists) &&
+    !(← (dir / "trees/T0/ai" / dropped / "drafts").pathExists)) "dropped scratch thread or drafts survived"
+  IO.println s!"   Concurrent Codex tree sealed in {ms} ms, kept one fork and reaped dropped PID {pid}"
 
 def run (args : List String) : IO Unit := do
   let repo ← IO.FS.realPath "."
   preload (repo / ".lake/build/lib/lean")
   protocols
   match args with
-  | ["threads",dir] => threadLifecycle dir repo
+  | ["threads",dir] => do
+    threadLifecycle dir repo
+    concurrentCancellation dir repo
   | ["recovery",ws] => inPlaceTowerRecovery ws repo
   | ["tower",ws] => do
     tower ws repo

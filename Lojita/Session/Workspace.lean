@@ -7,10 +7,14 @@ open System Lojita.Store Lojita.Harness Lojita.Kernel Lojita.Transport
 
 def fail {α : Type} (msg : String) : IO α := throw (IO.userError msg)
 
+private initialize nextTempSeq : IO.Ref Nat ← IO.mkRef 0
+private initialize narrowLogMutex : Std.Mutex Unit ← Std.Mutex.new ()
+
 def atomicText (path : FilePath) (s : String) : IO Unit := do
   let parent := path.parent.getD "."
   IO.FS.createDirAll parent
-  let tmp := parent / s!".write-{← IO.Process.getPID}-{← IO.monoNanosNow}"
+  let seq ← nextTempSeq.modifyGet fun n => (n, n + 1)
+  let tmp := parent / s!".write-{← IO.Process.getPID}-{← IO.monoNanosNow}-{seq}"
   try
     IO.FS.writeFile tmp s
     IO.FS.rename tmp path
@@ -29,9 +33,10 @@ def initWorkspace (ws : FilePath) : IO Unit := do
   for p in ["store/objects","store/refs/trees","store/refs/partial","trees","generated","threads","bin"] do
     IO.FS.createDirAll (ws / p)
   if !(← (ws / "session-memory.sexp").pathExists) then atomicText (ws / "session-memory.sexp") "()"
-  discard <| IO.FS.Handle.mk (ws / "narrowing-events.jsonl") .append
+  narrowLogMutex.atomically do
+    discard <| IO.FS.Handle.mk (ws / "narrowing-events.jsonl") .append
 
-def logNarrowing (path : FilePath) (source : String) (cert : NarrowingCertificate) : IO Unit := do
+def logNarrowing (path : FilePath) (source : String) (cert : NarrowingCertificate) : IO Unit := narrowLogMutex.atomically do
   IO.FS.createDirAll (path.parent.getD ".")
   let h ← IO.FS.Handle.mk path .append
   let event := Lean.Json.mkObj [("source", Lean.toJson source),("tsMs", Lean.toJson (← IO.monoMsNow)),

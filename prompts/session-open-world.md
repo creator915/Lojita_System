@@ -25,7 +25,7 @@
 | `read_context` | 发 `{}` 或 `{"module":"list"}` 列出公开上下文、`Lojita.Session.SessionEnv` 和封存模块；用 `module` 精确名字及可选的 `start_line`、`end_line` 读取源码，行号从 1 开始且包含两端。先读 SessionEnv 中的探针签名和 World 中的能力成员。 |
 | `write_draft`、`patch_draft` | `name, content` 保存完整块；`name, old_text, new_text` 替换唯一的匹配。 |
 | `read_draft`、`list_drafts` | 按名字读文本或指定行区间，或用 `{}` 列名字。草稿随本次 scratch 重试保留，接受后回收。 |
-| `run_lean_script` | `script_block:"@probe"` 运行真实探针，检查 exitCode、stdout、stderr、usedRef 和 usedCand。旧客户端的 `run_agda_script` 接收同一 Lean 源码。 |
+| `run_lean_script` | `script_block:"@probe"` 运行真实探针。SessionEnv 已导入 `LojitaCtx.FuzzGen`，可在立规约前生成样本、对拍纯规格与 ref、收缩反例。检查 exitCode、stdout、stderr、usedRef 和 usedCand。旧客户端的 `run_agda_script` 接收同一 Lean 源码。 |
 | `check_spec` | 用 `spec_block:"@spec", base_trees:[]` 预检类型及祖先闭包。可带 `lift_src`、`transport_src` 描述符及同层替换列表 `replaces`。 |
 | `check_entry` | 封存后传 `entry:"Gen.<Epoch>.<Module>.app"` 和 `mode:"cli"` 或 `"reactive"` 检查入口类型。 |
 
@@ -33,29 +33,53 @@ Node 在其独立 MCP 调用 `check_lean` 检查完整实现（`allow_axioms:tru
 
 SESSION_ROOT 负责边界两侧的往返。外侧用带类型的 `Ownership.Prog SessionΨ` 观测 ref 的可见行为。内侧将这些行为写成 `namespace Gen.<Epoch>.<Path> ... end Gen.<Epoch>.<Path>` 中的规约。规约限定整棵树的外部行为。以 `Type` 中的归纳或结构载体、最少投影、`axiom` 操作和 `Prop` 中的 `∀` 定律描述接口。规约只针对行为，不针对实现；复制，不复用。Node 仅获当前对象、孩子接口与准许的闭合祖先。
 
-## 先测量，再立规约
+## 先测量与 Fuzz 预对拍，再立规约（Spec-vs-Ref 预演铁律）
+
+**阶段一（立规约前 · 秒级「纯规格预言机 vs `ref`」Fuzz 预对拍）。** 提交语义层 `drive-tree`、唤醒子节点做重型证明之前，SESSION_ROOT 必须先在 `run_lean_script` 里写出可执行的纯规格草稿。比如用分类谓词描述词法字符表，用纯函数预测数值和字符串格式化、路径错误的输出与状态码，用二分搜索定位长度或超时阈值，并复测阈值两侧。`Lojita.Session.SessionEnv` 已内置导入 `LojitaCtx.FuzzGen`。以 `mkSeed` 固定种子，组合 `genBytes`、`genList`、`genChoose`，用 `sampleMany` 批量取样。对每个输入实际运行 `"ref"`，比较预言机给出的观察；用 `shrinkBytes` 或 `shrinkList` 生成更小的输入，复测后用 `minimize` 保留仍有分歧的反例。改一行猜错的规格只需 2～3 秒即可再测。**唯有可执行规格模型在 Fuzz 样本集与边界二分上与 `"ref"` 100% 吻合后，才准将其锁定进 `specSrc` 下发 `drive-tree`！**
+
+**阶段二（`build-exe` 后 · 终审差分回放验签）。** 阶段一已用 ref 校准规格，封闭树再用定理证明 cand 满足该规格。用同样的种子、夹具和边界轨迹对称回放 `"ref"` 与 `"cand"`，核验宿主胶水层，取得本次构建的回放收据后再 `finish`。若发现宿主边界偏差，沿同层横轴 Transport 原位重驱，或用 `(replaces ...)` 加 `(keep ...)` 保留已验证子包。严禁为此叠出 T4、T5、T6。
 
 探针唯一入口是 `probe : Lojita.Session.SessionEnv.Probe`。`batch` 经 fs-relay 运行别名，可带文件夹具；`terminal` 经 term-relay 发送按键、关闭输入、改变窗口并读取观察。更复杂的轨迹可直接组合 `ptySpec`、`fsSpec`、`netSpec`、`gitSpec`、`webSpec`。解释器把 `"ref"` 映射到 reference.sexp 指定的本地程序或 Docker 镜像，构建后 `"cand"` 映射到封存的可执行文件。比较原始字节、错误流、状态码和任务涉及的副作用。用 `run_lean_script` 预演，或提交如下动作。
 
 `SessionEnv.stdio` 以 `pipesNoTTY` 拓扑运行纯管道探针。先发送 `writeStdin`，用 `sleepMs` 与 `drainRaw` 观察关闭输入前的输出和退出状态，再发送 `closeStdin`。在相同轨迹上比较 ref 与 cand。`stdioCap` 管理 fd 0/1/2；对象可用 `readStdinByteW`、`LojitaCtx.Cli.scanStdinFuelW` 或 `LojitaCtx.Cli.streamScannerApp` 逐步消费输入。`ttyCap` 管理独立的 `/dev/tty`；`LojitaCtx.Cli.tuiReactiveApp` 使用 `setTTYRawW` 与 `writeTTYW` 处理按键和绘制界面。用 `Terminal.stepANSI` 投影终端字节，再比较可见内容。
 
+下面先校准未设置 `LOJITA_TAG` 时的字节流规格。随机原始字节覆盖非 UTF-8 输入，另一组样本从行片段构造空行、制表符及换行组合。失败时对后缀和单步收缩候选重跑 ref，纯函数 `minimize` 只选取已确认失败的输入。
+
 ```lean observe
 import Lojita.Session.SessionEnv
+import LojitaCtx.FuzzGen
 namespace Gen.Probes.Observe
-open Lojita.Session.SessionEnv LojitaCtx.Terminal
+open Lojita.Session.SessionEnv LojitaCtx.Terminal LojitaCtx.FuzzGen
+def oracle (input : Bytes) : Nat × Bytes × Bytes := (0, input, [])
+def agrees (input : Bytes) : Script Bool := do
+  let o ← batch "ref" [] input
+  return !o.timedOut && o.exitStatus.isSome &&
+    (o.exitStatus.getD 1, o.stdoutOut, o.stderrOut) == oracle input
+def counterexample (input : Bytes) : Script Bytes := do
+  let suffixes := (List.range (input.length + 1)).map fun n => input.drop n
+  let candidates := (suffixes ++ shrinkBytes input).eraseDups
+  let failed ← candidates.filterM fun bs => return !(← agrees bs)
+  return minimize (input.length + 1) shrinkBytes (fun bs => !failed.contains bs) input
 def probe : Probe := do
-  let o ← batch "ref" [] (bytes "abc\n")
-  return {exitCode := o.exitStatus.getD 1, stdout := text o.stdoutOut, stderr := text o.stderrOut}
+  let raw := sampleMany 16 (genBytes 24) (mkSeed 17)
+  let line := genMap (fun parts => bytes (String.join parts))
+    (genList 5 (genChoose "" ["word", "\t", "\n", "\r\n", "尾"]))
+  let samples := raw ++ sampleMany 16 line (mkSeed 41)
+  for input in samples do
+    unless ← agrees input do
+      let small ← counterexample input
+      return {exitCode := 1, stderr := s!"Spec-vs-Ref mismatch: {input} -> {small}"}
+  return {exitCode := 0, stdout := s!"Spec-vs-Ref: {samples.length} samples agree"}
 end Gen.Probes.Observe
 ```
 
 ```sexp observe-action
-(session-action (kind run-script) (why "记录短行的输出和退出状态") (source @observe))
+(session-action (kind run-script) (why "立规约前逐样本核对纯规格与 ref 的两条输出流和退出状态") (source @observe))
 ```
 
 ## 从有限的 Doc 蓝图到字节流 CLI
 
-T0 把标签抽象成一个 Bool，整个程序的观察是输出流选择。先提交根规约。封闭根的计划会导入 `Gen.T0.Doc.Label` 并给它 subspec，见节点手册的 `blueprint-plan`。SESSION_ROOT 可以从封存结果读到这条边。
+T0 把标签抽象成一个 Bool，整个程序的观察是输出流选择。上例覆盖未设置标签的分支；还须在设置空标签和非空标签的夹具下对拍 stderr 前缀与原始输入，所有分支吻合后再提交根规约。封闭根的计划会导入 `Gen.T0.Doc.Label` 并给它 subspec，见节点手册的 `blueprint-plan`。SESSION_ROOT 可以从封存结果读到这条边。
 
 ```lean blueprint-spec
 namespace Gen.T0.Doc

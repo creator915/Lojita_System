@@ -422,7 +422,7 @@ def nodeAgent (sh : HomeShape) : Proc NodeΨ (Home (HomeCtx sh)) AgentS := start
 abbrev Proposer := AIRequest → IO String
 abbrev AcceptNode := NodeTask → String → IO Unit
 
-private def handleJob (propose : AIRequest → IO (Option String)) (accept : AcceptNode)
+private def handleJob (propose : AIRequest → IO (Option String)) (accept : NodeTask → String → IO Bool)
     (record : ChildCheck → IO Unit) (j : Job) : IO j.Result :=
   match j with
   | .propose req => propose req
@@ -433,14 +433,12 @@ private def handleJob (propose : AIRequest → IO (Option String)) (accept : Acc
   | .seal s c => do
     let result ← catchError (finish s c)
     if let .ok _ := result then
-      accept s.task (c.plan.why ++ "\n" ++ renderLeanMod c.code)
-      record .sealed
+      if ← accept s.task (c.plan.why ++ "\n" ++ renderLeanMod c.code) then record .sealed
     return result
   | .witness t sub => do
     let result ← catchError (evidence t sub)
     if let .ok (v, units) := result then
-      accept t (reprStr v)
-      record (.refuted units)
+      if ← accept t (reprStr v) then record (.refuted units)
     return result.map Prod.fst
   | .childCheck info => do
     if ← info.checked.isResolved then IO.wait info.checked.result? else return none
@@ -451,13 +449,15 @@ where
 
 /-- Child workers install their owner's cancellation hook before publishing the channel. -/
 def withNodeEnvIO {α : Type} (ai : Proposer) (useEnv : EnvIO NodeΨ → IO α)
-    (accept : AcceptNode := fun _ _ => pure ()) (cancelOwner : String → IO Unit := fun _ => pure ()) : IO α := do
+    (accept : AcceptNode := fun _ _ => pure ()) (cancelOwner : String → IO Unit := fun _ => pure ())
+    (childProposer : BaseIO Bool → Proposer := fun _ => ai) : IO α := do
   let child ← IO.mkRef (none : Option (HandlerIO childSpec))
   let supplyIO : HandlerIO supply := fun v _ => pure (pure (v.2, ()))
   let childIO : HandlerIO childSpec := fun i ms => do
     let some start ← child.get | throw (IO.userError "missing child handler")
     start i ms
-  let env (propose : AIRequest → IO (Option String)) (record : ChildCheck → IO Unit) : EnvIO NodeΨ :=
+  let env (propose : AIRequest → IO (Option String)) (accept : NodeTask → String → IO Bool)
+      (record : ChildCheck → IO Unit) : EnvIO NodeΨ :=
     EnvIO.cons (spec := service) (fun j _ => pure (do return (← handleJob propose accept record j, ())))
       (EnvIO.cons supplyIO (EnvIO.cons childIO EnvIO.nil))
   child.set (some (fun i ms => do
@@ -467,14 +467,21 @@ def withNodeEnvIO {α : Type} (ai : Proposer) (useEnv : EnvIO NodeΨ → IO α)
       -- boundary with the channels it still owns, even when a replan was interrupted.
       let propose := fun req => do
         if ← stopping.get then return none
-        let result ← (ai req).toBaseIO
+        let result ← (childProposer stopping.get req).toBaseIO
         if ← stopping.get then return none
         return some (← EIO.ofExcept result)
-      let worker ← (← evalProcIO (env propose (fun check => i.checked.resolve check)) (startAgent i.shape i.salvaged) ms) t
+      let acceptChild := fun task semantic => do
+        if ← stopping.get then return false
+        try
+          accept task semantic
+          return true
+        catch e => if ← stopping.get then return false else throw e
+      let worker ← (← evalProcIO (env propose acceptChild (fun check => i.checked.resolve check)) (startAgent i.shape i.salvaged) ms) t
       worker.cancel.onCancel do
         stopping.set true
         cancelOwner (toString t.delta.child)
       return worker))
-  try useEnv (env (fun req => some <$> ai req) (fun _ => pure ())) finally child.set none
+  try useEnv (env (fun req => some <$> ai req) (fun t msg => accept t msg *> pure true) (fun _ => pure ()))
+  finally child.set none
 
 end Lojita.Harness

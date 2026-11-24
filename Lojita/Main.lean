@@ -47,7 +47,7 @@ def dispatch (args : List String) : IO UInt32 := do
       let ws ← IO.FS.realPath dir
       let path ← IO.FS.realPath refFile
       let backend ← CodexCLIBackend {repo,workspace := ws,refFile := path}
-      IO.println (← runSession ⟨repo,ws,← IO.FS.readFile goal,← readReference path,backend,true,none,none⟩)
+      IO.println (← runSession ⟨repo,ws,← IO.FS.readFile goal,← readReference path,backend,true⟩)
     | ["session-probe",ws,path,script] =>
       let r ← runScript repo ws (← readReference path) (← IO.FS.readFile script)
       (← IO.getStdout).putStr r.stdout
@@ -61,7 +61,7 @@ def dispatch (args : List String) : IO UInt32 := do
       let ws ← IO.FS.realPath dir
       initWorkspace ws
       let backend ← CodexCLIBackend {repo,workspace := ws,refFile := ws / "reference.sexp"}
-      let cfg : SessionConfig := ⟨repo,ws,"",⟨.local "",[],30000⟩,backend,false,none,none⟩
+      let cfg : SessionConfig := ⟨repo,ws,"",⟨.local "",[],30000⟩,backend,false⟩
       let outcome ← driveTree cfg epoch "standalone node" src [] none none
       IO.println outcome
       if outcome != "ok" then return 1
