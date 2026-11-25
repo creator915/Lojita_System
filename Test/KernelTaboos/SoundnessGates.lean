@@ -122,24 +122,32 @@ def testGluingQuotientAndSecurity : IO Unit := do
 
 def testNativeCliAndReactiveBinaries : IO Unit := IO.FS.withTempDir fun dir => do
   let support ← mkObject "Gen.App.Shared" "def code : Nat := 23"
-  let cli ← mkObject "Gen.App.Cli" "open LojitaCtx.World
-def app : CliApp [.clockCap, .envCap, .stdioCap, .fsCap] := do
-  let _ ← nowMonoW .here
-  let args ← getArgsW (.there .here)
-  let msg := String.intercalate \"|\" args
-  writeStdoutStrW (.there (.there .here)) (msg ++ \"\\n\")
-  writeStderrStrW (.there (.there .here)) \"cli stderr\\n\"
-  let .inr () ← writeFileW (.there (.there (.there .here))) \"payload\" (LojitaCtx.Terminal.bytes msg) | return 99
-  return Gen.App.Shared.code" ["LojitaCtx.World", "Gen.App.Shared"]
-  let react ← mkObject "Gen.App.Reactive" "open LojitaCtx.World
-def app : ReactiveApp [.clockCap] Nat where
-  init := pure 30
-  onStep _ n := pure (if n < 31 then .inl (n + 1) else .inr n)" ["LojitaCtx.World"]
+  let cli ← mkObject "Gen.App.Cli" r#"open LojitaCtx.Posix
+def app : PosixMachine CoreCaps Unit UInt32 where
+  init := ()
+  step _ :=
+    .step .clockGettime (by decide) fun _ =>
+    .step .getArgs (by decide) fun
+      | .ok args =>
+        let msg := (String.intercalate "|" (args.map (fun arg => LojitaCtx.Utf8.decodeLossy arg))).toUTF8
+        .step (.write 1 (msg ++ "\n".toUTF8)) (show Cap.fdIoCap ∈ CoreCaps from by decide) fun _ =>
+        .step (.write 2 "cli stderr\n".toUTF8) (by decide) fun _ =>
+        .step (.openat none "payload".toUTF8.data.toList {access := .writeOnly, create := true, trunc := true} 0o600) (by decide) fun
+          | .ok fd => .step (.write fd msg) (show Cap.fdIoCap ∈ CoreCaps from by decide) fun _ =>
+              .step (.close fd) (show Cap.fdIoCap ∈ CoreCaps from by decide) fun _ => .pure (.inr Gen.App.Shared.code.toUInt32)
+          | _ => .pure (.inr 99)
+      | _ => .pure (.inr 98)"#
+    ["LojitaCtx.Posix.Program", "LojitaCtx.Utf8", "Gen.App.Shared"]
+  let react ← mkObject "Gen.App.Reactive" r#"open LojitaCtx.Posix
+def app : PosixMachine CoreCaps UInt32 UInt32 where
+  init := 30
+  step n := .pure (if n < 31 then .inl (n + 1) else .inr n)
+def wrongCaps : PosixMachine [] Unit UInt32 := ⟨(), fun _ => .pure (.inr 0)⟩"# ["LojitaCtx.Posix.Program"]
   let cliBin := dir / "cli"
   let reactBin := dir / "reactive"
-  expectErrorCode "ENTRY_TYPE_MISMATCH" (compileVerifiedExe [cli, support] (q "Gen.App.Cli.app") .reactive cliBin)
-  compileVerifiedExe [cli, support] (q "Gen.App.Cli.app") .cli cliBin
-  compileVerifiedExe [react] (q "Gen.App.Reactive.app") .reactive reactBin
+  expectErrorCode "ENTRY_TYPE_MISMATCH" (compileVerifiedExe [react] (q "Gen.App.Reactive.wrongCaps") cliBin)
+  compileVerifiedExe [cli, support] (q "Gen.App.Cli.app") cliBin
+  compileVerifiedExe [react] (q "Gen.App.Reactive.app") reactBin
 
   let runDir := dir / "cli-run"
   IO.FS.createDir runDir

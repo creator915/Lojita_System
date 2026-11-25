@@ -1,0 +1,155 @@
+scope	kind	name	module	evidence	reason
+both	artifact	lcProof	Init.Prelude	compiler-proof-marker	Unsafe compiler proof marker at the three reviewed direct incoming edges, excluded from the kernel axiom allowance.
+both	extern	Array.emptyWithCapacity	Init.Prelude	standard:all:lean_mk_empty_array_with_capacity	Allocate an empty pointer array with the requested capacity. [src/include/lean/lean.h:1083]
+both	extern	Array.getInternal	Init.Prelude	standard:all:lean_array_fget	Read an element using the erased Nat/USize bounds proof. Native code trusts type-correct array and bounds. [src/include/lean/lean.h:1097]
+both	extern	Array.mk	Init.Prelude	standard:all:lean_array_mk	Pack a proper Lean list into a pointer array, preserving order. [src/runtime/object.cpp:504]
+compiler	extern	Array.pop	Init.Data.Array.Basic	standard:all:lean_array_pop	Remove the last element if present; preserve the empty array. [src/include/lean/lean.h:1181]
+both	extern	Array.push	Init.Prelude	standard:all:lean_array_push	Append an element with reference-counted copy-on-write. [src/runtime/object.cpp:2784]
+both	extern	Array.size	Init.Prelude	standard:all:lean_array_get_size	Return the number of initialized elements. [src/include/lean/lean.h:1075]
+both	extern	Array.toList	Init.Prelude	standard:all:lean_array_to_list	Copy array elements to a proper list in increasing index order. [src/runtime/object.cpp:508]
+compiler	extern	Array.uget	Init.Data.Array.Basic	standard:all:lean_array_uget	Read an element using the erased Nat/USize bounds proof. Native code trusts type-correct array and bounds. [src/include/lean/lean.h:1088]
+both	extern	ByteArray.beq	Init.Data.ByteArray.Basic	standard:all:lean_sarray_dec_eq	Compare equal-length byte arrays by their contents, including embedded zero bytes. [src/include/lean/lean.h:1288-1292]
+compiler	extern	ByteArray.copySlice	Init.Data.ByteArray.Basic	standard:all:lean_byte_array_copy_slice	Clamp the source span and destination offset, grow the owned buffer and copy the bytes. [src/runtime/object.cpp:2665]
+both	extern	ByteArray.data	Init.Prelude	standard:all:lean_byte_array_data	Box each packed byte into an Array UInt8, preserving length and order. [src/runtime/object.cpp:2643]
+both	extern	ByteArray.emptyWithCapacity	Init.Prelude	standard:all:lean_mk_empty_byte_array	Allocate an empty packed-byte buffer with reserved capacity. [src/include/lean/lean.h:1302]
+both	extern	ByteArray.get	Init.Data.ByteArray.Basic	standard:all:lean_byte_array_fget	Read a packed byte using the erased explicit in-bounds proof. [src/include/lean/lean.h:1323]
+both	extern	ByteArray.mk	Init.Prelude	standard:all:lean_byte_array_mk	Pack an Array UInt8 as contiguous bytes; type and byte range are ABI invariants. [src/runtime/object.cpp:2630]
+both	extern	ByteArray.push	Init.Prelude	standard:all:lean_byte_array_push	Append one byte, preserving shared values through copy-on-write. [src/runtime/object.cpp:2656]
+both	extern	ByteArray.size	Init.Prelude	standard:all:lean_byte_array_size	Read the logical byte length from the buffer header. [src/include/lean/lean.h:1307]
+both	extern	Char.ofNatAux	Init.Prelude	standard:all:lean_uint32_of_nat	Represent a Nat with a Unicode scalar validity proof as UInt32. [src/include/lean/lean.h:2284]
+both	extern	Int.add	Init.Data.Int.Basic	standard:all:lean_int_add	Add the two mathematical integer values, using the bignum fallback as necessary. [src/include/lean/lean.h:1961]
+both	extern	Int.decEq	Init.Data.Int.Basic	standard:all:lean_int_dec_eq	Compare values for equality and return the Boolean/decision tag. [src/include/lean/lean.h:2179]
+both	extern	Int.decLe	Init.Data.Int.Basic	standard:all:lean_int_dec_le	Compare values for non-strict order, including the equal case. [src/include/lean/lean.h:2181]
+both	extern	Int.decLt	Init.Data.Int.Basic	standard:all:lean_int_dec_lt	Compare values for strict order. [src/include/lean/lean.h:2183]
+both	extern	Int.decNonneg	Init.Data.Int.Basic	standard:all:lean_int_dec_nonneg	Decide nonnegativity by the sign of the stored integer. [src/include/lean/lean.h:2185]
+both	extern	Int.ediv	Init.Data.Int.DivMod.Basic	standard:all:lean_int_ediv	Euclidean quotient with the signs accounted for; return zero for zero divisor. [src/include/lean/lean.h:2066]
+both	extern	Int.emod	Init.Data.Int.DivMod.Basic	standard:all:lean_int_emod	Euclidean remainder; return the dividend for zero divisor. [src/include/lean/lean.h:2100]
+both	extern	Int.mul	Init.Data.Int.Basic	standard:all:lean_int_mul	Multiply the mathematical values, using the bignum fallback as necessary. [src/include/lean/lean.h:1977]
+both	extern	Int.natAbs	Init.Data.Int.Basic	standard:all:lean_nat_abs	Return the unsigned magnitude of a signed integer. [src/include/lean/lean.h:2170]
+both	extern	Int.neg	Init.Data.Int.Basic	standard:all:lean_int_neg	Negate a signed integer, including boxed large integers. [src/include/lean/lean.h:1946]
+both	extern	Int.negSucc	Init.Data.Int.Basic	standard:all:lean_int_neg_succ_of_nat	Represent the constructor value -(n+1) using the native signed-integer ABI. [src/include/lean/lean.h:1954]
+both	extern	Int.ofNat	Init.Data.Int.Basic	standard:all:lean_nat_to_int	Inject a nonnegative Nat into the signed integer representation. [src/include/lean/lean.h:1934]
+both	extern	Int.sub	Init.Data.Int.Basic	standard:all:lean_int_sub	Subtract signed mathematical integers. [src/include/lean/lean.h:1969]
+both	extern	Nat.add	Init.Prelude	standard:all:lean_nat_add	Add the two mathematical integer values, using the bignum fallback as necessary. [src/include/lean/lean.h:1713]
+both	extern	Nat.beq	Init.Prelude	standard:all:lean_nat_dec_eq	Compare values for equality and return the Boolean/decision tag. [src/include/lean/lean.h:1799]
+both	extern	Nat.ble	Init.Prelude	standard:all:lean_nat_dec_le	Compare values for non-strict order, including the equal case. [src/include/lean/lean.h:1817]
+both	extern	Nat.decEq	Init.Prelude	standard:all:lean_nat_dec_eq	Compare values for equality and return the Boolean/decision tag. [src/include/lean/lean.h:1799]
+both	extern	Nat.decLe	Init.Prelude	standard:all:lean_nat_dec_le	Compare values for non-strict order, including the equal case. [src/include/lean/lean.h:1817]
+both	extern	Nat.decLt	Init.Prelude	standard:all:lean_nat_dec_lt	Compare values for strict order. [src/include/lean/lean.h:1831]
+both	extern	Nat.div	Init.Prelude	standard:all:lean_nat_div	Natural quotient, with zero result for zero divisor. [src/include/lean/lean.h:1749]
+both	extern	Nat.gcd	Init.Data.Nat.Gcd	standard:all:lean_nat_gcd	Euclidean gcd of two naturals. The equation compiler also registers the unary auxiliary. [src/runtime/object.cpp:1643]
+both	extern	Nat.gcd._unary	Init.Data.Nat.Gcd	standard:all:lean_nat_gcd	Euclidean gcd of two naturals. The equation compiler also registers the unary auxiliary. [src/runtime/object.cpp:1643]
+both	extern	Nat.land	Init.Data.Nat.Bitwise.Basic	standard:all:lean_nat_land	Bitwise intersection over nonnegative binary integers. [src/include/lean/lean.h:1835]
+both	extern	Nat.lor	Init.Data.Nat.Bitwise.Basic	standard:all:lean_nat_lor	Bitwise union over nonnegative binary integers. [src/include/lean/lean.h:1843]
+both	extern	Nat.mod	Init.Prelude	standard:all:lean_nat_mod	Natural remainder; zero divisor returns the dividend. The internal core uses the same primitive. [src/include/lean/lean.h:1776]
+both	extern	Nat.modCore	Init.Prelude	standard:all:lean_nat_mod	Natural remainder; zero divisor returns the dividend. The internal core uses the same primitive. [src/include/lean/lean.h:1776]
+both	extern	Nat.mul	Init.Prelude	standard:all:lean_nat_mul	Multiply the mathematical values, using the bignum fallback as necessary. [src/include/lean/lean.h:1733]
+both	extern	Nat.pow	Init.Prelude	standard:all:lean_nat_pow	Integer exponentiation. Enormous exponents can hit the fixed runtime diagnostic documented in the review. [src/runtime/object.cpp:1611]
+both	extern	Nat.pred	Init.Prelude	standard:all:lean_nat_pred	Saturating subtraction of one. [src/include/lean/lean.h:3712]
+both	extern	Nat.shiftRight	Init.Data.Nat.Bitwise.Basic	standard:all:lean_nat_shiftr	Unsigned right shift. The mpz exponent limit can invoke a fixed runtime diagnostic. [src/include/lean/lean.h:1868]
+both	extern	Nat.sub	Init.Prelude	standard:all:lean_nat_sub	Compute natural subtraction with saturation at zero. [src/include/lean/lean.h:1720]
+both	extern	String.Internal.append	Init.Data.String.Bootstrap	standard:all:lean_string_append	Concatenate encoded UTF-8 strings, preserving embedded NUL bytes. [src/runtime/object.cpp:2167]
+both	extern	String.Internal.foldl	Init.Data.String.Bootstrap	standard:all:lean_string_foldl	Official export iterates UTF-8 scalars left-to-right using the supplied pure string accumulator function. [src/Init/Data/String/Iterate.lean:474]
+both	extern	String.Internal.length	Init.Data.String.Bootstrap	standard:all:lean_string_length	Return the cached Unicode scalar count, not the encoded byte length. [src/include/lean/lean.h:1513]
+both	extern	String.append	Init.Data.String.Defs	standard:all:lean_string_append	Concatenate encoded UTF-8 strings, preserving embedded NUL bytes. [src/runtime/object.cpp:2167]
+both	extern	String.decEq	Init.Prelude	standard:all:lean_string_dec_eq	Compare byte lengths and UTF-8 contents of valid strings. [src/include/lean/lean.h:1558]
+both	extern	String.hash	Init.Prelude	standard:all:lean_string_hash	Hash exactly the encoded bytes with the runtime seed 11; the exact opaque hash is trusted. [src/runtime/object.cpp:2532]
+both	extern	String.ofByteArray	Init.Prelude	standard:all:lean_string_from_utf8_unchecked	Decode already valid UTF-8. The proof of validity is erased and the native constructor trusts it. [src/runtime/object.cpp:2098]
+both	extern	String.ofList	Init.Prelude	standard:all:lean_string_mk	Encode the input list of Unicode scalar values as UTF-8. [src/runtime/object.cpp:2234]
+both	extern	String.push	Init.Data.String.Bootstrap	standard:all:lean_string_push	Append one Unicode scalar to the UTF-8 buffer. [src/include/lean/lean.h:1478]
+both	extern	String.toByteArray	Init.Prelude	standard:all:lean_string_to_utf8	Copy encoded bytes while omitting the runtime trailing terminator. [src/runtime/object.cpp:2109]
+both	extern	String.utf8ByteSize	Init.Prelude	standard:all:lean_string_utf8_byte_size	Return encoded byte length, excluding the trailing terminator. [src/include/lean/lean.h:1550]
+both	extern	System.Platform.getNumBits	Init.Prelude	standard:all:lean_system_platform_nbits	Return 32 or 64 from sizeof(void*), fixed by the compilation target; no system probe. [src/runtime/platform.cpp:12]
+compiler	extern	UInt32.decLe	Init.Prelude	standard:all:lean_uint32_dec_le	Unsigned non-strict comparison. [src/include/lean/lean.h:2310]
+compiler	extern	UInt32.mod	Init.Data.UInt.Basic	standard:all:lean_uint32_mod	Unsigned remainder, returning the dividend on zero divisor. [src/include/lean/lean.h:2292]
+both	extern	UInt32.ofBitVec	Init.Prelude	standard:all:lean_uint32_of_nat_mk	Encode a width-indexed bounded Nat as a native unsigned word; consumes the boxed argument. [src/include/lean/lean.h:2286]
+compiler	extern	UInt32.ofNat	Init.Data.UInt.BasicAux	standard:all:lean_uint32_of_nat	Reduce an unbounded natural modulo the target width. [src/include/lean/lean.h:2284]
+compiler	extern	UInt32.shiftRight	Init.Data.UInt.Basic	standard:all:lean_uint32_shift_right	Logical shift with shift count reduced modulo 32. [src/include/lean/lean.h:2297]
+both	extern	UInt32.toBitVec	Init.Prelude	standard:all:lean_uint32_to_nat	Decode a native word to the erased bounded-Nat representation of BitVec. [src/include/lean/lean.h:2287]
+both	extern	UInt32.toNat	Init.Prelude	standard:all:lean_uint32_to_nat	Return the full nonnegative value of the native word. [src/include/lean/lean.h:2287]
+compiler	extern	UInt32.toUInt8	Init.Data.UInt.BasicAux	standard:all:lean_uint32_to_uint8	Narrow to the least significant eight bits. [src/include/lean/lean.h:2313]
+both	extern	UInt64.ofBitVec	Init.Prelude	standard:all:lean_uint64_of_nat_mk	Encode a width-indexed bounded Nat as a native unsigned word; consumes the boxed argument. [src/include/lean/lean.h:2324]
+both	extern	UInt64.ofNatLT	Init.Prelude	standard:all:lean_uint64_of_nat	Encode an already bounded Nat in a native word; no bits of a valid input are lost. [src/include/lean/lean.h:2322]
+compiler	extern	UInt8.add	Init.Data.UInt.Basic	standard:all:lean_uint8_add	Unsigned addition modulo the width of the declared word. [src/include/lean/lean.h:2213]
+both	extern	UInt8.decEq	Init.Prelude	standard:all:lean_uint8_dec_eq	Test equality of fixed-width unsigned words. [src/include/lean/lean.h:2233]
+both	extern	UInt8.decLe	Init.Prelude	standard:all:lean_uint8_dec_le	Unsigned non-strict comparison. [src/include/lean/lean.h:2235]
+both	extern	UInt8.decLt	Init.Prelude	standard:all:lean_uint8_dec_lt	Unsigned strict comparison. [src/include/lean/lean.h:2234]
+compiler	extern	UInt8.land	Init.Data.UInt.Basic	standard:all:lean_uint8_land	Bitwise intersection of two bytes. [src/include/lean/lean.h:2218]
+compiler	extern	UInt8.lor	Init.Data.UInt.Basic	standard:all:lean_uint8_lor	Bitwise union of two bytes. [src/include/lean/lean.h:2219]
+both	extern	UInt8.ofBitVec	Init.Prelude	standard:all:lean_uint8_of_nat_mk	Encode a width-indexed bounded Nat as a native unsigned word; consumes the boxed argument. [src/include/lean/lean.h:2211]
+both	extern	UInt8.ofNat	Init.Prelude	standard:all:lean_uint8_of_nat	Reduce an unbounded natural modulo the target width. [src/include/lean/lean.h:2209]
+both	extern	UInt8.toBitVec	Init.Prelude	standard:all:lean_uint8_to_nat	Decode a native word to the erased bounded-Nat representation of BitVec. [src/include/lean/lean.h:2212]
+both	extern	UInt8.toNat	Init.Data.UInt.BasicAux	standard:all:lean_uint8_to_nat	Return the full nonnegative value of the native word. [src/include/lean/lean.h:2212]
+compiler	extern	USize.add	Init.Data.UInt.BasicAux	standard:all:lean_usize_add	Unsigned addition modulo the width of the declared word. [src/include/lean/lean.h:2371]
+compiler	extern	USize.decEq	Init.Prelude	standard:all:lean_usize_dec_eq	Test equality of fixed-width unsigned words. [src/include/lean/lean.h:2391]
+both	extern	USize.ofBitVec	Init.Prelude	standard:all:lean_usize_of_nat_mk	Encode a width-indexed bounded Nat as a native unsigned word; consumes the boxed argument. [src/include/lean/lean.h:2370]
+both	extern	USize.ofNat	Init.Data.UInt.BasicAux	standard:all:lean_usize_of_nat	Reduce an unbounded natural modulo the target width. [src/include/lean/lean.h:2368]
+both	extern	USize.ofNatLT	Init.Prelude	standard:all:lean_usize_of_nat	Encode an already bounded Nat in a native word; no bits of a valid input are lost. [src/include/lean/lean.h:2368]
+both	extern	USize.repr	Init.Data.Repr	standard:all:lean_string_of_usize	Format the unsigned word as an ASCII decimal string. [src/runtime/object.cpp:2538]
+compiler	extern	USize.sub	Init.Data.UInt.BasicAux	standard:all:lean_usize_sub	Unsigned subtraction modulo the platform word size. [src/include/lean/lean.h:2372]
+both	extern	USize.toBitVec	Init.Prelude	standard:all:lean_usize_to_nat	Decode a native word to the erased bounded-Nat representation of BitVec. [src/include/lean/lean.h:1690]
+both	extern	USize.toNat	Init.Data.UInt.BasicAux	standard:all:lean_usize_to_nat	Return the full nonnegative value of the native word. [src/include/lean/lean.h:1690]
+both	extern	getObjTagNat	Init.Prelude	standard:all:lean_obj_tag_nat	Read a constructor discriminant only through the six reviewed generated implementations; see parents table. [src/include/lean/lean.h:761]
+both	extern	mixHash	Init.Prelude	standard:all:lean_uint64_mix_hash	Combine two fixed-width hashes with the pinned deterministic mixing function. [src/include/lean/lean.h:2348]
+both	extern	panicCore	Init.Prelude	standard:all:lean_panic_fn_borrowed	Restricted exceptional diagnostic. Native code can print, inspect diagnostic settings and terminate; only approved parents. [src/runtime/object.cpp:204]
+compiler	implemented_by	Array.foldlM	Init.Data.Array.Basic	Array.foldlMUnsafe	Equivalent accumulator traversal in increasing index order; the implementation clamps endpoints before the loop.
+compiler	implemented_by	Array.foldrM	Init.Data.Array.Basic	Array.foldrMUnsafe	Equivalent accumulator traversal in decreasing index order; the implementation clamps endpoints before the loop.
+both	implemented_by	Bool.ctorIdx	Init.Prelude	Bool.ctorIdx._impl	Replace the structural constructor-index match with its fixed runtime tag projection.
+both	implemented_by	Except.ctorIdx	Init.Prelude	Except.ctorIdx._impl	Replace the structural constructor-index match with its fixed runtime tag projection.
+both	implemented_by	Lean.Name.anonymous	Init.Prelude	Lean.Name.anonymous._override	Produce the ABI representation of the nullary anonymous constructor.
+both	implemented_by	Lean.Name.casesOn	Init.Prelude	Lean.Name.casesOn._override	Dispatch by variant and expose logical fields, dropping the implementation-only cached hash.
+both	implemented_by	Lean.Name.hash	Init.Prelude	Lean.Name.hash._override	Project the cached hash, using the model constant for anonymous.
+both	implemented_by	Lean.Name.num	Init.Prelude	Lean.Name.num._override	Construct the numeric-component variant with the derived cached hash.
+both	implemented_by	Lean.Name.str	Init.Prelude	Lean.Name.str._override	Construct the string-component variant with the derived cached hash.
+both	implemented_by	List.ctorIdx	Init.Prelude	List.ctorIdx._impl	Replace the structural constructor-index match with its fixed runtime tag projection.
+both	implemented_by	Nat.repr	Init.Data.Repr	Nat.reprFast	Decimal rendering via small-value table, machine-word renderer, or base-10 digits.
+both	implemented_by	Option.ctorIdx	Init.Prelude	Option.ctorIdx._impl	Replace the structural constructor-index match with its fixed runtime tag projection.
+both	implemented_by	Sum.ctorIdx	Init.Core	Sum.ctorIdx._impl	Replace the structural constructor-index match with its fixed runtime tag projection.
+both	implemented_by	Ordering.ctorIdx	Init.Data.Ord.Basic	Ordering.ctorIdx._impl	Replace the structural constructor-index match with its fixed runtime tag projection.
+both	implemented_by	Std.DTreeMap.Internal.Impl.ctorIdx	Std.Data.DTreeMap.Internal.Def	Std.DTreeMap.Internal.Impl.ctorIdx._impl	Replace the structural constructor-index match with its fixed runtime tag projection.
+compiler	rewrite	Acc.rec	Init.WF	Acc.recC|Acc.rec_eq_recC	Replace recursion over accessibility evidence with the executable recursor. [target Init.WFComputable, proof Init.WFComputable]
+compiler	rewrite	Bool.and	Init.Prelude	Bool.Internal.and|Bool.and_eq_internalAnd	Boolean conjunction by case split. [target Init.Prelude, proof Init.Prelude]
+compiler	rewrite	Bool.not	Init.Prelude	Bool.Internal.not|Bool.not_eq_internalNot	Boolean complement by case split. [target Init.Prelude, proof Init.Prelude]
+compiler	rewrite	Bool.or	Init.Prelude	Bool.Internal.or|Bool.or_eq_internalOr	Boolean disjunction by case split. [target Init.Prelude, proof Init.Prelude]
+compiler	rewrite	ByteArray.append	Init.Data.ByteArray.Bootstrap	ByteArray.fastAppend|ByteArray.append_eq_fastAppend	Append with a bounds-clamped slice copy. [target Init.Data.ByteArray.Basic, proof Init.Data.ByteArray.Basic]
+compiler	rewrite	Lean.RArray.get	Init.Data.RArray	Lean.RArray.getImpl|Lean.RArray.get_eq_getImpl	Use the executable lookup in the same reflected array, used in proof machinery. [target Init.Data.RArray, proof Init.Data.RArray]
+compiler	rewrite	List.append	Init.Prelude	List.appendTR|List.append_eq_appendTR	Tail-recursive implementation of the specified list operation, preserving its order and boundary cases. [target Init.Data.List.Basic, proof Init.Data.List.Basic]
+compiler	rewrite	List.dropLast	Init.Data.List.Basic	List.dropLastTR|List.dropLast_eq_dropLastTR	Tail-recursive implementation of the specified list operation, preserving its order and boundary cases. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	List.erase	Init.Data.List.Basic	List.eraseTR|List.erase_eq_eraseTR	Remove only the first equal element. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	List.eraseP	Init.Data.List.Basic	List.erasePTR|List.eraseP_eq_erasePTR	Remove only the first matching element. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	List.filter	Init.Data.List.Basic	List.filterTR|List.filter_eq_filterTR	Tail-recursive implementation of the specified list operation, preserving its order and boundary cases. [target Init.Data.List.Basic, proof Init.Data.List.Basic]
+compiler	rewrite	List.filterMap	Init.Data.List.Basic	List.filterMapTR|List.filterMap_eq_filterMapTR	Tail-recursive implementation of the specified list operation, preserving its order and boundary cases. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	List.flatMap	Init.Prelude	List.flatMapTR|List.flatMap_eq_flatMapTR	Concatenate mapped sublists in input order. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	List.flatten	Init.Prelude	List.flattenTR|List.flatten_eq_flattenTR	Tail-recursive implementation of the specified list operation, preserving its order and boundary cases. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	List.foldr	Init.Data.List.Basic	List.foldrTR|List.foldr_eq_foldrTR	Preserve right-fold callback order; large lists may be traversed via a temporary array. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	List.intercalate	Init.Data.List.Basic	List.intercalateTR|List.intercalate_eq_intercalateTR	Insert the separator between sublists while preserving their order. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	List.intersperse	Init.Data.List.Basic	List.intersperseTR|List.intersperse_eq_intersperseTR	Tail-recursive implementation of the specified list operation, preserving its order and boundary cases. [target Init.Data.List.Basic, proof Init.Data.List.Basic]
+compiler	rewrite	List.length	Init.Prelude	List.lengthTR|List.length_eq_lengthTR	Tail-recursive implementation of the specified list operation, preserving its order and boundary cases. [target Init.Prelude, proof Init.Data.List.Basic]
+compiler	rewrite	List.map	Init.Prelude	List.mapTR|List.map_eq_mapTR	Apply the supplied pure function in list order. [target Init.Data.List.Basic, proof Init.Data.List.Basic]
+compiler	rewrite	List.replicate	Init.Data.List.Basic	List.replicateTR|List.replicate_eq_replicateTR	Tail-recursive implementation of the specified list operation, preserving its order and boundary cases. [target Init.Data.List.Basic, proof Init.Data.List.Basic]
+compiler	rewrite	List.splitOnP	Init.Data.List.SplitOn.Basic	List.splitOnPTR|List.splitOnP_eq_splitOnPTR	Retain the original separator and empty-field semantics. [target Init.Data.List.SplitOn.Basic, proof Init.Data.List.SplitOn.Basic]
+compiler	rewrite	List.take	Init.Data.List.Basic	List.takeTR|List.take_eq_takeTR	Tail-recursive implementation of the specified list operation, preserving its order and boundary cases. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	List.takeWhile	Init.Data.List.Basic	List.takeWhileTR|List.takeWhile_eq_takeWhileTR	Tail-recursive implementation of the specified list operation, preserving its order and boundary cases. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	List.zipWith	Init.Data.List.Basic	List.zipWithTR|List.zipWith_eq_zipWithTR	Pair elements up to the end of the shorter input. [target Init.Data.List.Impl, proof Init.Data.List.Impl]
+compiler	rewrite	Nat.rec	Init.Prelude	Nat.recCompiled|Nat.rec_eq_recCompiled	Executable structural recursion preserves the base and successor cases. [target Init.Data.Nat.Basic, proof Init.Data.Nat.Basic]
+compiler	rewrite	String.utf8EncodeChar	Init.Prelude	String.utf8EncodeCharFast|String.utf8EncodeChar_eq_utf8EncodeCharFast	Encode a valid scalar in one to four bytes using fixed-width arithmetic. [target Init.Data.String.Decode, proof Init.Data.String.Decode]
+compiler	rewrite	WellFounded.fix	Init.WF	WellFounded.fixC|WellFounded.fix_eq_fixC	Compile well-founded recursion using the same step functional. [target Init.WFComputable, proof Init.WFComputable]
+compiler	rewrite	WellFounded.fixF	Init.WF	WellFounded.fixFC|WellFounded.fixF_eq_fixFC	Compile the accessibility-indexed worker of well-founded recursion. [target Init.WFComputable, proof Init.WFComputable]
+compiler	unsafe	Array.foldlMUnsafe	Init.Data.Array.Basic	bounded-array-fold	Compute USize loop endpoints clamped to the array size for increasing traversal.
+compiler	unsafe	Array.foldrMUnsafe	Init.Data.Array.Basic	bounded-array-fold	Compute USize loop endpoints clamped to the array size for decreasing traversal.
+both	unsafe	Bool.ctorIdx._impl	Init.Prelude	generated-ctor-tag	Read the discriminant of this named inductive, with its checked constructor order.
+both	unsafe	Except.ctorIdx._impl	Init.Prelude	generated-ctor-tag	Read the discriminant of this named inductive, with its checked constructor order.
+both	unsafe	Lean.Name.anonymous._override	Init.Prelude	computed-name-layout	Produce the ABI representation of the nullary anonymous constructor.
+both	unsafe	Lean.Name.casesOn._override	Init.Prelude	computed-name-layout	Dispatch by variant and expose logical fields, dropping the implementation-only cached hash.
+both	unsafe	Lean.Name.hash._override	Init.Prelude	computed-name-layout	Project the cached hash, using the model constant for anonymous.
+both	unsafe	Lean.Name.num._override	Init.Prelude	computed-name-layout	Construct the numeric-component variant with the derived cached hash.
+both	unsafe	Lean.Name.str._override	Init.Prelude	computed-name-layout	Construct the string-component variant with the derived cached hash.
+both	unsafe	List.ctorIdx._impl	Init.Prelude	generated-ctor-tag	Read the discriminant of this named inductive, with its checked constructor order.
+both	unsafe	Option.ctorIdx._impl	Init.Prelude	generated-ctor-tag	Read the discriminant of this named inductive, with its checked constructor order.
+both	unsafe	Sum.ctorIdx._impl	Init.Core	generated-ctor-tag	Read the discriminant of this named inductive, with its checked constructor order.
+both	unsafe	Ordering.ctorIdx._impl	Init.Data.Ord.Basic	generated-ctor-tag	Read the discriminant of this named inductive, with its checked constructor order.
+both	unsafe	Std.DTreeMap.Internal.Impl.ctorIdx._impl	Std.Data.DTreeMap.Internal.Def	generated-ctor-tag	Read the discriminant of this named inductive, with its checked constructor order.
+compiler	unsafe	_private.Init.Data.Array.Basic.0.Array.foldlMUnsafe.fold	Init.Data.Array.Basic	bounded-array-loop	Advance the guarded USize counter in increasing index order; erased proof used only at uget.
+compiler	unsafe	_private.Init.Data.Array.Basic.0.Array.foldrMUnsafe.fold	Init.Data.Array.Basic	bounded-array-loop	Advance the guarded USize counter in decreasing index order; erased proof used only at uget.
+both	unsafe	unsafeCast	Init.Prelude	name-layout-cast	No-op representation cast restricted to five generated Name wrappers with fixed layouts.
+both	unsafe	unsafeCast._proof_1	Init.Prelude	erased-layout-transport	Compiler-only fabricated equality for the erased cast; never a proof premise in the checked model.

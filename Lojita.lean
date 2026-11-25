@@ -1,5 +1,6 @@
 import Lojita.Store.SExpr
-import Lojita.WorldRunner
+import Lojita.Runtime.WorldRunner
+import Lojita.Sandbox.LinuxIso
 import Lojita.Kernel.ResidentImport
 import Lojita.Kernel.KernelLimits
 import Lojita.Kernel.KernelGuard

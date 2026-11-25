@@ -6,19 +6,12 @@ import Lojita.Kernel.ElabGuard
 namespace Lojita.Kernel
 open Lean
 
-inductive ExeMode where
-  | cli | reactive
-  deriving BEq, Repr
-
-/-- Verify that `entry` is a public monomorphic constant in `snap` with exact `CliApp` or `ReactiveApp` type. -/
-def checkEntryType (snap : Snapshot) (entry : Name) (mode : ExeMode) : MetaM Unit := do
+/-- Infer the closed machine's private state type and require the exact process capabilities. -/
+def checkEntryType (snap : Snapshot) (entry : Name) : MetaM Unit := do
   let info ← getConstInfo entry
-  let caps ← Meta.mkFreshExprMVar (mkApp (mkConst ``List [.zero]) (mkConst `LojitaCtx.World.Cap))
-  let wanted ← match mode with
-    | .cli => pure <| mkApp (mkConst `LojitaCtx.World.CliApp) caps
-    | .reactive => do
-      let state ← Meta.mkFreshExprMVar (mkSort (.succ .zero))
-      pure <| mkApp2 (mkConst `LojitaCtx.World.ReactiveApp) caps state
+  let state ← Meta.mkFreshExprMVar (mkSort (.succ .zero))
+  let wanted := mkApp3 (mkConst `LojitaCtx.Posix.PosixMachine)
+    (mkConst `LojitaCtx.Posix.CoreCaps) state (mkConst ``UInt32)
   unless snap.constants.contains entry && !isPrivateName entry && info.levelParams.isEmpty &&
       (← Meta.isDefEq info.type wanted) && !(← instantiateMVars wanted).hasMVar do
     throwError "ENTRY_TYPE_MISMATCH: {entry} has type {info.type}, expected {wanted}"

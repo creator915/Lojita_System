@@ -66,7 +66,7 @@ def TabooCode.detour : TabooCode → String
   | .wideDecidableEq =>
     "[DETOUR] `deriving DecidableEq` on inductives with > 64 constructors causes quadratic `noConfusion` blowup; map constructors to an explicit `Nat` tag and prove injectivity."
   | .heavyDecide =>
-    "[DETOUR] Never run `by decide` over `String`, `ByteArray`, `Array`, or `SimWorld` (Lean 4's kernel unfolds UTF-8 `ByteArray`/`BitVec` term-by-term); use `simp`, structural lemmas, or `rfl` on small ground steps."
+    "[DETOUR] Never run `by decide` over `String`, `ByteArray`, `Array`, or `Posix.Machine` (Lean 4's kernel unfolds UTF-8 `ByteArray`/`BitVec` term-by-term); use `simp`, structural lemmas, or `rfl` on small ground steps."
   | .decideTimeout =>
     "[DETOUR] `decide` exceeded deterministic heartbeat/memory budget; replace kernel brute-force decision with `simp` or algebraic lemmas."
   | .rflReductionBlowup =>

@@ -1,4 +1,4 @@
-import LojitaCtx.World
+import LojitaCtx.Terminal
 import LojitaCtx.CharClass
 import LojitaCtx.Blueprint
 import Gen.T0.Gron
@@ -93,7 +93,7 @@ def utf16Escape (n : Nat) (bs : Bytes) : Nat × Bytes :=
 def readString : Nat → Bytes → Bytes → Except JsonErr (String × Bytes)
   | 0, _, _ | _, [], _ => .error (.incomplete false)
   | n+1, b::bs, rev =>
-    if b == 34 then .ok (LojitaCtx.World.decodeUtf8Lossy rev.reverse, bs)
+    if b == 34 then .ok (LojitaCtx.Utf8.decodeLossy rev.reverse, bs)
     else if b == 92 then
       match bs with
       | [] => .error (.incomplete false)
@@ -1044,8 +1044,8 @@ termination_by structural n _ _ => n
 def dispatchModel (defaultReverse tty : Bool) (args : List String) : Plan :=
   planFlags tty (args.length+1) {reverse := defaultReverse} args
 def dispatchInEnv (defaultReverse tty : Bool) (env : List (String × String)) (args : List String) : Plan :=
-  let term := (LojitaCtx.World.lookupEnvVar "TERM" env).getD ""
-  let noColor := (LojitaCtx.World.lookupEnvVar "NO_COLOR" env).getD ""
+  let term := (env.lookup "TERM").getD ""
+  let noColor := (env.lookup "NO_COLOR").getD ""
   let selected := dispatchModel defaultReverse (tty && term != "dumb") args
   match selected with
   | .run job => .run {job with color := job.color && noColor.isEmpty}
