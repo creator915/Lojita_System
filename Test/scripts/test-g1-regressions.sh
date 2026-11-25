@@ -11,6 +11,18 @@ export LEAN_PATH="$work:$(lake env printenv LEAN_PATH)"
 for unit in Dependencies Roots; do
   "$lean" -R . -o "$work/Test/G1/$unit.olean" "Test/G1/$unit.lean"
 done
+# The release verifier accepts only the pinned file inventory and hashes.
+# An incomplete local prefix is a cheap negative control for that entry point.
+mkdir -p "$work/prefix/bin" "$work/prefix/lib/lean"
+for tool in lean leanir lake leanc; do
+  printf 'fixture\n' >"$work/prefix/bin/$tool"
+done
+printf 'fixture\n' >"$work/prefix/lib/lean/Init.olean"
+if python3 Test/scripts/g1-release.py "$work/prefix" >"$work/release.log" 2>&1; then
+  echo 'G1 accepted an unpinned distribution' >&2
+  exit 1
+fi
+grep -F 'G1 DENY [origin]' "$work/release.log" > /dev/null || { cat "$work/release.log" >&2; exit 1; }
 audit() {
   "$lean" --run Test/PosixPurity.lean --module Test.G1.Roots --root "$1"
 }
@@ -45,4 +57,4 @@ expect_rejection G1Fixture.directPanicCore '[a-z_]+' 'panicCore'
 expect_rejection lcProof '[a-z_]+' 'lcProof'
 # A safe theorem depending on the compiler-only proof never reaches an olean.
 "$lean" -R . Test/G1/LogicKernel.lean
-echo 'G1 fixture checks passed (2 accepted, 13 rejected, 1 kernel rejection).'
+echo 'G1 fixture checks passed (2 accepted, 13 rejected, 1 kernel rejection, 1 release rejection).'
