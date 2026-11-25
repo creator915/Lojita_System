@@ -42,6 +42,14 @@ expect_rejection() {
 # the imported module also contains intentionally invalid fixtures.
 audit G1Fixture.approvedBytes
 audit G1Fixture.legitimateElimination
+# A byte-identical private copy is valid Lean input, but does not come from
+# the pinned release directory. Never overwrite or rename a release artifact.
+mkdir -p "$work/shadow/Init"
+release=$("$lean" --print-prefix)
+for suffix in olean olean.private olean.server ir ir.sig; do
+  cp "$release/lib/lean/Init/Prelude.$suffix" "$work/shadow/Init/"
+done
+LEAN_PATH="$work/shadow:$LEAN_PATH" expect_rejection G1Fixture.approvedBytes origin 'Prelude'
 expect_rejection G1Fixture.indirectAxiom axiom hiddenAxiom
 expect_rejection G1Fixture.taintedBytes axiom hiddenAxiom
 expect_rejection G1Fixture.admittedTheorem sorry sorryAx
@@ -57,4 +65,4 @@ expect_rejection G1Fixture.directPanicCore '[a-z_]+' 'panicCore'
 expect_rejection lcProof '[a-z_]+' 'lcProof'
 # A safe theorem depending on the compiler-only proof never reaches an olean.
 "$lean" -R . Test/G1/LogicKernel.lean
-echo 'G1 fixture checks passed (2 accepted, 13 rejected, 1 kernel rejection, 1 release rejection).'
+echo 'G1 fixture checks passed (2 accepted, 13 rejected, 1 kernel rejection, 2 origin checks).'
