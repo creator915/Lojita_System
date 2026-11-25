@@ -22,7 +22,7 @@ if python3 Test/scripts/g1-release.py "$work/prefix" >"$work/release.log" 2>&1; 
   echo 'G1 accepted an unpinned distribution' >&2
   exit 1
 fi
-grep -F 'G1 DENY [origin]' "$work/release.log" > /dev/null || { cat "$work/release.log" >&2; exit 1; }
+grep -F 'G1 DENY [origin]' "$work/release.log" >/dev/null || { cat "$work/release.log" >&2; exit 1; }
 audit() {
   "$lean" --run Test/PosixPurity.lean --module Test.G1.Roots --root "$1"
 }
@@ -32,7 +32,7 @@ expect_rejection() {
     echo "G1 accepted forbidden fixture $root" >&2
     exit 1
   fi
-  if ! grep -E "G1 DENY \\[$kind\\].*($culprit)" "$work/audit.log" > /dev/null; then
+  if ! grep -E "G1 DENY \\[$kind\\].*($culprit)" "$work/audit.log" >/dev/null; then
     cat "$work/audit.log" >&2
     echo "G1 did not diagnose $root as $kind ($culprit)" >&2
     exit 1
@@ -40,8 +40,10 @@ expect_rejection() {
 }
 # A single selected root exercises only its reachable declarations even when
 # the imported module also contains intentionally invalid fixtures.
-audit G1Fixture.approvedBytes
-audit G1Fixture.legitimateElimination
+for root in G1Fixture.approvedBytes G1Fixture.legitimateElimination; do
+  if ! audit "$root" >"$work/accepted.log" 2>&1; then cat "$work/accepted.log" >&2; exit 1; fi
+  grep -F 'denied=0' "$work/accepted.log" >/dev/null
+done
 # A byte-identical private copy is valid Lean input, but does not come from
 # the pinned release directory. Never overwrite or rename a release artifact.
 mkdir -p "$work/shadow/Init"
@@ -67,9 +69,9 @@ expect_rejection G1Fixture.usesPartial partial partialMarker
 expect_rejection G1Fixture.usesImplementedBy implemented_by 'withImpl|implTarget'
 expect_rejection G1Fixture.usesCSimp rewrite 'logical|fixtureRewrite|replacement'
 expect_rejection G1Fixture.outsideReviewedSet extern 'Float\.sin'
-expect_rejection G1Fixture.directPanic '[a-z_]+' 'panic(Core)?'
-expect_rejection G1Fixture.directPanicCore '[a-z_]+' 'panicCore'
-expect_rejection lcProof '[a-z_]+' 'lcProof'
+expect_rejection G1Fixture.directPanic escape 'panic(Core)?'
+expect_rejection G1Fixture.directPanicCore escape 'panicCore'
+expect_rejection lcProof axiom 'lcProof'
 # A safe theorem depending on the compiler-only proof never reaches an olean.
 "$lean" -R . Test/G1/LogicKernel.lean
 echo 'G1 fixture checks passed (2 accepted, 13 rejected, 1 kernel rejection, 2 origin checks).'
