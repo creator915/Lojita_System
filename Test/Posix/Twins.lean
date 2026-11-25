@@ -5,6 +5,11 @@ import Lojita.Store.TreeCAS.Image
 open LojitaCtx.Posix LojitaCtx.Io Lojita.Store.TreeCAS
 namespace TwinGates
 
+-- An explicit native errno keeps its identity even when its numeric code is known.
+#guard Errno.EPERM != .other 1
+#guard Errno.EWOULDBLOCK == .EAGAIN
+#guard Errno.other 512 == .other 512 && Errno.other 512 != .other 513
+
 private abbrev Gate := StateT Machine IO
 private def b (s : String) := s.toUTF8.data.toList
 private def check (ok : Bool) (label : String) : Gate Unit :=
