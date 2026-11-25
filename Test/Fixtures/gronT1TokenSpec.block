@@ -1,0 +1,1305 @@
+import LojitaCtx.World
+import LojitaCtx.CharClass
+import LojitaCtx.Blueprint
+import Gen.T0.Gron
+namespace Gen.T1.Gron
+open LojitaCtx.Terminal
+
+/- The input port projects a resolved invocation to the T0 exit class.
+   The output port retains the exit status and the presence of each byte stream.
+   The open-input observation is taken after source selection and before EOF.
+   Calibration seeds are 3407 and 451 for documents, 811 for streams,
+   17609 for assignments, 171203 for binary64 rows, and 21702 for flags. -/
+inductive J where
+  | null
+  | bool (b : Bool)
+  | num (lexeme : String)
+  | str (value : String)
+  | arr (items : List J)
+  | obj (entries : List (String × J))
+deriving Inhabited
+def hexDigit (upper : Bool) (n : Nat) : Char :=
+  Char.ofNat (if n < 10 then n + 48 else if upper then n + 55 else n + 87)
+def hexEscape (upper : Bool) (n : Nat) : String :=
+  String.ofList ['\\', 'u', hexDigit upper (n / 4096 % 16), hexDigit upper (n / 256 % 16),
+    hexDigit upper (n / 16 % 16), hexDigit upper (n % 16)]
+def quoteChar (c : Char) (js : Bool) : String :=
+  match c with
+  | '"' => "\\\""
+  | '\\' => "\\\\"
+  | '\x08' => "\\b"
+  | '\x0c' => "\\f"
+  | '\t' => "\\t"
+  | '\n' => "\\n"
+  | '\r' => "\\r"
+  | _ =>
+    let n := c.toNat
+    if n < 32 || (js && (127 ≤ n && n < 160)) || n == 8232 || n == 8233 then hexEscape js n
+    else String.singleton c
+def quote (s : String) (js : Bool := true) : String :=
+  "\"" ++ String.join (s.toList.map (quoteChar · js)) ++ "\""
+def byteQuoted (b : UInt8) : String :=
+  let n := b.toNat
+  let c := Char.ofNat n
+  let rendered :=
+    match n with
+    | 7 => "\\a"
+    | 11 => "\\v"
+    | 39 => "\\'"
+    | 34 => "\""
+    | _ =>
+      if (n < 32 && ![8, 9, 10, 12, 13].contains n) || n == 127 then
+        String.ofList ['\\', 'x', hexDigit false (n / 16), hexDigit false (n % 16)]
+      else if (128 ≤ n && n ≤ 160) || n == 173 then hexEscape false n
+      else quoteChar c false
+  "'" ++ rendered ++ "'"
+inductive JsonErr where
+  | incomplete (empty : Bool)
+  | invalid (byte : UInt8) (context : String)
+  | tooDeep (opener : UInt8)
+deriving Inhabited
+def message (strict : Bool) : JsonErr → String
+  | .incomplete empty =>
+    if strict then "unexpected end of JSON input" else if empty then "EOF" else "unexpected EOF"
+  | .invalid b context => "invalid character " ++ byteQuoted b ++ " " ++ context
+  | .tooDeep b => "invalid character " ++ byteQuoted b ++ " exceeded max depth"
+def jsonSpace (b : UInt8) : Bool := b == 32 || b == 9 || b == 13 || b == 10
+def digit (b : UInt8) : Bool := 48 ≤ b && b ≤ 57
+def hexVal (b : UInt8) : Option Nat :=
+  if digit b then some (b.toNat - 48)
+  else if 97 ≤ b && b ≤ 102 then some (b.toNat - 87)
+  else if 65 ≤ b && b ≤ 70 then some (b.toNat - 55)
+  else none
+def requireHex : Nat → Nat → Bytes → Except JsonErr (Nat × Bytes)
+  | 0, a, bs => .ok (a, bs)
+  | n+1, a, b::bs =>
+    match hexVal b with
+    | some v => requireHex n (a*16+v) bs
+    | none => .error (.invalid b "in \\u hexadecimal character escape")
+  | _+1, _, [] => .error (.incomplete false)
+termination_by structural n _ _ => n
+def utf16Escape (n : Nat) (bs : Bytes) : Nat × Bytes :=
+  if 0xd800 ≤ n && n < 0xdc00 then
+    match bs with
+    | 92 :: 117 :: tail =>
+      match requireHex 4 0 tail with
+      | .ok (m, rest) =>
+        if 0xdc00 ≤ m && m < 0xe000 then (0x10000 + (n-0xd800)*1024 + (m-0xdc00), rest)
+        else (0xfffd, bs)
+      | .error _ => (0xfffd, bs)
+    | _ => (0xfffd, bs)
+  else if 0xdc00 ≤ n && n < 0xe000 then (0xfffd, bs)
+  else (n, bs)
+def readString : Nat → Bytes → Bytes → Except JsonErr (String × Bytes)
+  | 0, _, _ | _, [], _ => .error (.incomplete false)
+  | n+1, b::bs, rev =>
+    if b == 34 then .ok (LojitaCtx.World.decodeUtf8Lossy rev.reverse, bs)
+    else if b == 92 then
+      match bs with
+      | [] => .error (.incomplete false)
+      | e :: tail =>
+        if e == 117 then do
+          let (cp, rest) ← requireHex 4 0 tail
+          let (scalar, rest) := utf16Escape cp rest
+          readString n rest ((bytes (String.singleton (Char.ofNat scalar))).reverse ++ rev)
+        else
+          let single : Option UInt8 :=
+            match e with
+            | 34 | 47 | 92 => some e
+            | 98 => some 8
+            | 102 => some 12
+            | 110 => some 10
+            | 114 => some 13
+            | 116 => some 9
+            | _ => none
+          match single with
+          | some x => readString n tail (x :: rev)
+          | none => .error (.invalid e "in string escape code")
+    else if b < 32 then .error (.invalid b "in string literal")
+    else readString n bs (b :: rev)
+termination_by structural n _ _ => n
+def stripLiteral (name : String) : Bytes → Bytes → Except JsonErr Bytes
+  | [], bs => .ok bs
+  | _, [] => .error (.incomplete false)
+  | x::xs, b::bs =>
+    if x == b then stripLiteral name xs bs
+    else .error (.invalid b ("in literal " ++ name ++ " (expecting " ++ byteQuoted x ++ ")"))
+termination_by structural xs _ => xs
+def takeDigits (bs : Bytes) : Bytes × Bytes :=
+  (bs.takeWhile digit, bs.dropWhile digit)
+def requireDigits (ctx : String) (bs : Bytes) : Except JsonErr (Bytes × Bytes) :=
+  match bs with
+  | [] => .error (.incomplete false)
+  | b :: _ => if digit b then .ok (takeDigits bs) else .error (.invalid b ctx)
+def fraction (bs : Bytes) : Except JsonErr (Bytes × Bytes) :=
+  match bs with
+  | 46 :: tail => do
+    let (s, rest) ← requireDigits "after decimal point in numeric literal" tail
+    return (46 :: s, rest)
+  | _ => .ok ([], bs)
+def exponent (bs : Bytes) : Except JsonErr (Bytes × Bytes) :=
+  match bs with
+  | 69 :: tail | 101 :: tail => do
+    let (sgn, tail) : Bytes × Bytes := match tail with
+      | 43 :: rest => ([43], rest)
+      | 45 :: rest => ([45], rest)
+      | _ => ([], tail)
+    let (s, rest) ← requireDigits "in exponent of numeric literal" tail
+    return (bs.take 1 ++ sgn ++ s, rest)
+  | _ => .ok ([], bs)
+def readNumber (bs : Bytes) : Except JsonErr (String × Bytes) := do
+  let (sgn, tail) : Bytes × Bytes := match bs with
+    | 45 :: rest => ([45], rest)
+    | _ => ([], bs)
+  let (digits, tail) ← match tail with
+    | 48 :: rest => pure ([48], rest)
+    | _ => requireDigits "in numeric literal" tail
+  let (dec, tail) ← fraction tail
+  let (exp, rest) ← exponent tail
+  return (String.fromUTF8! (sgn ++ digits ++ dec ++ exp).toByteArray, rest)
+def setKey (xs : List (String × J)) (k : String) (v : J) :=
+  match xs with
+  | [] => [(k,v)]
+  | (a,b) :: tail => if a == k then (k,v) :: tail else (a,b) :: setKey tail k v
+termination_by structural xs
+mutual
+  def jsonValue : Nat → Nat → Bytes → Except JsonErr (J × Bytes)
+    | 0, _, _ => .error (.incomplete false)
+    | f+1, depth, bs =>
+      match bs.dropWhile jsonSpace with
+      | [] => .error (.incomplete false)
+      | 34 :: tail => do
+        let (s, rest) ← readString (tail.length + 1) tail []
+        return (.str s, rest)
+      | 123 :: tail =>
+        if depth >= 10000 then .error (.tooDeep 123)
+        else jsonFields f (depth+1) tail [] true
+      | 91 :: tail =>
+        if depth >= 10000 then .error (.tooDeep 91)
+        else jsonItems f (depth+1) tail [] true
+      | 116 :: tail => do return (.bool true, ← stripLiteral "true" (bytes "rue") tail)
+      | 102 :: tail => do return (.bool false, ← stripLiteral "false" (bytes "alse") tail)
+      | 110 :: tail => do return (.null, ← stripLiteral "null" (bytes "ull") tail)
+      | b :: tail =>
+        if b == 45 || digit b then do
+          let (s, rest) ← readNumber (b :: tail)
+          return (.num s, rest)
+        else .error (.invalid b "looking for beginning of value")
+  termination_by structural fuel _ _ => fuel
+  def jsonItems : Nat → Nat → Bytes → List J → Bool → Except JsonErr (J × Bytes)
+    | 0, _, _, _, _ => .error (.incomplete false)
+    | f+1, depth, bs, rev, allowEmpty =>
+      match bs.dropWhile jsonSpace with
+      | 93 :: tail =>
+        if allowEmpty then .ok (.arr [], tail)
+        else .error (.invalid 93 "looking for beginning of value")
+      | ys => do
+        let (v, rest) ← jsonValue f depth ys
+        match rest.dropWhile jsonSpace with
+        | 93 :: tail => return (.arr (v :: rev).reverse, tail)
+        | 44 :: tail => jsonItems f depth tail (v :: rev) false
+        | [] => .error (.incomplete false)
+        | b :: _ => .error (.invalid b "after array element")
+  termination_by structural fuel _ _ _ _ => fuel
+  def jsonFields : Nat → Nat → Bytes → List (String × J) → Bool → Except JsonErr (J × Bytes)
+    | 0, _, _, _, _ => .error (.incomplete false)
+    | f+1, depth, bs, fields, allowEmpty =>
+      match bs.dropWhile jsonSpace with
+      | 125 :: tail =>
+        if allowEmpty then .ok (.obj [], tail)
+        else .error (.invalid 125 "looking for beginning of object key string")
+      | 34 :: tail => do
+        let (k, rest) ← readString (tail.length + 1) tail []
+        match rest.dropWhile jsonSpace with
+        | 58 :: tail =>
+          let (v, rest) ← jsonValue f depth tail
+          let fields := setKey fields k v
+          match rest.dropWhile jsonSpace with
+          | 125 :: tail => return (.obj fields, tail)
+          | 44 :: tail => jsonFields f depth tail fields false
+          | [] => .error (.incomplete false)
+          | b :: _ => .error (.invalid b "after object key:value pair")
+        | [] => .error (.incomplete false)
+        | b :: _ => .error (.invalid b "after object key")
+      | [] => .error (.incomplete false)
+      | b :: _ => .error (.invalid b "looking for beginning of object key string")
+  termination_by structural fuel _ _ _ _ => fuel
+end
+def parsePrefix (bs : Bytes) : Except JsonErr (J × Bytes) :=
+  let xs := bs.dropWhile jsonSpace
+  if xs.isEmpty then .error (.incomplete true)
+  else jsonValue (2 * xs.length + 3) 0 xs
+def parseDoc (bs : Bytes) (strict : Bool := false) : Except JsonErr J := do
+  let (v, rest) ← parsePrefix bs
+  match rest.dropWhile jsonSpace with
+  | b :: _ => if strict then .error (.invalid b "after top-level value") else return v
+  | [] => return v
+def rangesContain (rs : Array (Nat × Nat)) (c : Char) : Bool :=
+  let rec search : Nat → Nat → Nat → Bool
+    | 0, _, _ => false
+    | k+1, lo, hi =>
+      let mid := (lo + hi) / 2
+      match rs[mid]? with
+      | none => false
+      | some (a,b) =>
+        if c.toNat < a then search k lo mid
+        else if b < c.toNat then search k (mid+1) hi
+        else true
+  search (rs.size.log2 + 1) 0 rs.size
+def addedInitial : Array (Nat × Nat) := #[(5870, 5872), (8544, 8578), (8581, 8584), (12295, 12295), (12321, 12329), (12344, 12346), 
+    (42726, 42735), (65856, 65908), (66369, 66369), (66378, 66378), (66513, 66517), (70207, 70208), 
+    (73474, 73474), (73476, 73488), (73490, 73523), (74752, 74862), (78895, 78895), (78913, 78918), 
+    (110898, 110898), (110933, 110933), (122661, 122666), (122928, 122989), (124112, 124139), (177977, 177977), 
+    (201552, 205743)]
+def omittedInitial : Array (Nat × Nat) := #[(453, 453), (456, 456), (459, 459), (498, 498), (8072, 8079), (8088, 8095), 
+    (8104, 8111), (8124, 8124), (8140, 8140), (8188, 8188)]
+def suffixRanges : Array (Nat × Nat) := #[(48, 57), (95, 95), (768, 879), (1155, 1159), (1425, 1469), (1471, 1471), 
+    (1473, 1474), (1476, 1477), (1479, 1479), (1552, 1562), (1611, 1641), (1648, 1648), 
+    (1750, 1756), (1759, 1764), (1767, 1768), (1770, 1773), (1776, 1785), (1809, 1809), 
+    (1840, 1866), (1958, 1968), (1984, 1993), (2027, 2035), (2045, 2045), (2070, 2073), 
+    (2075, 2083), (2085, 2087), (2089, 2093), (2137, 2139), (2200, 2207), (2250, 2273), 
+    (2275, 2307), (2362, 2364), (2366, 2383), (2385, 2391), (2402, 2403), (2406, 2415), 
+    (2433, 2435), (2492, 2492), (2494, 2500), (2503, 2504), (2507, 2509), (2519, 2519), 
+    (2530, 2531), (2534, 2543), (2558, 2558), (2561, 2563), (2620, 2620), (2622, 2626), 
+    (2631, 2632), (2635, 2637), (2641, 2641), (2662, 2673), (2677, 2677), (2689, 2691), 
+    (2748, 2748), (2750, 2757), (2759, 2761), (2763, 2765), (2786, 2787), (2790, 2799), 
+    (2810, 2815), (2817, 2819), (2876, 2876), (2878, 2884), (2887, 2888), (2891, 2893), 
+    (2901, 2903), (2914, 2915), (2918, 2927), (2946, 2946), (3006, 3010), (3014, 3016), 
+    (3018, 3021), (3031, 3031), (3046, 3055), (3072, 3076), (3132, 3132), (3134, 3140), 
+    (3142, 3144), (3146, 3149), (3157, 3158), (3170, 3171), (3174, 3183), (3201, 3203), 
+    (3260, 3260), (3262, 3268), (3270, 3272), (3274, 3277), (3285, 3286), (3298, 3299), 
+    (3302, 3311), (3315, 3315), (3328, 3331), (3387, 3388), (3390, 3396), (3398, 3400), 
+    (3402, 3405), (3415, 3415), (3426, 3427), (3430, 3439), (3457, 3459), (3530, 3530), 
+    (3535, 3540), (3542, 3542), (3544, 3551), (3558, 3567), (3570, 3571), (3633, 3633), 
+    (3636, 3642), (3655, 3662), (3664, 3673), (3761, 3761), (3764, 3772), (3784, 3790), 
+    (3792, 3801), (3864, 3865), (3872, 3881), (3893, 3893), (3895, 3895), (3897, 3897), 
+    (3902, 3903), (3953, 3972), (3974, 3975), (3981, 3991), (3993, 4028), (4038, 4038), 
+    (4139, 4158), (4160, 4169), (4182, 4185), (4190, 4192), (4194, 4196), (4199, 4205), 
+    (4209, 4212), (4226, 4237), (4239, 4253), (4957, 4959), (5906, 5909), (5938, 5940), 
+    (5970, 5971), (6002, 6003), (6068, 6099), (6109, 6109), (6112, 6121), (6155, 6157), 
+    (6159, 6169), (6277, 6278), (6313, 6313), (6432, 6443), (6448, 6459), (6470, 6479), 
+    (6608, 6617), (6679, 6683), (6741, 6750), (6752, 6780), (6783, 6793), (6800, 6809), 
+    (6832, 6845), (6847, 6862), (6912, 6916), (6964, 6980), (6992, 7001), (7019, 7027), 
+    (7040, 7042), (7073, 7085), (7088, 7097), (7142, 7155), (7204, 7223), (7232, 7241), 
+    (7248, 7257), (7376, 7378), (7380, 7400), (7405, 7405), (7412, 7412), (7415, 7417), 
+    (7616, 7679), (8255, 8256), (8276, 8276), (8400, 8412), (8417, 8417), (8421, 8432), 
+    (11503, 11505), (11647, 11647), (11744, 11775), (12330, 12335), (12441, 12442), (42528, 42537), 
+    (42607, 42607), (42612, 42621), (42654, 42655), (42736, 42737), (43010, 43010), (43014, 43014), 
+    (43019, 43019), (43043, 43047), (43052, 43052), (43136, 43137), (43188, 43205), (43216, 43225), 
+    (43232, 43249), (43263, 43273), (43302, 43309), (43335, 43347), (43392, 43395), (43443, 43456), 
+    (43472, 43481), (43493, 43493), (43504, 43513), (43561, 43574), (43587, 43587), (43596, 43597), 
+    (43600, 43609), (43643, 43645), (43696, 43696), (43698, 43700), (43703, 43704), (43710, 43711), 
+    (43713, 43713), (43755, 43759), (43765, 43766), (44003, 44010), (44012, 44013), (44016, 44025), 
+    (64286, 64286), (65024, 65039), (65056, 65071), (65075, 65076), (65101, 65103), (65296, 65305), 
+    (65343, 65343), (66045, 66045), (66272, 66272), (66422, 66426), (66720, 66729), (68097, 68099), 
+    (68101, 68102), (68108, 68111), (68152, 68154), (68159, 68159), (68325, 68326), (68900, 68903), 
+    (68912, 68921), (69291, 69292), (69373, 69375), (69446, 69456), (69506, 69509), (69632, 69634), 
+    (69688, 69702), (69734, 69744), (69747, 69748), (69759, 69762), (69808, 69818), (69826, 69826), 
+    (69872, 69881), (69888, 69890), (69927, 69940), (69942, 69951), (69957, 69958), (70003, 70003), 
+    (70016, 70018), (70067, 70080), (70089, 70092), (70094, 70105), (70188, 70199), (70206, 70206), 
+    (70209, 70209), (70367, 70378), (70384, 70393), (70400, 70403), (70459, 70460), (70462, 70468), 
+    (70471, 70472), (70475, 70477), (70487, 70487), (70498, 70499), (70502, 70508), (70512, 70516), 
+    (70709, 70726), (70736, 70745), (70750, 70750), (70832, 70851), (70864, 70873), (71087, 71093), 
+    (71096, 71104), (71132, 71133), (71216, 71232), (71248, 71257), (71339, 71351), (71360, 71369), 
+    (71453, 71467), (71472, 71481), (71724, 71738), (71904, 71913), (71984, 71989), (71991, 71992), 
+    (71995, 71998), (72000, 72000), (72002, 72003), (72016, 72025), (72145, 72151), (72154, 72160), 
+    (72164, 72164), (72193, 72202), (72243, 72249), (72251, 72254), (72263, 72263), (72273, 72283), 
+    (72330, 72345), (72751, 72758), (72760, 72767), (72784, 72793), (72850, 72871), (72873, 72886), 
+    (73009, 73014), (73018, 73018), (73020, 73021), (73023, 73029), (73031, 73031), (73040, 73049), 
+    (73098, 73102), (73104, 73105), (73107, 73111), (73120, 73129), (73459, 73462), (73472, 73473), 
+    (73475, 73475), (73524, 73530), (73534, 73538), (73552, 73561), (78912, 78912), (78919, 78933), 
+    (92768, 92777), (92864, 92873), (92912, 92916), (92976, 92982), (93008, 93017), (94031, 94031), 
+    (94033, 94087), (94095, 94098), (94180, 94180), (94192, 94193), (113821, 113822), (118528, 118573), 
+    (118576, 118598), (119141, 119145), (119149, 119154), (119163, 119170), (119173, 119179), (119210, 119213), 
+    (119362, 119364), (120782, 120831), (121344, 121398), (121403, 121452), (121461, 121461), (121476, 121476), 
+    (121499, 121503), (121505, 121519), (122880, 122886), (122888, 122904), (122907, 122913), (122915, 122916), 
+    (122918, 122922), (123023, 123023), (123184, 123190), (123200, 123209), (123566, 123566), (123628, 123641), 
+    (124140, 124153), (125136, 125142), (125252, 125258), (125264, 125273), (130032, 130041), (917760, 917999)]
+def digitRanges : Array (Nat × Nat) := #[(48, 57), (1632, 1641), (1776, 1785), (1984, 1993), (2406, 2415), (2534, 2543), 
+    (2662, 2671), (2790, 2799), (2918, 2927), (3046, 3055), (3174, 3183), (3302, 3311), 
+    (3430, 3439), (3558, 3567), (3664, 3673), (3792, 3801), (3872, 3881), (4160, 4169), 
+    (4240, 4249), (6112, 6121), (6160, 6169), (6470, 6479), (6608, 6617), (6784, 6793), 
+    (6800, 6809), (6992, 7001), (7088, 7097), (7232, 7241), (7248, 7257), (42528, 42537), 
+    (43216, 43225), (43264, 43273), (43472, 43481), (43504, 43513), (43600, 43609), (44016, 44025), 
+    (65296, 65305), (66720, 66729), (68912, 68921), (69734, 69743), (69872, 69881), (69942, 69951), 
+    (70096, 70105), (70384, 70393), (70736, 70745), (70864, 70873), (71248, 71257), (71360, 71369), 
+    (71472, 71481), (71904, 71913), (72016, 72025), (72784, 72793), (73040, 73049), (73120, 73129), 
+    (73552, 73561), (92768, 92777), (92864, 92873), (93008, 93017), (120782, 120831), (123200, 123209), 
+    (123632, 123641), (124144, 124153), (125264, 125273), (130032, 130041)]
+def identifierStart (c : Char) : Bool :=
+  c == '$' || c == '_' || rangesContain addedInitial c ||
+    (LojitaCtx.CharClass.alpha c && !rangesContain omittedInitial c)
+def identifierContinue (c : Char) : Bool :=
+  identifierStart c || rangesContain suffixRanges c
+def reservedWords : List String :=
+  ["break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
+   "do", "else", "export", "extends", "false", "finally", "for", "function", "if", "import",
+   "in", "instanceof", "new", "null", "return", "super", "switch", "this", "throw", "true",
+   "try", "typeof", "var", "void", "while", "with", "yield"]
+def bareKey (s : String) : Bool :=
+  match s.toList with
+  | [] => false
+  | c :: cs => identifierStart c && cs.all identifierContinue && !reservedWords.contains s
+inductive Part where
+  | field (key : String)
+  | index (n : Nat)
+deriving BEq, Inhabited
+abbrev Path := List Part
+abbrev Row := Path × J
+def paint (enabled : Bool) (color s : String) (reset : String := "0") : String :=
+  if enabled then "\x1b[" ++ color ++ "m" ++ s ++ "\x1b[" ++ reset ++ "m"
+  else s
+def group (color : Bool) := paint color "35"
+def valueText (color : Bool) : J → String
+  | .null => paint color "36" "null"
+  | .bool b => paint color "36" (if b then "true" else "false")
+  | .num s => paint color "31" s
+  | .str s => paint color "33" (quote s)
+  | .arr _ => group color "[]"
+  | .obj _ => group color "{}"
+def partText (color : Bool) : Part → String
+  | .index i => group color "[" ++ paint color "31" (toString i) ++ group color "]"
+  | .field s =>
+    if bareKey s then "." ++ paint color "34;1" s "0;22"
+    else group color "[" ++ paint color "33" (quote s) ++ group color "]"
+def renderRow (wire color : Bool) (r : Row) : String :=
+  if wire then
+    let items := r.1.map fun
+      | .index n => paint color "31" (toString n)
+      | .field s => paint color "33" (quote s)
+    group color "[" ++ group color "[" ++ String.intercalate "," items ++ group color "]" ++
+      "," ++ valueText color r.2 ++ group color "]" ++ "\n"
+  else
+    paint color "34;1" "json" "0;22" ++ String.join (r.1.map (partText color)) ++
+      " = " ++ valueText color r.2 ++ ";\n"
+def comparePart (a b : Part) : Ordering :=
+  match a, b with
+  | .index x, .index y => compare x y
+  | _, _ => compare (partText false a) (partText false b)
+def comparePath : Path → Path → Ordering
+  | [], [] => .eq
+  | [], _ => .lt
+  | _, [] => .gt
+  | x :: xs, y :: ys =>
+    match comparePart x y with
+    | .eq => comparePath xs ys
+    | r => r
+termination_by structural xs _ => xs
+mutual
+  def flattenFrom (rev : Path) : J → List Row
+    | .arr xs => (rev.reverse, .arr []) :: flattenArray rev 0 xs
+    | .obj xs => (rev.reverse, .obj []) :: flattenObject rev xs
+    | v => [(rev.reverse, v)]
+  termination_by structural x => x
+  def flattenArray (rev : Path) (i : Nat) : List J → List Row
+    | [] => []
+    | x :: xs => flattenFrom (.index i :: rev) x ++ flattenArray rev (i+1) xs
+  termination_by structural xs => xs
+  def flattenObject (rev : Path) : List (String × J) → List Row
+    | [] => []
+    | (key, val) :: xs => flattenFrom (.field key :: rev) val ++ flattenObject rev xs
+  termination_by structural xs => xs
+end
+def forwardRows (wire color noSort : Bool) (parent : Path) (v : J) : String :=
+  let rows := flattenFrom parent.reverse v
+  let rows := if noSort then rows else rows.mergeSort (fun a b => comparePath a.1 b.1 != .gt)
+  String.join (rows.map (renderRow wire color))
+structure Report where
+  status : Nat
+  out : Bytes
+  err : Bytes
+deriving BEq, Inhabited, Repr
+def report (n : Nat) (out err : String) : Report := ⟨n, bytes out, bytes err⟩
+inductive Lines where
+  | line (s : Bytes) (rest : Bytes)
+  | endOfInput
+  | tooLong
+def maxLineBytes : Nat := 65535
+def dropCR (bs : Bytes) : Bytes :=
+  if bs.getLast? == some 13 then bs.take (bs.length-1) else bs
+def takeLine : Nat → Bytes → Bytes → Lines
+  | _, [], [] => .endOfInput
+  | _, [], rev => .line (dropCR rev.reverse) []
+  | _, 10::tail, rev => .line (dropCR rev.reverse) tail
+  | 0, _::_, _ => .tooLong
+  | k+1, b::tail, rev => takeLine k tail (b::rev)
+termination_by structural _ bs _ => bs
+def lineFault := "bufio.Scanner: token too long"
+def forwardLine (wire color noSort : Bool) (i : Nat) (bs : Bytes) : Except String String :=
+  match parseDoc bs with
+  | .error e => .error (message false e)
+  | .ok v => .ok (forwardRows wire color noSort [.index i] v)
+def fwdDiag (s : String) : String := "failed to form statements: " ++ s ++ "\n"
+def forwardLines (wire color noSort : Bool) : Nat → Nat → Bytes → List String → Report
+  | 0, _, _, acc => report 0 (String.join acc.reverse) ""
+  | fuel+1, i, bs, acc =>
+    match takeLine bs.length bs [] with
+    | .endOfInput => report 0 (String.join acc.reverse) ""
+    | .tooLong => report 3 (String.join acc.reverse) (fwdDiag lineFault)
+    | .line row rest =>
+      match forwardLine wire color noSort i row with
+      | .error e => report 3 (String.join acc.reverse) (fwdDiag e)
+      | .ok rows => forwardLines wire color noSort fuel (i+1) rest (rows :: acc)
+termination_by structural n _ _ _ => n
+def forward (stream wire color noSort : Bool) (input : Bytes) : Report :=
+  if stream then forwardLines wire color noSort (input.length+1) 0 input [renderRow wire color ([], .arr [])]
+  else
+    match parseDoc input with
+    | .error e => report 3 "" (fwdDiag (message false e))
+    | .ok v => report 0 (forwardRows wire color noSort [] v) ""
+structure Binary64 where
+  significand : Nat
+  exponent : Int
+deriving BEq, Inhabited
+def natOfDigits (cs : List Char) : Nat :=
+  cs.foldl (fun a c => 10*a + (c.toNat-48)) 0
+def ratio (base coefficient : Nat) (e : Int) : Nat × Nat :=
+  if e < 0 then (coefficient, base^e.natAbs) else (coefficient*base^e.toNat, 1)
+def scaleRatio (base p q : Nat) (e : Int) : Nat × Nat :=
+  if e < 0 then (p, q*base^e.natAbs) else (p*base^e.toNat, q)
+def exponentValue (cs : List Char) : Int :=
+  match cs with
+  | '-'::xs => -(Int.ofNat (natOfDigits xs))
+  | '+'::xs => Int.ofNat (natOfDigits xs)
+  | _ => Int.ofNat (natOfDigits cs)
+def decimalComponents (s : String) : Bool × Nat × Int :=
+  let neg := s.startsWith "-"
+  let cs := if neg then s.toList.drop 1 else s.toList
+  let mant := cs.takeWhile (fun c => c != 'e' && c != 'E')
+  let exp := exponentValue ((cs.drop mant.length).drop 1)
+  let frac := (mant.dropWhile (· != '.')).drop 1
+  (neg, natOfDigits (mant.filter (· != '.')), exp - Int.ofNat frac.length)
+def powerBelow (base p q : Nat) (e : Int) : Bool :=
+  let (x,y) := scaleRatio base p q (-e)
+  x < y
+def binaryExponent (p q : Nat) : Int :=
+  let e := (Int.ofNat p.log2) - (Int.ofNat q.log2)
+  if powerBelow 2 p q e then e - 1 else e
+def roundEven (a b : Nat) : Nat :=
+  let k := a/b
+  let r := 2*(a%b)
+  if b < r || (b == r && k%2 == 1) then k+1 else k
+def binaryOfRatio (p q : Nat) : Option Binary64 :=
+  if p == 0 then some ⟨0,-1074⟩ else
+  let e := binaryExponent p q
+  if e > 1023 then none else
+  let exp := max (-1074) (e-52)
+  let (a,b) := scaleRatio 2 p q (-exp)
+  let v := roundEven a b
+  if v == 9007199254740992 then
+    if exp == 971 then none else some ⟨4503599627370496,exp+1⟩
+  else some ⟨v,exp⟩
+def readBinary64 (s : String) : Option (Bool × Binary64) :=
+  let (neg, c, e) := decimalComponents s
+  let mag := (Int.ofNat ((toString c).length)) + e
+  if c == 0 || mag < -323 then some (neg, ⟨0,-1074⟩)
+  else if mag > 309 then none
+  else
+    let (p,q) := ratio 10 c e
+    (binaryOfRatio p q).map (neg,·)
+def decimalExponent (p q : Nat) : Int :=
+  let e := (Int.ofNat ((toString p).length)) - (Int.ofNat ((toString q).length))
+  if powerBelow 10 p q e then e - 1 else e
+def roundtripDecimal (v : Binary64) (k : Nat) (e : Int) : Bool :=
+  let (p,q) := ratio 10 k e
+  binaryOfRatio p q == some v
+def chooseDecimal (v : Binary64) (p q : Nat) (magnitude : Int) : Nat → Nat → Nat × Int
+  | 0, _ => (0,0)
+  | fuel+1, digits =>
+    let exp := magnitude - Int.ofNat digits + 1
+    let (a,b) := scaleRatio 10 p q (-exp)
+    let lo := a/b
+    let hi := lo+1
+    let k := roundEven a b
+    let other := if k == lo then hi else lo
+    if roundtripDecimal v k exp then (k,exp)
+    else if roundtripDecimal v other exp then (other,exp)
+    else chooseDecimal v p q magnitude fuel (digits+1)
+termination_by structural fuel _ => fuel
+def stripZeros : Nat → Nat → Int → Nat × Int
+  | 0, k, e => (k,e)
+  | f+1, k, e =>
+    if k%10 == 0 && k != 0 then stripZeros f (k/10) (e+1)
+    else (k,e)
+termination_by structural f _ _ => f
+def zeros (n : Nat) : String := String.ofList (List.replicate n '0')
+def decimalText (neg : Bool) (v : Binary64) (scientificCutoff : Bool := true) : String :=
+  let sign := if neg then "-" else ""
+  if v.significand == 0 then sign ++ "0" else
+  let (p,q) := ratio 2 v.significand v.exponent
+  let (chosen,e) := chooseDecimal v p q (decimalExponent p q) 17 1
+  let (sig,e) := stripZeros 17 chosen e
+  let cs := (toString sig).toList
+  let exp := Int.ofNat cs.length + e - 1
+  if scientificCutoff && (exp < -6 || exp >= 21) then
+    let tail := if cs.length == 1 then "" else "." ++ String.ofList (cs.drop 1)
+    sign ++ String.ofList (cs.take 1) ++ tail ++ "e" ++ (if exp < 0 then "-" else "+") ++ toString exp.natAbs
+  else if e >= 0 then sign ++ String.ofList cs ++ zeros e.toNat
+  else if exp < 0 then sign ++ "0." ++ zeros (exp.natAbs - 1) ++ String.ofList cs
+  else
+    let n := exp.toNat+1
+    sign ++ String.ofList (cs.take n) ++ "." ++ String.ofList (cs.drop n)
+def floatError (s : String) : String :=
+  "json: cannot unmarshal number " ++ s ++ " into Go value of type float64"
+mutual
+  def floatCheck : J → Except String Unit
+    | .num s => if (readBinary64 s).isSome then .ok () else .error (floatError s)
+    | .arr vs => floatCheckArray vs
+    | .obj vs => floatCheckObject vs
+    | _ => .ok ()
+  termination_by structural v => v
+  def floatCheckArray : List J → Except String Unit
+    | [] => .ok ()
+    | v::vs => do
+      floatCheck v
+      floatCheckArray vs
+  termination_by structural vs => vs
+  def floatCheckObject : List (String × J) → Except String Unit
+    | [] => .ok ()
+    | (_,v)::vs => do
+      floatCheck v
+      floatCheckObject vs
+  termination_by structural vs => vs
+end
+/-- Keep the original bytes of each rune for token spelling and diagnostics. -/
+structure TokenRune where
+  scalar : Char
+  spelling : Bytes
+
+def runeWidth (first : UInt8) : Nat :=
+  if first < 128 then 1
+  else if first < 224 then 2
+  else if first < 240 then 3
+  else 4
+
+def tokenRunes : Nat → Bytes → List TokenRune
+  | 0, _ | _, [] => []
+  | fuel+1, input@(first :: rest) =>
+    let width := runeWidth first
+    let spelling := input.take width
+    match (String.fromUTF8? spelling.toByteArray).bind (fun s => s.toList.head?) with
+    | some scalar => ⟨scalar, spelling⟩ :: tokenRunes fuel (input.drop width)
+    | none => ⟨'�', [first]⟩ :: tokenRunes fuel rest
+termination_by structural fuel _ => fuel
+
+def tokenSpelling (runes : List TokenRune) : Bytes :=
+  runes.flatMap TokenRune.spelling
+
+inductive Piece where
+  | name (surface : Bytes) (key : String)
+  | quoted (surface token : Bytes)
+  | offset (surface : Bytes) (token : String)
+deriving Inhabited
+
+def Piece.surface : Piece → Bytes
+  | .name s _ | .quoted s _ | .offset s _ => s
+
+def pathBytes (p : List Piece) : Bytes := p.flatMap Piece.surface
+
+def scanQuoted (rev : List TokenRune) : List TokenRune → Bool → List TokenRune × List TokenRune
+  | [], _ => (rev.reverse, [])
+  | c :: rest, escaped =>
+    if c.scalar == '�' then
+      match rest with
+      | stop@⟨'"', _⟩ :: tail => ((stop :: c :: rev).reverse, tail)
+      | _ => ((c :: rev).reverse, rest)
+    else if c.scalar == '"' && !escaped then ((c :: rev).reverse, rest)
+    else scanQuoted (c :: rev) rest (c.scalar == '\\' && !escaped)
+termination_by structural cursor _ => cursor
+
+def takeLiteral (cs : List TokenRune) : List TokenRune × List TokenRune :=
+  match cs with
+  | start@⟨'"', _⟩ :: rest => scanQuoted [start] rest false
+  | left@⟨'{', _⟩ :: right@⟨'}', _⟩ :: rest => ([left, right], rest)
+  | left@⟨'[', _⟩ :: right@⟨']', _⟩ :: rest => ([left, right], rest)
+  | start@⟨'{', _⟩ :: rest | start@⟨'[', _⟩ :: rest => ([start], rest)
+  | c :: tail =>
+    let initial := c.scalar
+    let letters := if initial == 't' then "rue" else if initial == 'f' then "alse" else if initial == 'n' then "ul" else ""
+    if letters.isEmpty then
+      let body := fun r : TokenRune => r.scalar != ';' && r.scalar != '�'
+      let leading := cs.takeWhile body
+      match cs.dropWhile body with
+      | marker@⟨'�', _⟩ :: rest => (leading ++ [marker], rest)
+      | rest => (leading, rest)
+    else
+      let accepts := fun r : TokenRune => letters.toList.contains r.scalar
+      (c :: tail.takeWhile accepts, tail.dropWhile accepts)
+  | [] => ([], [])
+
+structure LineLex where
+  path : List Piece
+  rhs : Option Bytes
+  semicolon : Bool
+  hadGap : Bool := false
+
+inductive LexOutcome where
+  | tokens (lex : LineLex)
+  | invalid (before : Bytes)
+  | unattached (displayed : Bytes)
+
+def asciiGap (r : TokenRune) : Bool := r.scalar == ' '
+
+def lexRhs (rev : List Piece) (cs : List TokenRune) : LexOutcome :=
+  let (token, rest) := takeLiteral (cs.dropWhile asciiGap)
+  let ends := ((rest.dropWhile asciiGap).head?.map TokenRune.scalar) == some ';'
+  .tokens ⟨rev.reverse, some (tokenSpelling token), ends, false⟩
+
+def lexPath (rev : List Piece) : Nat → List TokenRune → LexOutcome
+  | 0, _ => .tokens ⟨rev.reverse, none, false, false⟩
+  | f+1, cs =>
+    match cs with
+    | [] => .tokens ⟨rev.reverse, none, false, false⟩
+    | ⟨'�', _⟩ :: _ => .tokens ⟨rev.reverse, none, false, true⟩
+    | ⟨'=', _⟩ :: rest => lexRhs rev rest
+    | ⟨' ', _⟩ :: rest =>
+      if rev.isEmpty then .tokens ⟨[], none, false, true⟩
+      else
+        match rest.dropWhile asciiGap with
+        | ⟨'=', _⟩ :: tail => lexRhs rev tail
+        | _ => .tokens ⟨rev.reverse, none, false, true⟩
+    | ⟨'.', _⟩ :: c :: tail =>
+      if identifierStart c.scalar then
+        let accepts := fun r : TokenRune => identifierContinue r.scalar
+        let name := String.ofList ((c :: tail.takeWhile accepts).map TokenRune.scalar)
+        lexPath (.name (46 :: bytes name) name :: rev) f (tail.dropWhile accepts)
+      else .invalid (pathBytes rev.reverse ++ [46])
+    | [⟨'.', _⟩] => .invalid (pathBytes rev.reverse ++ [46])
+    | ⟨'[', _⟩ :: quote@⟨'"', _⟩ :: tail =>
+      let (token, rest) := scanQuoted [quote] tail false
+      let key := tokenSpelling token
+      match rest with
+      | ⟨']', _⟩ :: tail => lexPath (.quoted (91 :: (key ++ [93])) key :: rev) f tail
+      | _ => .invalid (pathBytes rev.reverse ++ [91] ++ key)
+    | ⟨'[', _⟩ :: tail =>
+      let accepts := fun r : TokenRune => rangesContain digitRanges r.scalar
+      let token := String.ofList ((tail.takeWhile accepts).map TokenRune.scalar)
+      match tail.dropWhile accepts with
+      | ⟨']', _⟩ :: tail =>
+        if token.isEmpty then .invalid (pathBytes rev.reverse ++ [91])
+        else lexPath (.offset (91 :: (bytes token ++ [93])) token :: rev) f tail
+      | _ => .invalid (pathBytes rev.reverse ++ [91] ++ bytes token)
+    | ⟨'-', _⟩ :: _ =>
+      if rev.isEmpty then .tokens ⟨[], none, false, false⟩
+      else .unattached (pathBytes rev.reverse ++ tokenSpelling cs)
+    | c :: tail =>
+      if identifierStart c.scalar then
+        let accepts := fun r : TokenRune => identifierContinue r.scalar
+        let name := String.ofList ((c :: tail.takeWhile accepts).map TokenRune.scalar)
+        lexPath (.name (bytes name) name :: rev) f (tail.dropWhile accepts)
+      else .invalid (pathBytes rev.reverse)
+termination_by structural fuel _ => fuel
+
+def lexLine (bs : Bytes) : LexOutcome :=
+  let runes := tokenRunes bs.length bs
+  lexPath [] (runes.length+1) runes
+
+def showRawLine (x : LineLex) : Bytes :=
+  let value := match x.rhs with
+    | none => []
+    | some token => bytes " = " ++ token ++ (if x.semicolon then [59] else [])
+  pathBytes x.path ++ value
+
+def tick (data : Bytes) : Bytes := 96 :: (data ++ [96])
+
+def stmtError (line msg : Bytes) : Bytes :=
+  bytes "ungron failed for " ++ tick line ++ bytes ": " ++ msg
+
+def assignmentPart : Piece → Except Bytes Part
+  | .name _ s => .ok (.field s)
+  | .quoted _ token => match parseDoc token with
+    | .ok (.str key) => .ok (.field key)
+    | _ => .error (bytes "invalid quoted key " ++ tick token)
+  | .offset _ token =>
+    match token.toNat? with
+    | some n =>
+      if n <= 9223372036854775807 then .ok (.index n)
+      else .error (bytes "invalid integer key " ++ tick (bytes token))
+    | none => .error (bytes "invalid integer key " ++ tick (bytes token))
+
+def assignmentRow (bs : Bytes) : Except Bytes (Option Row) := do
+  match lexLine bs with
+  | .invalid before => .error (stmtError before (bytes "invalid statement"))
+  | .unattached line => .error (stmtError line (bytes "statement has no value"))
+  | .tokens lex =>
+    if lex.rhs.isNone && lex.path.length <= 1 then return none
+    if !lex.semicolon then throw (stmtError (showRawLine lex) (bytes "statement has no value"))
+    let token := lex.rhs.getD []
+    let parts ← lex.path.mapM fun x => (assignmentPart x).mapError (stmtError (showRawLine lex))
+    let j ← (parseDoc token).mapError fun _ =>
+      stmtError (showRawLine lex) (bytes "invalid value " ++ tick token)
+    return some (parts, j)
+inductive ReconError where
+  | malformed (diagnostic : String)
+  | statement (diagnostic : Bytes)
+  | conflict (diagnostic : String)
+  | negative (index : Int)
+deriving Inhabited
+def int64Decimal (s : String) : Option Int := do
+  let neg := s.startsWith "-"
+  let n ← (if neg then (s.drop 1).toString else s).toNat?
+  if n > (9223372036854775807 + if neg then 1 else 0) then none
+  else some (if neg then -(Int.ofNat n) else Int.ofNat n)
+def jsonLayout (bs : Bytes) : Except ReconError (List J × J) := do
+  let root ← (parseDoc bs true).mapError (fun e => .malformed (message true e))
+  let invalid := ReconError.malformed "invalid JSON layout"
+  let rows ← match root with
+    | .arr xs => .ok xs
+    | .null => .error invalid
+    | _ =>
+      let ty := match root with
+        | .obj _ => "object"
+        | .str _ => "string"
+        | .bool _ => "bool"
+        | .num _ => "number"
+        | _ => ""
+      .error (.malformed ("json: cannot unmarshal " ++ ty ++ " into Go value of type []interface {}"))
+  (floatCheckArray rows).mapError ReconError.malformed
+  match rows with
+  | [.arr ks,v] =>
+    match v with | .obj (_::_) | .arr (_::_) => throw invalid | _ => pure ()
+    if ks.any (fun k => match k with | .num _ | .str _ => false | _ => true) then throw invalid
+    return (ks,v)
+  | _ => throw invalid
+def rowOfLayout (ks : List J) (v : J) : Except ReconError Row := do
+  let norm := fun k =>
+    match k with
+    | .num s =>
+      match readBinary64 s with
+      | some (neg,num) => decimalText neg num false
+      | none => s
+    | .str s => quote s
+    | _ => ""
+  let renderedValue := match v with
+    | .num _ => norm v
+    | _ => valueText false v
+  let displayed := "json" ++ String.join (ks.map (fun x => "[" ++ norm x ++ "]")) ++ " = " ++ renderedValue ++ ";"
+  let path ← ks.mapM fun k => do
+    match k with
+    | .str s => return .field s
+    | .num _ =>
+      let n := norm k
+      match int64Decimal n with
+      | none => throw (.statement (stmtError (bytes displayed) (bytes "invalid integer key " ++ tick (bytes n))))
+      | some i =>
+        if i < 0 then throw (.negative i)
+        else return .index i.toNat
+    | _ => throw (.malformed "invalid JSON layout")
+  return (path,v)
+def gatherLayouts : Nat → Bytes → List (List J × J) → Except ReconError (List (List J × J))
+  | 0, _, acc => .ok acc.reverse
+  | f+1, bs, acc => do
+    match takeLine bs.length bs [] with
+    | .endOfInput => return acc.reverse
+    | .tooLong => throw (.malformed "failed to read input statements")
+    | .line row rest =>
+      let pair ← jsonLayout row
+      gatherLayouts f rest (pair::acc)
+termination_by structural f _ _ => f
+def fromLayouts (bs : Bytes) : Except ReconError (List Row) := do
+  let layouts ← gatherLayouts (bs.length+1) bs []
+  layouts.mapM (fun (ks,v) => rowOfLayout ks v)
+def rootIsJson (p : Path) : Bool := p.head? == some (.field "json")
+def unwrapRoot (rows : List Row) : List Row :=
+  if rows.all (rootIsJson ·.1) then rows.map (fun (k,v) => (k.drop 1,v))
+  else rows
+def singletonAt : Path → J → J
+  | [], v => v
+  | .field k :: ks, v => .obj [(k,singletonAt ks v)]
+  | .index n :: ks, v => .arr (List.replicate n .null ++ [singletonAt ks v])
+termination_by structural p _ => p
+def mergeError (kind : String) := "failed to merge statements: cannot merge " ++ kind ++ " with non-" ++ kind
+mutual
+  def mergeJSON : Nat → J → J → Except ReconError J
+    | 0, _, new => .ok new
+    | f+1, .arr old, .arr new => return .arr (← mergeArray f old new)
+    | _+1, .arr _, _ => .error (.conflict (mergeError "array"))
+    | f+1, .obj old, .obj new => return .obj (← mergeObject f old new)
+    | _+1, .obj _, _ => .error (.conflict (mergeError "object"))
+    | _+1, _, new => .ok new
+  termination_by structural n _ _ => n
+  def mergeArray : Nat → List J → List J → Except ReconError (List J)
+    | 0, _, ys => .ok ys
+    | _+1, [], ys => .ok ys
+    | _+1, xs, [] => .ok xs
+    | f+1, x::xs, y::ys => do
+      let h ← match y with | .null => pure x | _ => mergeJSON f x y
+      return h :: (← mergeArray f xs ys)
+  termination_by structural n _ _ => n
+  def mergeObject : Nat → List (String × J) → List (String × J) → Except ReconError (List (String × J))
+    | 0, _, ys => .ok ys
+    | _+1, xs, [] => .ok xs
+    | f+1, xs, (k,v)::ys => do
+      let new ← match xs.find? (fun item => item.1 == k) with
+        | some (_,x) => mergeJSON f x v
+        | none => pure v
+      mergeObject f (setKey xs k new) ys
+  termination_by structural n _ _ => n
+end
+def reconstruct (wire : Bool) (fuel : Nat) (rows : List Row) : Except ReconError J :=
+  (if wire then rows else unwrapRoot rows).foldlM (fun s (p,v) => mergeJSON fuel s (singletonAt p v)) .null
+def indent (depth : Nat) : String := String.ofList (List.replicate (2*depth) ' ')
+mutual
+  def pretty (wire : Bool) (depth : Nat) : J → String
+    | .null => "null"
+    | .bool b => if b then "true" else "false"
+    | .num s =>
+      if wire then
+        match readBinary64 s with
+        | some (neg, v) => decimalText neg v
+        | none => s
+      else s
+    | .str s => quote s false
+    | .arr [] => "[]"
+    | .arr (v::vs) =>
+      "[\n" ++ indent (depth+1) ++ pretty wire (depth+1) v ++ prettyArray wire (depth+1) vs ++ "\n" ++ indent depth ++ "]"
+    | .obj [] => "{}"
+    | .obj xs =>
+      let entries := prettyFields wire (depth+1) xs
+      let sorted := entries.mergeSort (fun a b => compare a.1 b.1 != .gt)
+      "{\n" ++ String.intercalate ",\n" (sorted.map Prod.snd) ++ "\n" ++ indent depth ++ "}"
+  termination_by structural j => j
+  def prettyArray (wire : Bool) (depth : Nat) : List J → String
+    | [] => ""
+    | v :: vs => ",\n" ++ indent depth ++ pretty wire depth v ++ prettyArray wire depth vs
+  termination_by structural vs => vs
+  def prettyFields (wire : Bool) (depth : Nat) : List (String × J) → List (String × String)
+    | [] => []
+    | (k,v) :: vs =>
+      (k, indent depth ++ quote k false ++ ": " ++ pretty wire depth v) :: prettyFields wire depth vs
+  termination_by structural xs => xs
+end
+def gatherRows : Nat → Bytes → List Row → Except ReconError (List Row)
+  | 0, _, acc => .ok acc.reverse
+  | f+1, bs, acc => do
+    match takeLine bs.length bs [] with
+    | .endOfInput => return acc.reverse
+    | .tooLong => .error (.malformed ("failed to read input: " ++ lineFault))
+    | .line first rest =>
+      let x ← (assignmentRow first).mapError ReconError.statement
+      gatherRows f rest (match x with | some x => x :: acc | none => acc)
+termination_by structural fuel _ _ => fuel
+def ungronReport (error : ReconError) : Report :=
+  match error with
+  | .negative i => report 2 "" ("panic: runtime error: index out of range [" ++ toString i ++ "]\n")
+  | .conflict msg => report 5 "" (msg ++ "\n")
+  | .statement msg => ⟨5, [], msg ++ [10]⟩
+  | .malformed msg => report (if msg.startsWith "failed to read input: " then 2 else 5) "" (msg ++ "\n")
+def reverseCli (wire : Bool) (bs : Bytes) : Report :=
+  let rows := if wire then fromLayouts bs else gatherRows (bs.length+1) bs []
+  match rows with
+  | .error e => ungronReport e
+  | .ok [] => report 5 "" "no statements were parsed\n"
+  | .ok rows =>
+    let size := fun xs : List Row => xs.foldl (fun n (p,_) =>
+      p.foldl (fun a x => match x with | .field _ => a+1 | .index i => a+i+1) (n+1)) 1
+    match reconstruct wire (2 * size rows + 1) rows with
+    | .error e => ungronReport e
+    | .ok v => report 0 (pretty wire 0 v ++ "\n") ""
+def valueLine (bs : Bytes) : Except (Nat × Bytes) Bytes :=
+  match lexLine bs with
+  | .invalid _ | .unattached _ => .ok []
+  | .tokens lex =>
+    if lex.path.isEmpty && lex.rhs.isNone && (lex.hadGap || bs.isEmpty) then
+      .error (5, bytes "failed to parse '" ++ bs ++ bytes "' as gron statement\n")
+    else match lex.rhs with
+    | none =>
+      if pathBytes lex.path == bytes "json" then
+        .error (2, bytes "panic: runtime error: index out of range [0] with length 0\n")
+      else .ok []
+    | some raw =>
+      if raw.head? == some 123 || raw.head? == some 91 then .ok []
+      else if raw.head? == some 34 then
+        match parseDoc raw with
+        | .ok (.str s) => .ok (bytes s ++ [10])
+        | _ => .ok []
+      else .ok (raw ++ [10])
+
+def valuesLoop : Nat → Bytes → List Bytes → Report
+  | 0, _, acc => ⟨0, acc.reverse.flatten, []⟩
+  | fuel+1, bs, acc =>
+    match takeLine maxLineBytes bs [] with
+    | .endOfInput | .tooLong => ⟨0, acc.reverse.flatten, []⟩
+    | .line row rest =>
+      match valueLine row with
+      | .error (n, msg) => ⟨n, acc.reverse.flatten, msg⟩
+      | .ok v => valuesLoop fuel rest (v :: acc)
+termination_by structural fuel _ _ => fuel
+
+def values (bs : Bytes) : Report := valuesLoop (bs.length+1) bs []
+def helpText : String := "Transform JSON (from a file, URL, or stdin) into discrete assignments to make it greppable\n\nUsage:\n  gron [OPTIONS] [FILE|URL|-]\n\nOptions:\n  -u, --ungron     Reverse the operation (turn assignments back into JSON)\n  -v, --values     Print just the values of provided assignments\n  -c, --colorize   Colorize output (default on tty)\n  -m, --monochrome Monochrome (don't colorize output)\n  -s, --stream     Treat each line of input as a separate JSON object\n  -k, --insecure   Disable certificate validation\n  -x, --proxy      Set proxy configuration\n      --noproxy    Comma-separated list of hosts for which not to use a proxy, if one is specified.\n  -j, --json       Represent gron data as JSON stream\n      --no-sort    Don't sort output (faster)\n      --version    Print version information\n\nExit Codes:\n  0\tOK\n  1\tFailed to open file\n  2\tFailed to read input\n  3\tFailed to form statements\n  4\tFailed to fetch URL\n  5\tFailed to parse statements\n  6\tFailed to encode JSON\n\nExamples:\n  gron /tmp/apiresponse.json\n  gron http://jsonplaceholder.typicode.com/users/1 \n  curl -s http://jsonplaceholder.typicode.com/users/1 | gron\n  gron http://jsonplaceholder.typicode.com/users/1 | grep company | gron --ungron\n"
+inductive Source where
+  | stdin
+  | file (path : String)
+  | url (url : String)
+deriving BEq, Inhabited
+inductive Mode where
+  | forward
+  | reverse
+  | values
+deriving BEq, Inhabited
+structure Settings where
+  reverse : Bool := false
+  values : Bool := false
+  stream : Bool := false
+  json : Bool := false
+  colorize : Bool := false
+  monochrome : Bool := false
+  noSort : Bool := false
+  skipVerify : Bool := false
+  version : Bool := false
+  proxy : String := ""
+  noProxy : String := ""
+deriving BEq, Inhabited
+structure Job where
+  source : Source
+  mode : Mode
+  stream : Bool
+  json : Bool
+  color : Bool
+  noSort : Bool
+  skipVerify : Bool
+  proxy : String
+  noProxy : String
+deriving BEq, Inhabited
+inductive Plan where
+  | help
+  | version
+  | badFlags (diagnostic : String)
+  | run (job : Job)
+deriving BEq, Inhabited
+def sourceOf (s : String) : Source :=
+  if s == "" || s == "-" then .stdin
+  else
+    let lower := s.toLower
+    if lower.startsWith "https://" || lower.startsWith "http://" then .url s
+    else .file s
+def makeJob (o : Settings) (tty : Bool) (positionals : List String) : Job :=
+  let mode := if o.reverse then Mode.reverse else if o.values then .values else .forward
+  ⟨sourceOf (positionals.headD ""), mode, o.stream, o.json, o.colorize || (tty && !o.monochrome),
+   o.noSort, o.skipVerify, o.proxy, o.noProxy⟩
+def stringFlag (name : String) : Option (String → Settings → Settings) :=
+  match name with
+  | "x" | "proxy" => some (fun v o => {o with proxy := v})
+  | "noproxy" => some (fun v o => {o with noProxy := v})
+  | _ => none
+def boolFlag (name : String) : Option (Bool → Settings → Settings) :=
+  match name with
+  | "u" | "ungron" => some (fun v o => {o with reverse := v})
+  | "v" | "values" => some (fun v o => {o with values := v})
+  | "s" | "stream" => some (fun v o => {o with stream := v})
+  | "j" | "json" => some (fun v o => {o with json := v})
+  | "c" | "colorize" => some (fun v o => {o with colorize := v})
+  | "m" | "monochrome" => some (fun v o => {o with monochrome := v})
+  | "k" | "insecure" => some (fun v o => {o with skipVerify := v})
+  | "version" => some (fun v o => {o with version := v})
+  | "no-sort" => some (fun v o => {o with noSort := v})
+  | _ => none
+def flagBool (s : String) : Option Bool :=
+  if ["1","t","T","true","TRUE","True"].contains s then some true
+  else if ["0","f","F","false","FALSE","False"].contains s then some false
+  else none
+def goQuote (s : String) : String :=
+  let quoteOne := fun c : Char =>
+    let n := c.toNat
+    if n == 7 then "\\a"
+    else if n == 11 then "\\v"
+    else if n < 32 && ![8,9,10,12,13].contains n || n == 127 then
+      String.ofList ['\\','x',hexDigit false (n / 16),hexDigit false (n % 16)]
+    else if [8,9,10,12,13].contains n then quoteChar c false
+    else if LojitaCtx.CharClass.printable c && !(128 ≤ n && n ≤ 160) then quoteChar c false
+    else if n < 65536 then hexEscape false n
+    else "\\U" ++ String.ofList (([7,6,5,4,3,2,1,0] : List Nat).map (fun k => hexDigit false ((n / 16^k) % 16)))
+  "\"" ++ String.join (s.toList.map quoteOne) ++ "\""
+def planFlags (tty : Bool) : Nat → Settings → List String → Plan
+  | 0, o, args => if o.version then .version else .run (makeJob o tty args)
+  | n+1, o, args =>
+    match args with
+    | [] => if o.version then .version else .run (makeJob o tty [])
+    | arg::rest =>
+      if arg == "--" then if o.version then .version else .run (makeJob o tty rest)
+      else if !arg.startsWith "-" || arg == "-" then
+        if o.version then .version else .run (makeJob o tty args)
+      else
+        let body := (arg.drop (if arg.startsWith "--" then 2 else 1)).toString
+        if body.startsWith "-" || body.startsWith "=" then .badFlags ("bad flag syntax: " ++ arg)
+        else
+          let name := String.ofList (body.toList.takeWhile (· != '='))
+          let value := if name.length == body.length then none else some ((body.drop (name.length+1)).toString)
+          if name == "help" || name == "h" then .help
+          else match boolFlag name with
+            | some change =>
+              match value with
+              | none => planFlags tty n (change true o) rest
+              | some v => match flagBool v with
+                | some b => planFlags tty n (change b o) rest
+                | none => .badFlags ("invalid boolean value " ++ goQuote v ++ " for -" ++ name ++ ": parse error")
+            | none => match stringFlag name with
+              | some change => match value, rest with
+                | some v, _ => planFlags tty n (change v o) rest
+                | none, v::tail => planFlags tty n (change v o) tail
+                | none, [] => .badFlags ("flag needs an argument: -" ++ name)
+              | none => .badFlags ("flag provided but not defined: -" ++ name)
+termination_by structural n _ _ => n
+def dispatchModel (defaultReverse tty : Bool) (args : List String) : Plan :=
+  planFlags tty (args.length+1) {reverse := defaultReverse} args
+def dispatchInEnv (defaultReverse tty : Bool) (env : List (String × String)) (args : List String) : Plan :=
+  let term := (LojitaCtx.World.lookupEnvVar "TERM" env).getD ""
+  let noColor := (LojitaCtx.World.lookupEnvVar "NO_COLOR" env).getD ""
+  let selected := dispatchModel defaultReverse (tty && term != "dumb") args
+  match selected with
+  | .run job => .run {job with color := job.color && noColor.isEmpty}
+  | _ => selected
+inductive Acquired where
+  | body (data : Bytes)
+  | openError (message : String)
+  | fetchError (message : String)
+  | readError (prefixBytes : Bytes) (message : String)
+deriving Inhabited
+def versionText := "gron version dev\n"
+def processBody (job : Job) (data : Bytes) : Report :=
+  match job.mode with
+  | .forward => forward job.stream job.json job.color job.noSort data
+  | .reverse => reverseCli job.json data
+  | .values => values data
+def documentBeforeEOF (job : Job) (data : Bytes) : Option Report :=
+  match parsePrefix data with
+  | .error (.incomplete _) => none
+  | .error e => some (report 3 "" (fwdDiag (message false e)))
+  | .ok (doc,rest) =>
+    let delimited := match doc with
+      | .obj _ | .arr _ => true
+      | _ => !rest.isEmpty
+    if delimited then some (report 0 (forwardRows job.json job.color job.noSort [] doc) "")
+    else none
+def readFault (job : Job) (data : Bytes) (msg : String) : Report :=
+  match job.mode with
+  | .forward =>
+    if job.stream then
+      let r := processBody job data
+      if r.status != 0 then r
+      else ⟨3, r.out, bytes ("error reading multiline input: " ++ msg ++ ": %!s(MISSING)\n")⟩
+    else (documentBeforeEOF job data).getD (report 3 "" (fwdDiag msg))
+  | .reverse =>
+    let failure := report 2 "" "failed to read input statements\n"
+    if job.json then
+      match gatherLayouts (data.length+1) data [] with
+      | .error e => ungronReport e
+      | .ok _ => failure
+    else failure
+  | .values => processBody job data
+def invocationReport (plan : Plan) (stdin : Bytes) (loaded : Acquired) : Report :=
+  match plan with
+  | .help => report 0 "" helpText
+  | .version => report 0 versionText ""
+  | .badFlags msg => report 2 "" (msg ++ "\n" ++ helpText)
+  | .run job =>
+    match job.source with
+    | .stdin => processBody job stdin
+    | _ =>
+      match loaded with
+      | .openError msg => report 1 "" (msg ++ "\n")
+      | .fetchError msg => report 4 "" (msg ++ "\n")
+      | .readError body msg =>
+        if job.mode == .values then processBody job stdin else readFault job body msg
+      | .body body => processBody job (if job.mode == .values then stdin else body)
+structure Snapshot where
+  status : Option Nat
+  out : Bytes
+  err : Bytes
+deriving BEq, Inhabited, Repr
+def Snapshot.finished (r : Report) : Snapshot := ⟨some r.status,r.out,r.err⟩
+def emptySnapshot : Snapshot := ⟨none,[],[]⟩
+def openFragments (bs : Bytes) : Bytes × Bytes :=
+  let revTail := bs.reverse.takeWhile (· != 10)
+  (bs.take (bs.length-revTail.length),revTail.reverse)
+def scannerReachedLimit : Nat → Bytes → Bool
+  | _, [] => false
+  | _, 10::rest => scannerReachedLimit 0 rest
+  | n, _::rest => if maxLineBytes ≤ n then true else scannerReachedLimit (n+1) rest
+termination_by structural _ bs => bs
+def openDocument (job : Job) (data : Bytes) : Snapshot :=
+  (documentBeforeEOF job data).elim emptySnapshot Snapshot.finished
+def prefixReport (job : Job) (data : Bytes) : Snapshot :=
+  let (full,_) := openFragments data
+  match job.mode with
+  | .forward =>
+    if job.stream then
+      let r := processBody job full
+      if r.status != 0 then Snapshot.finished r else ⟨none, r.out, r.err⟩
+    else openDocument job data
+  | .reverse =>
+    if job.json then
+      match gatherLayouts (full.length+1) full [] with
+      | .error e => Snapshot.finished (ungronReport e)
+      | .ok _ => emptySnapshot
+    else emptySnapshot
+  | .values =>
+    let r := processBody job full
+    if r.status != 0 || scannerReachedLimit 0 data then Snapshot.finished r
+    else ⟨none, r.out, r.err⟩
+inductive ForwardEnd where
+  | complete
+  | malformed (diagnostic : Bytes)
+  | readError (diagnostic : Bytes)
+inductive ReverseEnd where
+  | complete (stdoutBody : Bytes)
+  | noStatements
+  | malformed (diagnostic : Bytes)
+  | conflictingPaths (diagnostic : Bytes)
+  | readError
+  | negativeIndex (panicHeader : Bytes)
+  | encodeError (diagnostic : Bytes)
+inductive ValuesEnd where
+  | complete
+  | malformed (diagnostic : Bytes)
+  | panic (panicHeader : Bytes)
+inductive Invocation where
+  | help
+  | version
+  | badFlags (diagnostic : String)
+  | openError (diagnostic : String)
+  | fetchError (diagnostic : String)
+  | forward (source : Source) (stream json : Bool) (stdoutBody : Bytes) (ending : ForwardEnd)
+  | values (stdout : Bytes) (ending : ValuesEnd)
+  | reverse (source : Source) (json : Bool) (ending : ReverseEnd)
+def endLine (body : Bytes) : Bytes := body ++ [10]
+def withoutFinalLF (bs : Bytes) : Bytes := bs.take (bs.length-1)
+def outcomeReport : Invocation → Report
+  | .help => ⟨0,[],endLine (withoutFinalLF (bytes helpText))⟩
+  | .version => ⟨0,endLine (withoutFinalLF (bytes versionText)),[]⟩
+  | .badFlags d => ⟨2,[],endLine (bytes d ++ [10] ++ withoutFinalLF (bytes helpText))⟩
+  | .openError d => ⟨1,[],endLine (bytes d)⟩
+  | .fetchError d => ⟨4,[],endLine (bytes d)⟩
+  | .forward _ stream _ body ending =>
+    let written := if stream then endLine body else []
+    match ending with
+    | .complete => ⟨0,endLine body,[]⟩
+    | .malformed d | .readError d => ⟨3,written,endLine d⟩
+  | .values out ending =>
+    match ending with
+    | .complete => ⟨0,out,[]⟩
+    | .malformed d => ⟨5,out,endLine d⟩
+    | .panic d => ⟨2,out,endLine d⟩
+  | .reverse _ _ ending =>
+    match ending with
+    | .complete out => ⟨0,endLine out,[]⟩
+    | .noStatements => ⟨5,[],endLine (bytes "no statements were parsed")⟩
+    | .malformed d | .conflictingPaths d => ⟨5,[],endLine d⟩
+    | .readError => ⟨2,[],endLine (bytes "failed to read input statements")⟩
+    | .negativeIndex d => ⟨2,[],endLine d⟩
+    | .encodeError d => ⟨6,[],endLine d⟩
+def classifiedJob (job : Job) (r : Report) (failedRead : Bool) : Invocation :=
+  let out := withoutFinalLF r.out
+  let err := withoutFinalLF r.err
+  match job.mode with
+  | .forward =>
+    let ending :=
+      if r.status == 0 then ForwardEnd.complete
+      else if failedRead && !((bytes "failed to form statements: ").isPrefixOf r.err && job.stream) then .readError err
+      else .malformed err
+    .forward job.source job.stream job.json out ending
+  | .values =>
+    let ending := if r.status == 0 then ValuesEnd.complete else if r.status == 2 then .panic err else .malformed err
+    .values r.out ending
+  | .reverse =>
+    let ending :=
+      if r.status == 0 then ReverseEnd.complete out
+      else if r.status == 2 then
+        if failedRead then .readError else .negativeIndex err
+      else if r.status == 6 then .encodeError err
+      else if (bytes "failed to merge statements: ").isPrefixOf r.err then .conflictingPaths err
+      else if !((bytes "no statements were parsed\n") == r.err) then .malformed err
+      else .noStatements
+    .reverse job.source job.json ending
+def classifyModel (plan : Plan) (stdin : Bytes) (loaded : Acquired) : Invocation :=
+  match plan with
+  | .help => .help
+  | .version => .version
+  | .badFlags msg => .badFlags msg
+  | .run job =>
+    match job.source with
+    | .stdin => classifiedJob job (processBody job stdin) false
+    | _ =>
+      match loaded with
+      | .openError d => .openError d
+      | .fetchError d => .fetchError d
+      | .readError data _ =>
+        let interrupted :=
+          if job.mode == .forward && !job.stream then (documentBeforeEOF job data).isNone else true
+        classifiedJob job (invocationReport plan stdin loaded) interrupted
+      | .body _ =>
+        classifiedJob job (invocationReport plan stdin loaded) false
+def cutRows (rev : Bytes) : Bytes → List Bytes
+  | [] => [rev.reverse]
+  | 10::bs => rev.reverse :: cutRows [] bs
+  | b::bs => cutRows (b::rev) bs
+termination_by structural bs => bs
+def reportMatches (plan : Plan) (actual expected : Report) : Prop :=
+  match plan with
+  | .run job =>
+    if job.mode == .forward && job.noSort then
+      actual.status = expected.status ∧ actual.err = expected.err ∧
+        (cutRows [] actual.out).Perm (cutRows [] expected.out)
+    else actual = expected
+  | _ => actual = expected
+def snapshotMatches (job : Job) (actual expected : Snapshot) : Prop :=
+  if job.mode == .forward && job.noSort then
+    actual.status = expected.status ∧ actual.err = expected.err ∧
+      (cutRows [] actual.out).Perm (cutRows [] expected.out)
+  else actual = expected
+def sourceProject : Source → Gen.T0.Gron.Source
+  | .stdin => .stdin
+  | .file _ => .file
+  | .url _ => .http
+def wireProject (json : Bool) : Gen.T0.Gron.Wire :=
+  if json then .jsonRows else .assignments
+def invocationProject : Invocation → Gen.T0.Gron.Invocation
+  | .help => .help
+  | .version => .version
+  | .badFlags _ => .badFlags
+  | .openError _ => .openError
+  | .fetchError _ => .fetchError
+  | .forward src stream json _ ending =>
+    let result := match ending with
+      | .complete => Gen.T0.Gron.ForwardResult.complete
+      | .malformed _ => .malformed
+      | .readError _ => .readError
+    .forward (sourceProject src) (if stream then .lines else .document) (wireProject json) result
+  | .values out ending =>
+    .values (match ending with
+      | .complete => if out.isEmpty then .quiet else .emitted
+      | .malformed _ => .malformed (!out.isEmpty)
+      | .panic _ => .panic (!out.isEmpty))
+  | .reverse src json ending =>
+    let result := match ending with
+      | .complete _ => Gen.T0.Gron.ReverseResult.complete
+      | .noStatements => .noStatements
+      | .malformed _ => .malformed
+      | .conflictingPaths _ => .conflictingPaths
+      | .readError => .readError
+      | .negativeIndex _ => .negativeIndex
+      | .encodeError _ => .encodeError
+    .reverse (sourceProject src) (wireProject json) result
+def inputPort : LojitaCtx.Blueprint.PortLift Gen.T0.Gron.Invocation Invocation :=
+  ⟨invocationProject⟩
+def outputPort : LojitaCtx.Blueprint.PortLift Gen.T0.Gron.Observation Report :=
+  ⟨fun r => ⟨r.status, !r.out.isEmpty, !r.err.isEmpty⟩⟩
+axiom dispatch : Bool → Bool → List (String × String) → List String → Plan
+axiom observe : Invocation → Report
+axiom classify : Plan → Bytes → Acquired → Invocation
+axiom observeOpen : Job → Bytes → Snapshot
+axiom dispatchLaw : ∀ reverseByName tty env args,
+  dispatch reverseByName tty env args = dispatchInEnv reverseByName tty env args
+axiom outcomeLaw : ∀ invocation, observe invocation = outcomeReport invocation
+axiom classificationLaw : ∀ plan stdin acquired,
+  inputPort.project (classify plan stdin acquired) =
+    inputPort.project (classifyModel plan stdin acquired)
+axiom closedBytes : ∀ plan stdin acquired,
+  reportMatches plan (observe (classify plan stdin acquired))
+    (outcomeReport (classifyModel plan stdin acquired))
+axiom openBytes : ∀ job available,
+  snapshotMatches job (observeOpen job available) (prefixReport job available)
+axiom vertical :
+  LojitaCtx.Blueprint.Commutes₁ inputPort outputPort (fun _ => True) Eq Gen.T0.Gron.observe observe
+end Gen.T1.Gron
