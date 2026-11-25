@@ -138,6 +138,7 @@ def prepare (dir : System.FilePath) : IO Unit := do
   compile dir "VerifiedCli" "Gen.Gate2.Channels" "cli" .cli
   compile dir "VerifiedReactive" "Gen.Gate2.Channels" "reactive" .reactive
   compile dir "VerifiedInterrupted" "Gen.Gate2.Channels" "interrupted" .reactive
+  compile dir "VerifiedInputs" "Gen.Gate2.Channels" "inputs" .reactive
   compile dir "VerifiedHangup" "Gen.Gate2.Channels" "hangup" .reactive
   compile dir "VerifiedFzfTTY" "Gen.FzfTTY" "app" .cli
   compile dir "VerifiedFzfSelect" "Gen.FzfSelect" "app" .reactive

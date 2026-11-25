@@ -53,6 +53,7 @@ def sourceValue (drafts : DraftStore) : SExpr → Except String String
 def parseMode : String → Except String ExeMode
   | "cli" => .ok .cli
   | "reactive" => .ok .reactive
+  | "posix" => .ok .posix
   | other => .error s!"unknown executable mode {other}"
 
 def parseSessionAction (text : String) (drafts : DraftStore := {}) : Except String SessionAction := do
@@ -82,7 +83,7 @@ def parseSessionAction (text : String) (drafts : DraftStore := {}) : Except Stri
     let mode ← match fs["mode"]? with
       | none => pure .cli
       | some [.sym s] | some [.str s] => parseMode s
-      | _ => throw "expected (mode cli) or (mode reactive)"
+      | _ => throw "expected (mode posix), (mode cli), or (mode reactive)"
     return .buildExe mode (← field "why") (← field "entry")
   | some [.sym "finish"] =>
     onlyFields fs ["kind","summary"]

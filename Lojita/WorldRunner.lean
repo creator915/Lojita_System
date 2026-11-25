@@ -1,4 +1,4 @@
-import LojitaCtx.World
+import Lojita.WorldRunner.LegacyInput
 
 namespace Lojita.WorldRunner
 
@@ -16,9 +16,6 @@ private opaque ctLeanSleepMs (ms : UInt32) : IO Unit
 @[extern "ct_lean_lookup_env"]
 private opaque ctLeanLookupEnvRaw (key : @& String) : IO (Option String)
 
-@[extern "ct_lean_read_stdin_byte"]
-private opaque ctLeanReadStdinByte : IO (Option UInt8)
-
 @[extern "ct_lean_has_tty"]
 private opaque ctLeanHasTTY : IO Bool
 
@@ -31,14 +28,8 @@ private opaque ctLeanTermSize : IO (Nat × Nat)
 @[extern "ct_lean_write_fd"]
 private opaque ctLeanWriteFd (fd : UInt32) (ba : @& ByteArray) : IO Unit
 
-@[extern "ct_lean_read_tty_byte"]
-private opaque ctLeanReadTTYByte : IO (Option UInt8)
-
 @[extern "ct_lean_write_tty"]
 private opaque ctLeanWriteTTY (ba : @& ByteArray) : IO Bool
-
-@[extern "ct_lean_poll_reactive_event"]
-private opaque ctLeanPollReactiveEvent (pollMask waitMs : UInt32) : IO (Nat × Nat × Nat × ByteArray)
 
 @[extern "ct_lean_fs_read_file"]
 private opaque ctLeanFsReadFile (path : @& String) : IO (Except Nat ByteArray)
@@ -84,7 +75,7 @@ private def fromBytes (ba : ByteArray) := ba.data.toList
 private def readStdinLineIO : IO (Option Bytes) := do
   let mut ba := ByteArray.emptyWithCapacity 256
   repeat
-    let some b ← ctLeanReadStdinByte | break
+    let some b ← LegacyInput.readStdinByte | break
     ba := ba.push b
     if b == 10 then return some ba.data.toList
   return if ba.isEmpty then none else some ba.data.toList
@@ -92,7 +83,7 @@ private def readStdinLineIO : IO (Option Bytes) := do
 private def readStdinAllIO : IO Bytes := do
   let mut ba := ByteArray.emptyWithCapacity 4096
   repeat
-    let some b ← ctLeanReadStdinByte | break
+    let some b ← LegacyInput.readStdinByte | break
     ba := ba.push b
   return ba.data.toList
 
@@ -118,12 +109,6 @@ private def decodeNetError : Nat → NetError
   | 4 => .netTlsError
   | _ => .netIoError
 
-private def decodeSignal : Nat → TermSignal
-  | 1 => .sigINT
-  | 2 => .sigTERM
-  | 3 => .sigHUP
-  | _ => .sigQUIT
-
 private def execOpIO : {c : Cap} → (op : Op c) → PureGitRepo → CanvasDOM → IO (Ret op × PureGitRepo × CanvasDOM)
   | .clockCap, .opNowMono, g, w => do
       let t ← ctLeanNowMonoMs
@@ -146,7 +131,7 @@ private def execOpIO : {c : Cap} → (op : Op c) → PureGitRepo → CanvasDOM �
       | some v => pure (.some v, g, w)
       | none   => pure (.none, g, w)
   | .stdioCap, .opReadStdinByte, g, w => do
-      return (← ctLeanReadStdinByte, g, w)
+      return (← LegacyInput.readStdinByte, g, w)
   | .stdioCap, .opReadStdinLine, g, w => do
       return (← readStdinLineIO, g, w)
   | .stdioCap, .opReadStdinAll, g, w => do
@@ -170,7 +155,7 @@ private def execOpIO : {c : Cap} → (op : Op c) → PureGitRepo → CanvasDOM �
   | .ttyCap, .opTermSize, g, w => do
       return (← ctLeanTermSize, g, w)
   | .ttyCap, .opReadTTYByte, g, w => do
-      return (← ctLeanReadTTYByte, g, w)
+      return (← LegacyInput.readTTYByte, g, w)
   | .ttyCap, .opWriteTTY bs, g, w => do
       return (← ctLeanWriteTTY (toBytes bs), g, w)
   | .fsCap, .opReadFile p, g, w => do
@@ -235,26 +220,6 @@ private def runWorldState {Δ : List Cap} {A : Type} :
 
 termination_by structural _ _ p => p
 
--- These bits are shared with CT_POLL_* in runtime/cli_host.h.
-private def pollMask (Δ : List Cap) : UInt32 :=
-  (if hasCap .stdioCap Δ then 1 else 0) ||| (if hasCap .ttyCap Δ then 2 else 0) |||
-  (if hasCap .envCap Δ then 4 else 0) ||| (if hasCap .clockCap Δ then 8 else 0)
-
-@[inline] private def hasLiveEventSource (Δ : List Cap) : Bool := pollMask Δ != 0
-
-private def decodePolledEvent (Δ : List Cap) (kind a b : Nat) (ba : ByteArray) : Option (Event Δ) :=
-  let event {c : Cap} (payload : EventPayload c) :=
-    (findCapIn c Δ).map fun h => Event.mkEvent h payload
-  match kind with
-  | 1 => event (.evTickMs a)
-  | 2 => event (.evSignal (decodeSignal a))
-  | 3 => event (.evResize a b)
-  | 4 => event (.evTTYBytes (fromBytes ba))
-  | 5 => event .evTTYEOF
-  | 6 => event (.evStdinBytes (fromBytes ba))
-  | 7 => event .evStdinEOF
-  | _ => none
-
 def runWorldIO {Δ : List Cap} {A : Type} (p : WorldProg Δ A) : IO A := do
   let (a, _, _) ← runWorldState defaultGitRepo emptyCanvasDOM p
   return a
@@ -264,21 +229,26 @@ def runCliIO {Δ : List Cap} (app : CliApp Δ) : IO UInt32 := do
 
 def runReactiveIO {Δ : List Cap} {S : Type} (app : ReactiveApp Δ S) : IO UInt32 := do
   let (initial, git, web) ← runWorldState defaultGitRepo emptyCanvasDOM app.init
-  let mask := pollMask Δ
-  if !hasLiveEventSource Δ then return 0
-  let mut s := initial
-  let mut g := git
-  let mut w := web
-  repeat
-    let (kind, a, b, ba) ← ctLeanPollReactiveEvent mask 25
-    if let some ev := decodePolledEvent Δ kind a b ba then
-      let (result, nextGit, nextWeb) ← runWorldState g w (app.onStep ev s)
-      match result with
-      | .inr code => return (code % 256).toUInt32
-      | .inl next =>
-        s := next
-        g := nextGit
-        w := nextWeb
-  return 0
+  unless [Cap.stdioCap,.ttyCap,.envCap,.clockCap].any (fun c => hasCap c Δ) do return 0
+  let signalFd ← LegacyInput.beginSignals
+  try
+    let mut inputs ← LegacyInput.sources Δ signalFd
+    let mut s := initial
+    let mut g := git
+    let mut w := web
+    repeat
+      let (ev, inputs') ← LegacyInput.next Δ inputs
+      inputs := inputs'
+      if let some event := ev then
+        let (result, nextGit, nextWeb) ← runWorldState g w (app.onStep event s)
+        match result with
+        | .inr code => return (code % 256).toUInt32
+        | .inl next =>
+          s := next
+          g := nextGit
+          w := nextWeb
+    return 0
+  finally
+    LegacyInput.endSignals
 
 end Lojita.WorldRunner

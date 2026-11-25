@@ -101,22 +101,6 @@ LEAN_EXPORT lean_obj_res ct_lean_lookup_env(b_lean_obj_arg key_obj) {
 }
 
 /* Standard streams and controlling terminal */
-static lean_obj_res ct_lean_byte_result(int got, uint8_t byte) {
-    if (!got) return lean_io_result_mk_ok(lean_box(0)); /* Option.none */
-    lean_object *some = lean_alloc_ctor(1, 1, 0);
-    lean_ctor_set(some, 0, lean_box(byte));
-    return lean_io_result_mk_ok(some);
-}
-
-LEAN_EXPORT lean_obj_res ct_lean_read_stdin_byte(void) {
-    int got = 0;
-    uint8_t byte = 0;
-    if (ct_read_stdin_byte(&got, &byte) < 0) {
-        return lean_io_result_mk_error(lean_decode_io_error(errno, NULL));
-    }
-    return ct_lean_byte_result(got, byte);
-}
-
 LEAN_EXPORT lean_obj_res ct_lean_is_tty(uint32_t fd) {
     int r = ct_is_tty((int)fd);
     return lean_io_result_mk_ok(lean_box(r ? 1 : 0));
@@ -143,29 +127,39 @@ LEAN_EXPORT lean_obj_res ct_lean_write_fd(uint32_t fd, b_lean_obj_arg ba_obj) {
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res ct_lean_read_tty_byte(void) {
-    int got = 0;
-    uint8_t b = 0;
-    (void)ct_read_tty_byte(&got, &b);
-    return ct_lean_byte_result(got, b);
+LEAN_EXPORT lean_obj_res ct_lean_tty_input(void) {
+    init_tty();
+    lean_object *fd = lean_box(0);
+    if (tty_rfd >= 0) {
+        fd = lean_alloc_ctor(1, 1, 0);
+        lean_ctor_set(fd, 0, lean_unsigned_to_nat((unsigned)tty_rfd));
+    }
+    unsigned stdin_dev, tty_dev;
+    int same = tty_rfd >= 0 && (same_chr_dev(STDIN_FILENO, tty_rfd) ||
+        (ioctl(STDIN_FILENO, TIOCGDEV, &stdin_dev) == 0 &&
+         ioctl(tty_rfd, TIOCGDEV, &tty_dev) == 0 && stdin_dev == tty_dev));
+    return lean_io_result_mk_ok(ct_mk_pair(fd, lean_box(same)));
+}
+
+LEAN_EXPORT lean_obj_res ct_lean_begin_signals(void) {
+    int fd = begin_signals();
+    if (fd < 0) return lean_io_result_mk_error(lean_decode_io_error(errno, NULL));
+    return lean_io_result_mk_ok(lean_unsigned_to_nat((unsigned)fd));
+}
+
+LEAN_EXPORT lean_obj_res ct_lean_signal_delivered(uint8_t signo) {
+    if (signo < 32) atomic_fetch_and(&queued_signals, ~(1u << signo));
+    return lean_io_result_mk_ok(lean_box(0));
+}
+
+LEAN_EXPORT lean_obj_res ct_lean_end_signals(void) {
+    end_signals();
+    return lean_io_result_mk_ok(lean_box(0));
 }
 
 LEAN_EXPORT lean_obj_res ct_lean_write_tty(b_lean_obj_arg ba) {
     int ok = ct_write_tty_all(lean_sarray_cptr(ba), lean_sarray_size(ba));
     return lean_io_result_mk_ok(lean_box(ok));
-}
-
-LEAN_EXPORT lean_obj_res ct_lean_poll_reactive_event(uint32_t poll_mask, uint32_t wait_ms) {
-    uint32_t a = 0, b = 0;
-    uint8_t *buf = NULL;
-    size_t len = 0;
-    int kind = ct_poll_reactive_event(poll_mask, wait_ms, &a, &b, &buf, &len);
-    if (kind < 0) return lean_io_result_mk_error(lean_decode_io_error(errno, NULL));
-    lean_object *ba = ct_mk_byte_array(buf, len);
-    ct_free_buf(buf);
-    lean_object *payload = ct_mk_pair(lean_uint32_to_nat(b), ba);
-    lean_object *fields = ct_mk_pair(lean_uint32_to_nat(a), payload);
-    return lean_io_result_mk_ok(ct_mk_pair(lean_box((size_t)kind), fields));
 }
 
 /* Filesystem */

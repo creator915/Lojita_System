@@ -14,6 +14,9 @@ for tool in term fs net git web; do
   # Docker executes the mounted relay as the unprivileged cleanroom user.
   chmod 755 "$stage/$tool-relay"
 done
+cc -std=c11 -O2 -Wall -Wextra -Werror -static runtime/lojita-sandbox.c -o "$stage/lojita-sandbox"
+mkdir -p .lake/build/bin
+mv -- "$stage/lojita-sandbox" .lake/build/bin/lojita-sandbox
 for relay in "$stage"/*-relay; do mv -- "$relay" "$out/"; done
 lake build
 ln -sfn .lake/build/bin/lojita lojita

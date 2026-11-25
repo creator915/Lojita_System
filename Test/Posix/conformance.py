@@ -185,6 +185,20 @@ def hangups(probe):
         raise AssertionError(f"poll loop consumed {used:.3f}s CPU across the hangups")
 
 
+def legacy_key_resize_signals(probe):
+    keys = b"\x1b[A\x1b[B\x7f\x00\xff"
+    commands = [write("W", b"Aone"), "S 100", write("T", keys), "S 80",
+                "R 34 95", "S 80", f"K {signal.SIGINT.value}", "S 50",
+                f"K {signal.SIGQUIT.value}", "S 50", f"K {signal.SIGHUP.value}",
+                "S 50", f"K {signal.SIGTERM.value}", "S 100"]
+    seen = trace(probe, probe / "VerifiedInputs", "pipe", commands)
+    check(seen[1].out, b"Aone", "sync stdin prefix and buffered reactive suffix")
+    check(seen[3].err, keys, "raw controlling-terminal keys on a separate descriptor")
+    check(seen[5].out, b"Aone34x95\n", "SIGWINCH reports actual PTY dimensions")
+    check(seen[-1], Observation(out=b"Aone34x95\nINT\nQUIT\nHUP\n", err=keys, code=0),
+          "legacy signal identities and SIGTERM exit")
+
+
 def fzf(probe):
     for topology, tty, code in [("pipe", b"UI", 0), ("stdio", b"", 25)]:
         seen = trace(probe, probe / "VerifiedFzfTTY", topology, ["S 120"])
@@ -272,6 +286,7 @@ if __name__ == "__main__":
         interrupted_read(probe_dir)
         cooked_pty(probe_dir)
         hangups(probe_dir)
+        legacy_key_resize_signals(probe_dir)
         print("Gate 2 passed. Three topologies, interrupted reads, cooked PTY restoration and one-shot hangups matched.")
     elif gate == "fzf":
         fzf(probe_dir)
