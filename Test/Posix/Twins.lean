@@ -185,7 +185,21 @@ private def fileRead : Gate Unit := do
     (FsLib.readFileAll (by simp) (by simp) (b "stationary") 1)
   check (failure == .err .EMFILE && (← get).fds.isEmpty) "readFileAll exhausted fd acquisition"
 
+/-- Compare the public constructor representation with the stock string formatter. -/
+private def checkForeignCapRepr : IO Unit := do
+  let checkTag := fun (tag : String) (prec width : Nat) => do
+    let fields := Std.Format.text "LojitaCtx.Posix.Cap.foreignCap" ++ Std.Format.line ++ reprArg tag
+    let ref := Repr.addAppParen (fields.nest (if prec ≥ 1024 then 1 else 2)).group prec
+    unless (reprPrec (Cap.foreignCap tag) prec).pretty width == ref.pretty width do
+      throw <| IO.userError "foreignCap repr differs from the standard Lean string representation"
+  let ascii := String.ofList ((List.range 128).map Char.ofNat)
+  for tag in ["", ascii, "quoted \"é\"\\界\n😀", "LojitaCtx.Posix.Cap.foreignCap"] do
+    for prec in [0, 1023, 1024, 1025] do
+      for width in [8, 40, 120] do checkTag tag prec width
+  checkTag (String.join (List.replicate 25000 "a界\n😀")) 1024 80
+
 def test : IO Unit := do
+  checkForeignCapRepr
   for (label,gate) in [("half-open line",halfLine),("relative symlink and ELOOP",links),
                        ("mkdirat and mkdirP",mkdirs),("unlink while open",unlinked),
                        ("shared offsets and readonly tree",offsets),("stationary file and EMFILE",fileRead),
