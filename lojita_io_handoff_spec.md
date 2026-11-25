@@ -219,7 +219,9 @@ flowchart BT
 开发完成后，仓库根目录必须提供一键验收脚本 `./test-io-all.sh`，在无外部大模型调用、无 Docker 守护进程依赖的条件下 **3 分钟内全自动跑完以下 5 道门禁，且退出码必须为 `0`**：
 
 ### 门禁 1：静态纯度、零公理与反屎山体量审计（`./test-g1-purity-and-size.sh`）
-- **内核级公理审计**：编写独立检查器遍历编译后的 Lean `Environment`，断言 `LojitaCtx.Posix.*` 与 `LojitaCtx.Io.*` 所有导出定义与定理的传递依赖闭包中：**零自定义 `axiom`、零 `sorryAx`、零 `unsafe`、零 `extern`**（严禁仅靠 `grep` 文本检查，必须在内核常量级验证）。
+- **模型与证明。** 在编译后的 Lean `Environment` 中，从 `LojitaCtx.Posix.*` 和 `LojitaCtx.Io.*` 的公开定义与定理追踪全部传递依赖，包括私有辅助定义。项目自身继续执行 §1.2 的禁令。模型与定理只允许 Lean 的标准逻辑公理 `propext`、`Quot.sound` 和 `Classical.choice`。自定义公理、`sorryAx`、宿主 IO、未经批准的不安全实现或绕过审计的实现替换均使 G1 失败。`lcProof` 不得成为导出定理的逻辑前提。
+- **原生执行的可信边界。** 固定官方 Lean 工具链的版本及内容。为有纯 Lean 语义的基础操作逐项登记允许的工具链声明、来源及职责，审计 `implemented_by` 和 `csimp` 选中的实现与替换证明。普通程序的宿主效果须经 `CoreCaps`、`WorldRunner` 和薄宿主桥。基础操作不能承载文件偏移、权限判断、缓冲或其他 POSIX 策略。新增的未经审查声明、替换、工具链变更或隐藏的宿主能力均使门禁失败。
+- **长期目标与交付报告。** 每次运行均保留完整声明闭包及含编译替换的闭包对照，分别报告 `axiom`、`sorryAx`、`unsafe`、`extern` 命中和项目内命中，附可定位的信任清单。完整闭包零禁止项是长期目标。本期以模型与证明符合上述规则、所有原生依赖均在已审查范围内以及体量检查通过为 G1 准出条件。G2–G5 和原生入口验证继续独立执行。
 - **代码体量硬卡点**：
   - `runtime/posix_host.c` 非空非注释有效行 **$\le 250$ 行**；
   - `runtime/lojita-sandbox.c` 非空非注释有效行 **$\le 300$ 行**；
@@ -285,7 +287,7 @@ flowchart BT
 ### 4.3 负责人 2 分钟终验签收卡模板
 队友提请验收时，要求其附带以下 5 行摘要并现场跑通 `./test-io-all.sh`：
 - **新仓库/分支与 Commit**：`<branch> @ <commit_sha>`
-- **代码体量与零公理核查**：`posix_host.c = <X>/250 行`，`lojita-sandbox.c = <Y>/300 行`，`LojitaCtx` 内核公理审计 `0 axioms / 0 externs`
+- **代码体量与零公理核查**：`posix_host.c = <X>/250 行`，`lojita-sandbox.c = <Y>/300 行`，模型与证明未批准公理及实现 `0`，附锁定工具链版本、原生依赖清单及两组完整闭包计数
 - **黄金定理锁桩状态**：`Test/TheoremPin.lean` T1～T17 全部闭合通过（零签名弱化）
 - **Ubuntu 24.04 差分 Fuzz 结果**：`<N> 组随机系统调用迹精化对拍 PASS（0 反例）`
 - **红队防爆与零残留结果**：越狱 / `EROFS` / 双 `fork` 孤儿 / `rlimit` 炸弹 / CAS 防篡改全绿，`/proc/mounts` 零残留
