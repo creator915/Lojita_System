@@ -46,6 +46,13 @@ audit G1Fixture.legitimateElimination
 # the pinned release directory. Never overwrite or rename a release artifact.
 mkdir -p "$work/shadow/Init"
 release=$("$lean" --print-prefix)
+# Lean resolves the entire Init package from its first directory on LEAN_PATH.
+# Leave every sibling of Prelude pointing at the actual pinned files.
+for artifact in "$release"/lib/lean/Init.*; do ln -s "$artifact" "$work/shadow/"; done
+for artifact in "$release"/lib/lean/Init/*; do
+  case "${artifact##*/}" in Prelude.*) continue ;; esac
+  ln -s "$artifact" "$work/shadow/Init/"
+done
 for suffix in olean olean.private olean.server ir ir.sig; do
   cp "$release/lib/lean/Init/Prelude.$suffix" "$work/shadow/Init/"
 done
