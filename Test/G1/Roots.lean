@@ -19,4 +19,8 @@ def usesImplementedBy : Nat → Nat := Dep.withImpl
 def usesCSimp : Nat → Nat := Dep.logical
 def outsideReviewedSet : Float → Float := Float.sin
 
+def directPanic (message : String) : Nat := panic message
+def directPanicCore (message : String) : Nat := panicCore message
+theorem legitimateElimination (h : False) : True := False.elim h
+
 end G1Fixture

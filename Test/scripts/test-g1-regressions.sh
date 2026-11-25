@@ -12,7 +12,7 @@ for unit in Dependencies Roots; do
   "$lean" -R . -o "$work/Test/G1/$unit.olean" "Test/G1/$unit.lean"
 done
 audit() {
-  "$lean" --run Test/PosixPurity.lean --module Test.G1.Roots --root "G1Fixture.$1"
+  "$lean" --run Test/PosixPurity.lean --module Test.G1.Roots --root "$1"
 }
 expect_rejection() {
   local root=$1 kind=$2 culprit=$3
@@ -28,15 +28,21 @@ expect_rejection() {
 }
 # A single selected root exercises only its reachable declarations even when
 # the imported module also contains intentionally invalid fixtures.
-audit approvedBytes
-expect_rejection indirectAxiom axiom hiddenAxiom
-expect_rejection taintedBytes axiom hiddenAxiom
-expect_rejection admittedTheorem sorry sorryAx
-expect_rejection indirectExtern extern hiddenExtern
-expect_rejection unsafeRoot unsafe 'G1Fixture\.(unsafeRoot|Dep\.markedUnsafe)'
-expect_rejection effectOnlyInType effect '(IO|EIO|RealWorld)'
-expect_rejection usesPartial partial partialMarker
-expect_rejection usesImplementedBy implemented_by 'withImpl|implTarget'
-expect_rejection usesCSimp rewrite 'logical|fixtureRewrite|replacement'
-expect_rejection outsideReviewedSet extern 'Float\.sin'
-echo 'G1 fixture checks passed (1 accepted, 10 rejected).'
+audit G1Fixture.approvedBytes
+audit G1Fixture.legitimateElimination
+expect_rejection G1Fixture.indirectAxiom axiom hiddenAxiom
+expect_rejection G1Fixture.taintedBytes axiom hiddenAxiom
+expect_rejection G1Fixture.admittedTheorem sorry sorryAx
+expect_rejection G1Fixture.indirectExtern extern hiddenExtern
+expect_rejection G1Fixture.unsafeRoot unsafe 'G1Fixture\.(unsafeRoot|Dep\.markedUnsafe)'
+expect_rejection G1Fixture.effectOnlyInType effect '(IO|EIO|RealWorld)'
+expect_rejection G1Fixture.usesPartial partial partialMarker
+expect_rejection G1Fixture.usesImplementedBy implemented_by 'withImpl|implTarget'
+expect_rejection G1Fixture.usesCSimp rewrite 'logical|fixtureRewrite|replacement'
+expect_rejection G1Fixture.outsideReviewedSet extern 'Float\.sin'
+expect_rejection G1Fixture.directPanic '[a-z_]+' 'panic(Core)?'
+expect_rejection G1Fixture.directPanicCore '[a-z_]+' 'panicCore'
+expect_rejection lcProof '[a-z_]+' 'lcProof'
+# A safe theorem depending on the compiler-only proof never reaches an olean.
+"$lean" -R . Test/G1/LogicKernel.lean
+echo 'G1 fixture checks passed (2 accepted, 13 rejected, 1 kernel rejection).'
