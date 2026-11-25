@@ -5,6 +5,14 @@ package lojita where
   leanOptions := #[⟨`autoImplicit, false⟩, ⟨`relaxedAutoImplicit, false⟩]
   moreLinkArgs := #["-lssl", "-lcrypto"]
 
+target check_worker_o pkg : FilePath := do
+  let src ← inputTextFile (pkg.dir / "runtime/cbits/check_worker.c")
+  buildO (pkg.buildDir / "cbits/check_worker.o") src
+    #["-I", (← getLeanIncludeDir).toString] #["-O2", "-Wall", "-Wextra", "-Werror", "-fPIC"] "cc" getLeanTrace
+
+extern_lib libcheck_worker pkg := do
+  buildStaticLib (pkg.staticLibDir / nameToStaticLib "check_worker") #[← check_worker_o.fetch]
+
 target lean_cli_host_o pkg : FilePath := do
   let src ← inputTextFile (pkg.dir / "runtime/cbits/lean_cli_host.c")
   let trace := do

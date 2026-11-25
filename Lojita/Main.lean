@@ -32,6 +32,9 @@ private def verifySelf : IO Unit := do
 def dispatch (args : List String) : IO UInt32 := do
   match args with
   | "mcp" :: rest => Lojita.MCP.serve (← IO.ofExcept (Lojita.MCP.parseConfig rest))
+  | "mcp-check-worker" :: rest =>
+    Lojita.MCP.CheckWorker.protect
+    Lojita.MCP.serveWorker (← IO.ofExcept (Lojita.MCP.parseConfig rest))
   | ["probe-worker",repo,ws,dir] =>
     let root : FilePath := dir
     let ref ← IO.ofExcept (parseRefSpec (← IO.FS.readFile (root / "ref.sexp")))

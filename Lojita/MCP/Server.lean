@@ -1,4 +1,5 @@
 import Lojita.Session.Runner
+import Lojita.MCP.CheckWorker
 
 namespace Lojita.MCP
 open System Lean Lojita.Session Lojita.Harness Lojita.Store Lojita.Kernel Lojita.Transport
@@ -257,7 +258,7 @@ private def rpc (id : Json) (k : String) (body : Json) :=
 private def err (id : Json) (code : Int) (msg : String) :=
   rpc id "error" (Json.mkObj [("code",toJson code),("message",toJson msg)])
 
-private def handle (cfg : Config) (readNode : ReadNode) (line : String) : IO (Option Json) := do
+private def handle (cfg : Config) (readNode : ReadNode) (forward : Option (Json → IO Json)) (line : String) : IO (Option Json) := do
   let .ok req := Json.parse line | return some (err .null (-32700) "Parse error")
   let id := req.getObjVal? "id"
   let some method := value (α := String) req "method" | return some (err (id.toOption.getD .null) (-32600) "Missing method")
@@ -274,23 +275,39 @@ private def handle (cfg : Config) (readNode : ReadNode) (line : String) : IO (Op
     | "tools/list" => pure (Json.mkObj [("tools",Json.arr ((tools cfg.mode).map Tool.schema).toArray)])
     | "tools/call" => do
       let some name := value params "name" | return some (err id (-32602) "Missing tool name")
-      try callTool cfg readNode name ((params.getObjVal? "arguments").toOption.getD (Json.mkObj []))
+      try
+        if let some send := forward then
+          if ["check_lean", "check_agda", "check_plan"].contains name then
+            return some (rpc id "result" (← send req))
+        callTool cfg readNode name ((params.getObjVal? "arguments").toOption.getD (Json.mkObj []))
       catch e =>
         let msg := toString e
         observed cfg ⟨(msg.splitOn ":").headD "check_failed",name,msg,"Correct this input and retry."⟩
     | _ => return some (err id (-32601) "Method not found")
   return some (rpc id "result" result)
 
-def serve (cfg : Config) : IO Unit := do
-  preload (cfg.repo / ".lake/build/lib/lean")
+private def serveLoop (cfg : Config) (forward : Option (Json → IO Json)) : IO Unit := do
   let readNode ← contextReader cfg.ctx
   let input ← IO.getStdin
   let output ← IO.getStdout
   repeat
     let line ← input.getLine
     if line.isEmpty then break
-    if let some reply ← handle cfg readNode line then
+    if let some reply ← handle cfg readNode forward line then
       output.putStrLn reply.compress
       output.flush
+
+def serveWorker (cfg : Config) : IO Unit := do
+  preload (cfg.repo / ".lake/build/lib/lean")
+  serveLoop cfg none
+
+def serve (cfg : Config) : IO Unit := do
+  if cfg.mode == .session then return ← serveWorker cfg
+  let slot ← IO.mkRef CheckWorker.State.idle
+  let mut args := #["mcp-check-worker", "--mode", "node", "--repo", cfg.repo.toString,
+    "--ctx-dir", cfg.ctx.toString]
+  if let some log := cfg.narrowLog then args := args ++ #["--narrow-log", log.toString]
+  try serveLoop cfg (some (CheckWorker.request slot (cfg.repo / "lojita") args))
+  finally CheckWorker.stop slot
 
 end Lojita.MCP

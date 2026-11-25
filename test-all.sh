@@ -9,7 +9,7 @@ mkdir "$scratch/bin" "$scratch/tmp"
 # inherit the allowlist, including the assembler and linker used by cc.
 system_path=$(command -p getconf PATH)
 for tool in bash sh env dirname basename mkdir mktemp ln mv cp chmod find cat grep head file \
-            timeout id chown ar as ld cc git python3; do
+            timeout setpriv id chown ar as ld cc git python3; do
   path=$(PATH="$system_path" type -P "$tool")
   ln -s -- "$path" "$scratch/bin/$tool"
 done
