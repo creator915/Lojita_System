@@ -43,7 +43,9 @@ import re
 
 root = Path.cwd()
 for f in (root / 'LojitaCtx').rglob('*.lean'):
-    if re.search(r'\b(?:IO|EIO|BaseIO|extern|implemented_by|unsafe|partial|sorry|axiom)\b', f.read_text()):
+    # The compiled Environment audit checks EIO by fully qualified name.
+    # POSIX also has the unrelated, required Linux errno constructor Errno.EIO.
+    if re.search(r'\b(?:IO|BaseIO|extern|implemented_by|unsafe|partial|sorry|axiom)\b', f.read_text()):
         raise SystemExit(f"unexpected effect, unchecked declaration or hole in {f}")
     # Catch a new pure module accidentally omitted from the environment audit.
     name = '.'.join(f.with_suffix('').parts[-2:])

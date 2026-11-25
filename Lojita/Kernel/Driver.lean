@@ -117,11 +117,11 @@ private def parentEnv (deps : Array Snapshot) (wrapper := false) : IO Environmen
     if let some env := r.parents[ids]? then return env
   let images := importedImages deps
   let imports := contextImports ++ deps.map (fun d => {module := d.mod.modName.toLeanName}) ++
-    (if wrapper then #[{module := `Lojita.WorldRunner}] else #[])
+    (if wrapper then #[{module := `Lojita.WorldRunner}, {module := `Lojita.Runtime.WorldRunner}] else #[])
   let env ← withImportLock <| withImporting do
     unsafe enableInitializersExecution
     let state ← if wrapper then
-        Prod.snd <$> (importModulesCore #[{module := `Lojita.WorldRunner}]).run r.imports
+        Prod.snd <$> (importModulesCore #[{module := `Lojita.WorldRunner}, {module := `Lojita.Runtime.WorldRunner}]).run r.imports
       else pure r.imports
     importResidentImages state images imports options
   if !wrapper then session.set <| some {r with parents := r.parents.insert ids env}
@@ -655,7 +655,7 @@ def eqIface (a b : LeanMod) (deps : List LeanMod := []) : IO Unit := do
   satisfies b a deps .subspec
 
 inductive ExeMode where
-  | cli | reactive
+  | cli | reactive | posix
   deriving BEq, Repr
 
 private def checkEntry (snap : Snapshot) (entry : Name) (mode : ExeMode) : MetaM Unit := do
@@ -663,6 +663,7 @@ private def checkEntry (snap : Snapshot) (entry : Name) (mode : ExeMode) : MetaM
   let caps ← Meta.mkFreshExprMVar (mkApp (mkConst ``List [.zero]) (mkConst `LojitaCtx.World.Cap))
   let wanted ← match mode with
     | .cli => pure <| mkApp (mkConst `LojitaCtx.World.CliApp) caps
+    | .posix => pure <| mkApp2 (mkConst `LojitaCtx.Posix.PosixProg) (mkConst `LojitaCtx.Posix.CoreCaps) (mkConst ``UInt32)
     | .reactive => do
       let state ← Meta.mkFreshExprMVar (mkSort (.succ .zero))
       pure <| mkApp2 (mkConst `LojitaCtx.World.ReactiveApp) caps state
@@ -739,7 +740,9 @@ def compileVerifiedExe (deps : List LeanMod) (entry : QName) (mode : ExeMode)
       sources := sources.push path
     let env := (← parentEnv #[owner] (wrapper := true)).setMainModule `Main
     let runner := if mode == .cli then "runCliIO" else "runReactiveIO"
-    let wrapper := s!"def main : IO UInt32 := Lojita.WorldRunner.{runner} {entry}"
+    let wrapper := if mode == .posix then
+      s!"def main (args : List String) : IO UInt32 := Lojita.Runtime.WorldRunner.processMain {entry} args"
+      else s!"def main : IO UInt32 := Lojita.WorldRunner.{runner} {entry}"
     let cmd ← ioChecked (Parser.runParserCategory env `command wrapper)
     let (env, _) ← elabCommands env wrapper #[cmd]
     let mainC := dir / "main.c"
@@ -747,10 +750,11 @@ def compileVerifiedExe (deps : List LeanMod) (entry : QName) (mode : ExeMode)
     let objects ← buildObjects (sources.push mainC)
     let stage := outBin.addExtension s!"{← IO.Process.getPID}.{← IO.monoNanosNow}.tmp"
     try
-      cc <| #["-O3", "-static"] ++ objects ++ #[
+      let startup := if mode == .posix then #["-Wl,--wrap=main"] else #[]
+      cc <| #["-O3", "-static"] ++ startup ++ objects ++ #[
         "-L", lib.toString, "-L", (toolchainRoot / "lib/lean").toString,
         "-L", (toolchainRoot / "lib").toString, "-Wl,--start-group",
-        "-llojita_Lojita", "-llojita_LojitaCtx", "-llean_cli_host", "-lStd", "-lInit", "-lleanrt",
+        "-llojita_Lojita", "-llojita_LojitaCtx", "-llean_cli_host", "-lposix_host", "-lStd", "-lInit", "-lleanrt",
         "-lcadical", "-lc++", "-lc++abi", "-lunwind", "-lgmp", "-luv", "-lssl", "-lcrypto",
         "-lpthread", "-ldl", "-lrt", "-lm", "-lc", "-Wl,--end-group", "-Wl,--gc-sections",
         "-o", stage.toString]

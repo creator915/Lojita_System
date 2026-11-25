@@ -2,9 +2,11 @@
 
 ## 在二维结构中定位当前节点
 
-纵轴的每次 `drive-tree` 都交付整个目标程序的一层。SESSION_ROOT 在开放世界探测，只给 `Gen.<Ti>.<Root>` 写根规约，最终层含 `CliApp Δ` 或 `ReactiveApp Δ S` 及 `∀ w : SimWorld` 的定律。初始蓝图用空 `baseTrees`。精化层只指定唯一的直接前驱蓝图，随附根到根的 `maybeLiftSrc`，也可给出根到根的 `maybeTransportSrc`。内部功能一律在树内分包，禁止用多棵外层树拼装程序。
+纵轴的每次 `drive-tree` 都交付整个目标程序的一层。SESSION_ROOT 在开放世界探测，只给 `Gen.<Ti>.<Root>` 写根规约，POSIX 任务的最终层含 `PosixProg CoreCaps UInt32` 与作用在 `runPrefix` 上的观察定律。初始蓝图用空 `baseTrees`。精化层只指定唯一的直接前驱蓝图，随附根到根的 `maybeLiftSrc`，也可给出根到根的 `maybeTransportSrc`。内部功能一律在树内分包，禁止用多棵外层树拼装程序。
 
 横轴的 `HomeSt` 文件所有权边完全来自封闭父节点的孩子 `import` 与 `subspecs`。每个槽由一个父节点线性拥有。先用孩子的抽象 `axiom` 接口证明条件胶水满足父规约，再将孩子分别交给独立节点实现。孩子也可以这样拆出孙包。跨层时，`LiftSpec` 的第三项 `child-map` 将前驱树的 import 子包路由到本层对应槽，可附递归子 lift。本层还可引入新子包。
+
+POSIX 任务从 `LojitaCtx.Posix.Program` 导入 `PosixProg` 和 `CoreCaps`，用 `PosixProg.call` 发起带能力证明的调用。读取文件可导入 `LojitaCtx.Io.FsLib`，半行与短读写使用 `LojitaCtx.Io.Buf`，终端与管道共用 `LojitaCtx.Io.Reactive`。会话中以 `(mode posix)` 执行 `build-exe`。本页的 `CliApp` 和 `ReactiveApp Δ S` 示例供已有 World 类型入口使用。
 
 ## Categorical Design Checklist（设计顺序）
 
