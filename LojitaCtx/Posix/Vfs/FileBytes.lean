@@ -5,43 +5,35 @@ namespace LojitaCtx.Posix
 
 /-- Traverse the requested part of a packed file without unpacking the rest of it. -/
 @[specialize] private def foldCount {α : Type} (step : α → UInt8 → α) (src : ByteArray)
-    (off : Nat) (acc : α) : Nat → α
-  | 0 => acc
-  | n+1 => foldCount step src (off+1) (step acc (src.get! off)) n
+    (off : Nat) (acc : α) : (n : Nat) → n ≤ src.size - off → α
+  | 0, _ => acc
+  | n+1, bound =>
+    have valid : off < src.size := Nat.lt_of_sub_pos (Nat.lt_of_lt_of_le (Nat.succ_pos _) bound)
+    have remaining : n ≤ src.size - (off+1) := by
+      rw [← Nat.sub_sub]
+      exact Nat.sub_le_sub_right bound 1
+    foldCount step src (off+1) (step acc (src.get off valid)) n remaining
 
 @[inline] private def foldRange {α : Type} (step : α → UInt8 → α) (src : ByteArray)
     (off count : Nat) (acc : α) : α :=
-  foldCount step src off acc (min count (src.size-off))
-
-private theorem get_byte (src : ByteArray) (i : Nat) (bound : i < src.data.toList.length) :
-    src.get! i = src.data.toList[i] := by
-  cases src with
-  | mk arr =>
-    change (if h : i < arr.size then arr.getInternal i h else _) = _
-    change i < arr.size at bound
-    rw [dite_eq_left bound]
-    rfl
+  foldCount step src off acc (min count (src.size-off)) (Nat.min_le_right ..)
 
 private theorem foldCount_eq {α : Type} (step : α → UInt8 → α) (src : ByteArray)
-    (off : Nat) (acc : α) (n : Nat) (bound : n ≤ (src.data.toList.drop off).length) :
-    foldCount step src off acc n = ((src.data.toList.drop off).take n).foldl step acc := by
+    (off : Nat) (acc : α) (n : Nat) (bound : n ≤ src.size - off) :
+    foldCount step src off acc n bound = ((src.data.toList.drop off).take n).foldl step acc := by
   induction n generalizing off acc with
   | zero => rfl
   | succ n ih =>
-    rw [List.length_drop] at bound
     have atByte : off < src.data.toList.length :=
       Nat.lt_of_sub_pos (Nat.lt_of_lt_of_le (Nat.succ_pos _) bound)
-    have tailBound : n ≤ (src.data.toList.drop (off+1)).length := by
-      rw [List.length_drop,← Nat.sub_sub]
-      exact Nat.sub_le_sub_right bound 1
-    rw [foldCount,ih _ _ tailBound, get_byte src off atByte, List.drop_eq_getElem_cons atByte]
+    rw [foldCount, ih, List.drop_eq_getElem_cons atByte]
     rfl
 
 private theorem foldRange_eq {α : Type} (step : α → UInt8 → α) (src : ByteArray)
     (off count : Nat) (acc : α) :
     foldRange step src off count acc = ((src.data.toList.drop off).take count).foldl step acc := by
   have len : (src.data.toList.drop off).length = src.size-off := List.length_drop
-  rw [foldRange,foldCount_eq _ _ _ _ _ (by rw [len]; exact Nat.min_le_right ..)]
+  rw [foldRange,foldCount_eq]
   by_cases within : count ≤ src.size - off
   · rw [Nat.min_eq_left within]
   · have covers := Nat.le_of_not_le within
