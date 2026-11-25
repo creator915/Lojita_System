@@ -280,9 +280,11 @@ private theorem step_frame (m : Machine) (safe : ReadOnlyRegularFds m) (sl : Ste
   | ok pair =>
     rcases pair with ⟨r,n⟩
     have raw := dispatch_frame m safe sl op noPath r n h
-    cases links : fdLinks n.proc n.kernel.ofds <;> simp [stepSyscall,h,links]
+    cases links : fdLinks n.proc n.kernel.ofds <;> simp only [stepSyscall,h,links,Bool.false_eq_true,ite_false,ite_true, true_and, eq_self]
     · exact safe
-    · exact ⟨(liveInodes_namespace n.kernel.vfs _).trans (congrArg namespaceAt raw.1), safe_account n raw.2⟩
+    · split
+      · exact ⟨congrArg namespaceAt raw.1,raw.2⟩
+      · exact ⟨(liveInodes_namespace n.kernel.vfs _).trans (congrArg namespaceAt raw.1), safe_account n raw.2⟩
 
 private theorem prefix_frame {Δ : List Cap} {A : Type} (denied : Cap.fsPathCap ∉ Δ)
     (schedule : List StepSlice) (p : Prefix Δ A) (m : Machine) (safe : ReadOnlyRegularFds m) :

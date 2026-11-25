@@ -96,12 +96,6 @@ theorem read_alias_seek {m n : Machine} {a b id ino size : Nat} {d : OpenFileDes
       cases Ret.ok.inj val
       have hnext : next.kernel.ofds[id]? = some {d with offset := d.offset + out.length} := by
         simp [next,Machine.setDesc]
-      obtain ⟨live,hlive,off,target⟩ := accounted_offset (m := next) (fd := b) dst hnext
-      have wf := account_WF next hl
-      have hlinks : fdLinks next.account.proc next.account.kernel.ofds := by
-        apply List.all_eq_true.mpr
-        intro pair mem
-        exact wf.fdLive pair.1 pair.2 (Std.TreeMap.mem_toList_iff_getElem?_eq_some.mp mem)
-      rw [seek_cur hlive (target.trans reg) hlinks nextSlice,off]
+      exact seek_cur (Holds.lookup (m := next) dst hnext) reg hl nextSlice
 
 end LojitaCtx.Posix

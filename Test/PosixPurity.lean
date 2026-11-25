@@ -11,11 +11,20 @@ run_cmd do
       if file.extension == some "lean" then
         let mod := ((file.withExtension "").components).foldl Name.str Name.anonymous
         unless env.header.moduleNames.contains mod do throwError "G1 module missing from environment: {mod}"
+  let isProject := fun n =>
+    match env.getModuleIdxFor? n with
+    | none => false
+    | some idx => [`LojitaCtx.Io, `LojitaCtx.Posix].any (·.isPrefixOf env.header.moduleNames[idx.toNat]!)
+  -- Report a dependency forced by the required regular-file representation when present.
+  let payload := `LojitaCtx.Posix.InodePayload.reg
+  if (env.find? payload).any (·.getUsedConstantsAsSet.contains `ByteArray) &&
+      (env.find? `ByteArray).any (·.getUsedConstantsAsSet.contains `ByteArray.mk) &&
+      isExtern env `ByteArray.mk then
+    logInfo m!"G1 required field: {payload} -> ByteArray -> ByteArray.mk [extern]"
+  let mut projectViolations : Array Name := #[]
   let mut todo : Array (Name × List Name) := #[]
   for (n, _) in env.constants.toList do
-    let some idx := env.getModuleIdxFor? n | continue
-    let mod := env.header.moduleNames[idx.toNat]!
-    if [`LojitaCtx.Io, `LojitaCtx.Posix].any (·.isPrefixOf mod) then
+    if isProject n then
       todo := todo.push (n, [])
   if todo.isEmpty then throwError "no audited constants"
   let roots := todo.size
@@ -35,6 +44,7 @@ run_cmd do
       else if isExtern env n then "extern" else if info.isUnsafe then "unsafe" else ""
     if !reason.isEmpty then
       violations := violations + 1
+      if isProject n then projectViolations := projectViolations.push n
       counters := counters.insert reason (counters[reason]?.getD 0 + 1)
       names := names.insert reason (n :: names[reason]?.getD [])
       if reason != "extern" || counters[reason]?.getD 0 ≤ 8 then
@@ -44,6 +54,7 @@ run_cmd do
     for dep in deps do
       unless seen.contains dep do todo := todo.push (dep, n :: parents)
   logInfo m!"G1 audited {roots} project declarations, {seen.size} reachable constants"
+  logInfo m!"Forbidden declarations defined in audited project modules: {projectViolations.size} {projectViolations}"
   for (kind, ns) in names.toList do logInfo m!"{kind}: {ns}"
   unless violations == 0 do
     throwError "G1 strict purity failed at {violations} constants {counters.toList}\n{String.intercalate "\n" examples.toList}"

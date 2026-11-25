@@ -146,6 +146,17 @@ def livePipes (pipes : Table StreamBuf) (ds : Table OpenFileDesc) : Table Stream
     let w := targetCount ds (.pipe id true)
     if r + w = 0 then none else some {s with readers := r, writers := w}
 
+/-- Only a transition from a live peer OFD to no peer OFD hangs up the PTY.
+    An alias keeps its shared OFD alive; unrelated calls preserve external peers. -/
+def livePtys (ptys : Table PtyState) (before after : Table OpenFileDesc) : Table PtyState :=
+  ptys.filterMap fun id tty =>
+    let masters := targetCount after (.pty id true)
+    let slaves := targetCount after (.pty id false)
+    if masters + slaves = 0 then none
+    else if masters = 0 && targetCount before (.pty id true) > 0 then some (ptyHangup tty true)
+    else if slaves = 0 && targetCount before (.pty id false) > 0 then some (ptyHangup tty false)
+    else some tty
+
 /-- Publish reference counts from distinct open descriptions, not descriptor aliases. -/
 def Machine.account (m : Machine) : Machine :=
   let ds := liveOfds m.proc m.kernel.ofds
@@ -154,7 +165,7 @@ def Machine.account (m : Machine) : Machine :=
     vfs := liveInodes m.kernel.vfs ds
     pipes := livePipes m.kernel.pipes ds
     pipePages := m.kernel.pipePages.filter fun id _ => targetCount ds (.pipe id false) + targetCount ds (.pipe id true) > 0
-    ptys := m.kernel.ptys.filter fun id _ => targetCount ds (.pty id false) + targetCount ds (.pty id true) > 0
+    ptys := livePtys m.kernel.ptys m.kernel.ofds ds
     socks := m.kernel.socks.filter fun id _ => targetCount ds (.sock id) > 0}}
 
 def fdLinks (p : ProcState) (ds : Table OpenFileDesc) : Bool :=

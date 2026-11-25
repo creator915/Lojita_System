@@ -29,7 +29,7 @@ theorem FileReads.toEof {fd ino size bytes off m slices qs z}
   | data _ _ _ ih => exact .data _ _ ih
   | interrupted _ _ ih => exact .interrupt ih
 
-private theorem prefix_remaining (bs : Bytes) (n : Nat) :
+theorem prefix_remaining (bs : Bytes) (n : Nat) :
     bs.take n ++ bs.drop (bs.take n).length = bs := by
   by_cases hn : n ≤ bs.length
   · simp [List.length_take, Nat.min_eq_left hn]
@@ -95,6 +95,27 @@ theorem Executes.run {Δ : List Cap} {A : Type} {p : Prefix Δ A} {m s a z}
   | done => rfl
   | ask step tail ih => simp only [runPrefix,step]; exact ih
 
+/-- A completed sequence of actual read syscalls. No hypothesis specifies the
+    final machine or the payload of a successful read. -/
+inductive MachineReads (fd size : Nat) : Machine → List StepSlice → List (Ret Bytes) → Machine → Prop where
+  | eof {m sl z} (step : stepSyscall m sl (.read fd (max 1 size)) = (.ok [],z)) :
+    MachineReads fd size m [sl] [.ok []] z
+  | data {m sl next slices qs z b bs}
+    (step : stepSyscall m sl (.read fd (max 1 size)) = (.ok (b::bs),next))
+    (rest : MachineReads fd size next slices qs z) :
+    MachineReads fd size m (sl::slices) (.ok (b::bs)::qs) z
+  | interrupted {m sl next slices qs z}
+    (step : stepSyscall m sl (.read fd (max 1 size)) = (.err .EINTR,next))
+    (rest : MachineReads fd size next slices qs z) :
+    MachineReads fd size m (sl::slices) (.err .EINTR::qs) z
+
+theorem FileReads.machineReads {fd ino size bytes off m ss qs z} (r : FileReads fd ino size bytes off m ss qs z) :
+    MachineReads fd size m ss qs z := by
+  induction r with
+  | eof _ step => exact .eof step
+  | data _ step _ ih => exact .data step ih
+  | interrupted step _ ih => exact .interrupted step ih
+
 private theorem oneRead {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
     {r : BufReader} {m sl q next rest n result z}
     (awake : r.eof = false) (step : stepSyscall m sl (.read r.fd (max 1 r.chunkSize)) = (q,next))
@@ -104,24 +125,24 @@ private theorem oneRead {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
   simp only [readStep, BufReader.inspect, awake, Bool.false_eq_true, ite_false]
   exact .ask step tail
 
-private theorem readKernel {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
-    {fd ino size bytes off m slices qs z} (t : FileReads fd ino size bytes off m slices qs z)
+theorem readKernel {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
+    {fd size m slices qs z} (t : MachineReads fd size m slices qs z)
     (r : BufReader) (desc : r.fd = fd) (count : r.chunkSize = size) (awake : r.eof = false) :
     Executes ((PosixProg.unfold (.ready r) (readStep cap .all)).observe qs.length)
       m slices (.ok (some (r.pending ++ delivered qs)), {r.clear with eof := true}) z := by
   induction t generalizing r with
-  | @eof off m sl z file step =>
+  | @eof m sl z step =>
     apply oneRead cap (n := 0) (q := .ok []) (next := z) awake (by rw [desc,count] <;> exact step)
     simp only [delivered, List.append_nil]
     exact .done _ _
-  | @data off m sl next slices qs z b bs file step rest ih =>
+  | @data m sl next slices qs z b bs step rest ih =>
     apply oneRead cap (n := qs.length) (q := .ok (b::bs)) (next := next) awake (by rw [desc,count] <;> exact step)
     have tail := ih (r.ingest (b::bs)) desc count awake
     have hc : (r.ingest (b::bs)).clear = r.clear := rfl
     rw [hc] at tail
     simpa [delivered, List.append_assoc, PosixProg.unfold, BufReader.receive] using tail
-  | @interrupted off m sl slices qs z step rest ih =>
-    apply oneRead cap (n := qs.length) (q := .err .EINTR) (next := m) awake (by rw [desc,count] <;> exact step)
+  | @interrupted m sl next slices qs z step rest ih =>
+    apply oneRead cap (n := qs.length) (q := .err .EINTR) (next := next) awake (by rw [desc,count] <;> exact step)
     exact ih r desc count awake
 
 /-- Under successful open and close and a progressing trace on a stationary
@@ -140,7 +161,7 @@ theorem readFileAll_refines_spec {Δ : List Cap} (cap : .fdIoCap ∈ Δ) (fs : .
   have data := reads.contents
   refine ⟨Executes.run ?_, close_restores (open_fresh acquired) data.2 (close_fds released)⟩
   let r : BufReader := {fd,chunkSize := size}
-  have core := readKernel cap reads r rfl rfl rfl
+  have core := readKernel cap reads.machineReads r rfl rfl rfl
   have hbytes : r.pending ++ delivered qs = bytes.data.toList := by simpa [r,BufReader.pending] using data.1
   rw [hbytes] at core
   have readRun : Executes ((readAll cap r).observe qs.length) opened slices

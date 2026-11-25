@@ -38,10 +38,12 @@ def pollOne (m : Machine) (req : PollReq) : Nat := Id.run do
   | .pty i master =>
     let some t := m.kernel.ptys[i]? | return 32
     let stream := if master then t.toMaster else t.toSlave
-    return readyMask ev (!stream.pendingBytes.isEmpty || (!master && t.records.head? == some 0)) true (stream.writers == 0) false
+    let hup := stream.writers == 0
+    let readable := !stream.pendingBytes.isEmpty || (!master && (hup || t.records.head? == some 0))
+    return readyMask ev readable true hup (!master && hup)
   | .sock i =>
     let some s := m.kernel.socks[i]? | return 32
-    return readyMask ev (!s.input.pendingBytes.isEmpty || s.rdShutdown)
+    return readyMask ev (!s.input.pendingBytes.isEmpty || s.rdShutdown || (s.connected && s.input.writers == 0))
       (s.connected && s.output.freeSpace > 0) (s.wrShutdown && s.rdShutdown) false
 
 def pollAll (m : Machine) (sl : StepSlice) (reqs : List PollReq) (ms : Option Nat)
@@ -124,13 +126,17 @@ def dispatchSyscall (m : Machine) (sl : StepSlice) (op : SysOp) :
   | .getArgs => do return (.ok m.proc.argv,m)
   | .lookupEnv name => do return (.ok ((m.proc.envVars.find? (fun e => e.1 == name)).map Prod.snd),m)
 
-/-- Errors preserve the input. Reference accounting on a successful transition
-    discards only descriptions with no aliases and nameless, unopened inodes. -/
+/-- Read operations change offsets or buffered data without changing descriptor ownership. -/
+@[simp] def SysOp.publishesRead : SysOp → Bool
+  | .read .. | .pread .. => true
+  | _ => false
+
+/-- Keep the complete representation of unrelated state across split reads. -/
 def stepSyscall (m : Machine) (slice : StepSlice) (op : SysOp) : Transition op.Result :=
   match dispatchSyscall m slice op with
   | .error e => (.err e,m)
   | .ok (r,next) =>
-    if fdLinks next.proc next.kernel.ofds then (r,next.account) else (.err .EIO,m)
+    if fdLinks next.proc next.kernel.ofds then (r,if op.publishesRead then next else next.account) else (.err .EIO,m)
 
 inductive SimOutcome (A : Type) where
   | done (value : A)
@@ -147,5 +153,24 @@ def runPrefix {Δ : List Cap} {A : Type} (p : Prefix Δ A) (m : Machine)
       let (r,m') := stepSyscall m sl op
       runPrefix (next r) m' rest
 termination_by structural schedule
+
+/-- Once a finite run finishes, any unused scheduling slices leave its complete result intact. -/
+theorem runPrefix_done_append {Δ : List Cap} {A : Type} {p : Prefix Δ A} {m z : Machine}
+    {slices : List StepSlice} {a : A} (done : runPrefix p m slices = (.done a,z))
+    (unused : List StepSlice) : runPrefix p m (slices ++ unused) = (.done a,z) := by
+  induction slices generalizing p m with
+  | nil =>
+    cases p with
+    | done _ | suspended => cases unused <;> exact done
+    | ask op h k =>
+      have impossible : false = true := congrArg
+        (fun (out : SimOutcome A × Machine) => match out.1 with | .done _ => true | .suspended => false) done
+      contradiction
+  | cons sl rest ih =>
+    cases p with
+    | done _ | suspended => exact done
+    | ask op h k =>
+      simp only [runPrefix] at done
+      exact ih done
 
 end LojitaCtx.Posix

@@ -7,7 +7,7 @@ lake build LojitaCtx:static Lojita:static test-io-showcase
 cc -std=c11 -static -O2 -Wall -Wextra -Werror runtime/lojita-sandbox.c -o "$scratch/sandbox"
 .lake/build/bin/test-io-showcase "$scratch"
 mkdir "$scratch/fixtures" "$scratch/seed"
-for exe in base refined argvEcho; do
+for exe in base refined argvEcho signalPoll; do
   readelf -h "$scratch/$exe" | grep -q 'Type:.*EXEC'
   if readelf -l "$scratch/$exe" | grep -q 'INTERP'; then
     echo "Expected a statically linked executable: $exe" >&2
@@ -43,4 +43,5 @@ completed = subprocess.run(
 if completed.returncode or completed.stdout != arg:
     raise SystemExit(f"argvEcho status={completed.returncode} output={completed.stdout!r} stderr={completed.stderr!r}")
 PYTHON
+python3 Test/scripts/posix-signals.py "$scratch/signalPoll"
 echo 'Gate 5 passed: T15/T16 commute, both static executables reproduced each fixture inside LinuxIso, byte-valued argv survived, and the checker rejected the wrong capabilities.'

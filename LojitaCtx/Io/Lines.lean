@@ -107,7 +107,7 @@ theorem readLines_run {Δ : List Cap} (cap : .fdIoCap ∈ Δ) {qs}
 /-- Two independent progressing slice schedules, including interrupted syscalls,
     produce the same bytes, lines and stream state. Both userland observations
     are the actual readAll / readLine transition systems. -/
-theorem ioBuf_chunk_confluence {Δ : List Cap} (cap : .fdIoCap ∈ Δ) (r : BufReader)
+theorem stream_chunk_confluence {Δ : List Cap} (cap : .fdIoCap ∈ Δ) (r : BufReader)
     (awake : r.eof = false) {s a b q₁ q₂ z₁ z₂}
     (one : ReadTrace r.chunkSize s a q₁ z₁) (two : ReadTrace r.chunkSize s b q₂ z₂) :
     let final := {r.clear with eof := true}

@@ -1,4 +1,9 @@
 import Lojita.Store.TreeCAS.Image
+import LojitaCtx.Io.CanonicalRecords
+import LojitaCtx.Io.KernelConfluence
+import LojitaCtx.Io.PipeCursor
+import LojitaCtx.Io.RegularCursor
+import LojitaCtx.Io.PipeWriteRefinement
 import LojitaCtx.Io.HalfLine
 import LojitaCtx.Io.BufferState
 import LojitaCtx.Io.FileRefinement
@@ -186,7 +191,93 @@ example {Δ : List Cap} (cap : .fdIoCap ∈ Δ) (r : BufReader)
     Finishes ((readAll cap r).observe q₁.length) (readAnswers q₁) (.ok bytes, final) ∧
     Finishes ((readAll cap r).observe q₂.length) (readAnswers q₂) (.ok bytes, final) ∧
     LineRun cap (.ready r) q₁ lines final ∧ LineRun cap (.ready r) q₂ lines final ∧ z₁ = z₂ :=
-  @ioBuf_chunk_confluence Δ cap r awake s a b q₁ q₂ z₁ z₂ one two
+  @stream_chunk_confluence Δ cap r awake s a b q₁ q₂ z₁ z₂ one two
+
+-- Lock literal runPrefix and full Machine equality independently of library aliases.
+private def exactReads {Δ : List Cap} (cap : .fdIoCap ∈ Δ) (fd size : Nat) (payload : Bytes)
+    (slices : List StepSlice) (depth : Nat) (start final : Machine) : Prop :=
+  let r : BufReader := {fd,chunkSize := size}
+  runPrefix ((readAll cap r).observe depth) start slices =
+    (.done (.ok payload,{r.clear with eof := true}),final) ∧
+  runPrefix ((readLines cap r).observe depth) start slices =
+    (.done (.ok (({} : Framing).chunk payload).lines),final)
+
+example {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
+    (m : Machine) (fd id i : Nat) (d : OpenFileDesc) (s : StreamBuf)
+    (backed : fdLinks m.proc m.kernel.ofds) (look : m.lookup fd = .ok (id,d))
+    (pipe : d.target = .pipe i false) (readable : d.flags.access ≠ .writeOnly)
+    (present : m.kernel.pipes[i]? = some s) (closed : s.writers = 0)
+    {n₁ n₂ ss₁ ss₂ qs₁ qs₂}
+    (first : Progressing s.pendingBytes n₁ 0 ss₁ qs₁) (second : Progressing s.pendingBytes n₂ 0 ss₂ qs₂) :
+    let final := pipeCursor m i s (m.pages i s) s.pendingBytes.length
+    exactReads cap fd n₁ s.pendingBytes ss₁ qs₁.length m final ∧
+    exactReads cap fd n₂ s.pendingBytes ss₂ qs₂.length m final :=
+  closed_pipe_confluence cap m fd id i d s backed look pipe readable present closed first second
+
+example {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
+    (m : Machine) (fd : Fd) (e : FdEntry) (d : OpenFileDesc)
+    (ino : InodeId) (n : Inode) (data : ByteArray) (backed : fdLinks m.proc m.kernel.ofds)
+    (entry : m.fds[fd]? = some e) (desc : m.kernel.ofds[e.ofd]? = some d)
+    (reg : d.target = .inode ino) (readable : d.flags.access ≠ .writeOnly)
+    (node : m.kernel.vfs.node ino = .ok n) (contents : n.payload = .reg data)
+    {n₁ n₂ ss₁ ss₂ qs₁ qs₂}
+    (first : Progressing (data.data.toList.drop d.offset) n₁ 0 ss₁ qs₁)
+    (second : Progressing (data.data.toList.drop d.offset) n₂ 0 ss₂ qs₂) :
+    let bytes := data.data.toList.drop d.offset
+    let final := fileCursor m e.ofd d (d.offset+bytes.length)
+    exactReads cap fd n₁ bytes ss₁ qs₁.length m final ∧
+    exactReads cap fd n₂ bytes ss₂ qs₂.length m final :=
+  regular_file_confluence cap m fd e d ino n data backed entry desc reg readable node contents first second
+
+example {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
+    {w : BufWriter} {m z : Machine} {slices : List StepSlice} {i : PipeId} {s : StreamBuf}
+    (held : PipeWriterAt m w.fd i) (pipe : m.kernel.pipes[i]? = some s)
+    (trace : MachineWrites w m slices z) :
+    runPrefix ((writeAll cap w).observe slices.length) m slices =
+        (.done (.ok (),{w with remaining := [], written := w.written + w.remaining.length}),z) ∧
+    ∃ out, z.kernel.pipes[i]? = some out ∧ out.pendingBytes = s.pendingBytes ++ w.remaining :=
+  writeAll_pipe_refines cap held pipe trace
+
+example {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
+    {w : BufWriter} {m z₁ z₂ : Machine} {a b : List StepSlice} {i : PipeId} {s : StreamBuf}
+    (held : PipeWriterAt m w.fd i) (pipe : m.kernel.pipes[i]? = some s)
+    (one : MachineWrites w m a z₁) (two : MachineWrites w m b z₂) :
+    (runPrefix ((writeAll cap w).observe a.length) m a).1 =
+      (runPrefix ((writeAll cap w).observe b.length) m b).1 ∧
+    (z₁.kernel.pipes[i]?).map StreamBuf.pendingBytes = (z₂.kernel.pipes[i]?).map StreamBuf.pendingBytes :=
+  writeAll_pipe_schedule_confluence cap held pipe one two
+
+example {Δ : List Cap} (cap : .fdIoCap ∈ Δ) {bytes fd cursor afterEof off}
+    (law : FiniteReadLaw bytes fd cursor afterEof) (within : off ≤ bytes.length) {n₁ n₂ ss₁ ss₂ qs₁ qs₂ z₁ z₂}
+    (one : MachineReads fd n₁ (cursor off) ss₁ qs₁ z₁)
+    (two : MachineReads fd n₂ (cursor off) ss₂ qs₂ z₂) :
+    z₁ = z₂ ∧ exactReads cap fd n₁ (bytes.drop off) ss₁ qs₁.length (cursor off) afterEof ∧
+    exactReads cap fd n₂ (bytes.drop off) ss₂ qs₂.length (cursor off) afterEof :=
+  ioBuf_chunk_confluence cap law within one two
+
+example (m : Machine) (fd : Fd) (ofd : OfdId) (d : OpenFileDesc)
+    (id : SockId) (peer : SocketState) (bytes : Bytes) (backed : fdLinks m.proc m.kernel.ofds)
+    (look : m.lookup fd = .ok (ofd,d)) (found : m.kernel.socks[id]? = some peer)
+    (target : d.target = .sock id) (canRead : d.flags.access ≠ .writeOnly)
+    (connected : peer.connected = true) (readOpen : peer.rdShutdown = false)
+    (peerFin : peer.input.writers = 0) : CursorLaw bytes fd (socketCursor m id peer bytes) :=
+  socket_cursor_law m fd ofd d id peer bytes backed look found target canRead connected readOpen peerFin
+
+example (m : Machine) (fd ofd id : Nat) (d : OpenFileDesc)
+    (p : PtyState) (backed : fdLinks m.proc m.kernel.ofds)
+    (look : m.lookup fd = .ok (ofd,d)) (target : d.target = .pty id false)
+    (canRead : d.flags.access ≠ .writeOnly) (found : m.kernel.ptys[id]? = some p)
+    (fin : p.toSlave.writers = 0) (empty : p.toSlave.pendingBytes = []) (records : p.records = []) :
+    CursorLaw [] fd (fun _ => m) :=
+  hung_slave_cursor_law m fd ofd id d p backed look target canRead found fin empty records
+
+example (m : Machine) (fd ofd id : Nat) (d : OpenFileDesc) (p : PtyState)
+    (bytes : Bytes) (rs : List Nat) (aligned : CanonicalRecords.volume rs = bytes.length)
+    (backed : fdLinks m.proc m.kernel.ofds) (look : m.lookup fd = .ok (ofd,d))
+    (target : d.target = .pty id false) (canRead : d.flags.access ≠ .writeOnly)
+    (present : (m.kernel.ptys[id]?).isSome) (canonical : p.attrs.icanon = true) :
+    FiniteReadLaw bytes fd (CanonicalRecords.cursor m id p bytes rs) (m.setPty id p) :=
+  CanonicalRecords.finite_read_law m fd ofd id d p bytes rs aligned backed look target canRead present canonical
 
 -- T16
 example {Δ : List Cap} (cap : .fdIoCap ∈ Δ) (fs : .fsPathCap ∈ Δ)

@@ -74,6 +74,8 @@ theorem pty_raw_passthrough (p : PtyState) (bs : Bytes) (raw : p.attrs = rawTerm
     between two nonempty records. The caller handles a zero-sized read. -/
 def ptyRead (sl : StepSlice) (nb master : Bool) (p : PtyState) : Ret Bytes × PtyState := Id.run do
   if master then
+    if !sl.intrBefore && p.toMaster.writers == 0 && p.toMaster.pendingBytes.isEmpty then
+      return (.err .EIO,p)
     let (r,s) := streamRead sl nb p.toMaster
     return (r,{p with toMaster := s})
   if p.attrs.icanon then
@@ -87,6 +89,18 @@ def ptyRead (sl : StepSlice) (nb master : Bool) (p : PtyState) : Ret Bytes × Pt
     | [] => pure ()
   let (r,s) := streamRead sl nb p.toSlave
   return (r,{p with toSlave := s})
+
+/-- Linux flushes the slave input/line discipline when the last master closes.
+    Closing the last slave retains unread output on the master until drained. -/
+def ptyHangup (p : PtyState) (lostMaster : Bool) : PtyState :=
+  if lostMaster then
+    {p with
+      editing := []
+      records := []
+      toSlave := {p.toSlave with writers := 0, pendingBytes := []}
+      toMaster := {p.toMaster with readers := 0}}
+  else
+    {p with toMaster := {p.toMaster with writers := 0}, toSlave := {p.toSlave with readers := 0}}
 
 def ptySlaveWrite (p : PtyState) (bs : Bytes) : PtyState :=
   let cooked := if p.attrs.opost then bs.flatMap fun b => if b == 10 then [13,b] else [b] else bs

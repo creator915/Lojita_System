@@ -22,32 +22,39 @@ private theorem oneLineRead {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
   apply Executes.ask step
   simpa only [unqueued,awake] using tail
 
-theorem lineKernel {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
-    {fd ino size bytes off m slices qs z} (t : FileReads fd ino size bytes off m slices qs z)
+theorem linesMachineReads {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
+    {fd size m slices qs z} (t : MachineReads fd size m slices qs z)
     (r : BufReader) (rev : List Bytes) (desc : r.fd = fd) (count : r.chunkSize = size) (awake : r.eof = false) :
     Executes (PosixProg.unfoldPrefix (lineBatchStep cap) qs.length (.ready r,rev))
       m slices (.ok (rev.reverse ++ (r.frame.chunk (delivered qs)).lines)) z := by
   induction t generalizing r rev with
-  | @eof off m sl z file step =>
+  | @eof m sl z step =>
     apply oneLineRead cap (n := 0) (q := .ok []) (next := z) awake (by rw [desc,count] <;> exact step)
     change Executes (PosixProg.unfoldPrefix (lineBatchStep cap) 0
       (.ready {(unqueued r) with eof := true}, _)) _ _ _ _
     rw [PosixProg.unfoldPrefix, batchEof, queue_frame r (delivered [.ok []])]
     simp [unqueued, delivered, Framing.chunk, List.append_assoc]
     exact .done _ _
-  | @data off m sl next slices qs z b bs file step rest ih =>
+  | @data m sl next slices qs z b bs step rest ih =>
     apply oneLineRead cap (n := qs.length) (q := .ok (b::bs)) (next := next) awake (by rw [desc,count] <;> exact step)
     have tail := ih ((unqueued r).ingest (b::bs)) (r.ready.reverse ++ rev) desc count awake
     change Executes _ _ _ (Ret.ok (rev.reverse ++ (r.frame.chunk ((b::bs) ++ delivered qs)).lines)) _
     rw [queue_frame]
     simpa only [List.reverse_append, List.reverse_reverse, List.append_assoc, chunk_append,
       unqueued, BufReader.ingest, frame_withFrame, BufReader.receive] using tail
-  | @interrupted off m sl slices qs z step rest ih =>
-    apply oneLineRead cap (n := qs.length) (q := .err .EINTR) (next := m) awake (by rw [desc,count] <;> exact step)
+  | @interrupted m sl next slices qs z step rest ih =>
+    apply oneLineRead cap (n := qs.length) (q := .err .EINTR) (next := next) awake (by rw [desc,count] <;> exact step)
     have tail := ih (unqueued r) (r.ready.reverse ++ rev) desc count awake
     rw [queue_frame]
     simpa only [List.reverse_append, List.reverse_reverse, List.append_assoc, unqueued, delivered,
       BufReader.receive] using tail
+
+theorem lineKernel {Δ : List Cap} (cap : .fdIoCap ∈ Δ)
+    {fd ino size bytes off m slices qs z} (t : FileReads fd ino size bytes off m slices qs z)
+    (r : BufReader) (rev : List Bytes) (desc : r.fd = fd) (count : r.chunkSize = size) (awake : r.eof = false) :
+    Executes (PosixProg.unfoldPrefix (lineBatchStep cap) qs.length (.ready r,rev))
+      m slices (.ok (rev.reverse ++ (r.frame.chunk (delivered qs)).lines)) z :=
+  linesMachineReads cap t.machineReads r rev desc count awake
 
 def closedInput (xs : Bytes) : StreamBuf := {pendingBytes := xs, writers := 0}
 

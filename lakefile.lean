@@ -79,3 +79,6 @@ lean_exe «test-io-showcase» where
 
 lean_exe «test-posix-host» where
   root := `Test.Posix.Host
+
+lean_exe «test-sandbox-owned» where
+  root := `Test.scripts.SandboxOwned

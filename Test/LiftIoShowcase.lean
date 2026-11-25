@@ -1,48 +1,79 @@
 import Gen.LiftIo
-import LojitaCtx.Io.LineRefinement
+import LojitaCtx.Io.RegularCursor
+import LojitaCtx.Io.KernelConfluence
 import Lojita.Kernel.Driver
 
 namespace Test.LiftIoShowcase
 open Gen.LiftIo LojitaCtx.Posix LojitaCtx.Io LojitaCtx.Io.FsLib
 
-/-- Two reads of the same stationary inode may have unrelated short-read and
-    interrupt schedules. Project those actual file replies into T15; T16 fixes
-    T0's result and descriptor table. T1 executes the buffered line loop at size 3. -/
-theorem lift_square {m opened before₀ before₁ end₀ end₁ : Machine}
-    {fd ino : Nat} {bytes : ByteArray} {openSlice close₀ close₁ s₀ s₁ q₀ q₁}
+private theorem regularReads {fd ino size off slices qs} {data : ByteArray} {atOff : Nat → Machine}
+    (law : CursorLaw data.data.toList fd atOff)
+    (regular : ∀ i, AtRegular (atOff i) fd ino data i)
+    (progress : Progressing data.data.toList size off slices qs) :
+    FileReads fd ino size data off (atOff off) slices qs (atOff data.data.toList.length) := by
+  induction progress with
+  | @eof sl awake =>
+    exact .eof (regular _) (by simpa only [awake,Bool.false_eq_true,ite_false,nextChunk,List.drop_length,List.take_nil,List.length_nil,Nat.add_zero] using law data.data.toList.length size sl)
+  | @data off sl b chunk slices answers awake piece tail ih =>
+    exact .data (regular _) (by simpa [awake,piece] using law off size sl) ih
+  | @interrupted off sl slices answers intr tail ih =>
+    exact .interrupted (by simpa [intr] using law off size sl) ih
+
+/-- Two progressing schedules start from one stationary inode. T15 supplies the
+    common state at EOF, and T16 supplies the file result and FD restoration. -/
+theorem lift_square {m opened closed : Machine} {fd ino : Nat} {e : FdEntry}
+    {d : OpenFileDesc} {node : Inode} {bytes : ByteArray} {openSlice close₀ close₁ s₀ s₁ q₀ q₁}
     (openedFd : stepSyscall m openSlice (.openat none input {} 0) = (.ok fd,opened))
-    (high : FileReads fd ino 65536 bytes 0 opened s₀ q₀ before₀)
-    (low : FileReads fd ino 3 bytes 0 opened s₁ q₁ before₁)
-    (closed₀ : stepSyscall before₀ close₀ (.close fd) = (.ok (),end₀))
-    (closed₁ : stepSyscall before₁ close₁ (.close fd) = (.ok (),end₁)) :
+    (backed : fdLinks opened.proc opened.kernel.ofds) (entry : opened.fds[fd]? = some e)
+    (desc : opened.kernel.ofds[e.ofd]? = some d) (reg : d.target = .inode ino)
+    (access : d.flags.access ≠ .writeOnly) (start : d.offset = 0)
+    (found : opened.kernel.vfs.node ino = .ok node) (contents : node.payload = .reg bytes)
+    (high : Progressing bytes.data.toList 65536 0 s₀ q₀)
+    (low : Progressing bytes.data.toList 3 0 s₁ q₁)
+    (release : stepSyscall (fileCursor opened e.ofd d bytes.data.toList.length) close₀ (.close fd) = (.ok (),closed)) :
     runPrefix (whole.observe q₀.length) m (openSlice :: (s₀ ++ [close₀])) =
-      (.done (.ok bytes.data.toList),end₀) ∧
+      (.done (.ok bytes.data.toList),closed) ∧
     runPrefix (streamed.observe q₁.length) m (openSlice :: (s₁ ++ [close₁])) =
-      (.done (.ok bytes.data.toList),end₁) ∧
-    sameDescriptors end₀ m ∧ sameDescriptors end₁ m ∧
-    ∃ lines final, LineRun fdCap (.ready {fd,chunkSize := 65536}) q₀ lines final ∧
-      LineRun fdCap (.ready {fd,chunkSize := 65536}) q₁ lines final := by
-  have baseResult := readFileAll_refines_spec fdCap pathCap openedFd high closed₀
-  have lowContents := low.contents
-  obtain ⟨_,a⟩ := shadowFile high 65536 (by decide)
-  obtain ⟨_,b⟩ := shadowFile low 65536 (by decide)
-  have common : delivered q₁ = delivered q₀ := lowContents.1.trans high.contents.1.symm
-  rw [common] at b
-  have both := ioBuf_chunk_confluence fdCap ({fd,chunkSize := 65536} : BufReader) rfl a b
-  refine ⟨baseResult.1,Executes.run ?_,baseResult.2,
-    close_restores (open_fresh openedFd) lowContents.2 (close_fds closed₁),_,_,both.2.2.1,both.2.2.2.1⟩
+      (.done (.ok bytes.data.toList),closed) ∧ sameDescriptors closed m := by
+  let atOff := fileCursor opened e.ofd d
+  have law := regular_cursor_law opened fd e d ino node bytes backed entry desc reg access found contents
+  have initial : atOff 0 = opened := start ▸ fileCursor_initial opened e.ofd d desc
+  have regular (i : Nat) : AtRegular (atOff i) fd ino bytes i := by
+    have fe : (atOff i).fds[fd]? = some e := entry
+    let current := {d with offset := i}
+    have ofd : (atOff i).kernel.ofds[e.ofd]? = some current := Std.TreeMap.getElem?_insert_self
+    exact ⟨e.ofd,current,node,by simp [Machine.lookup,fe,ofd]; rfl,reg,access,rfl,found,contents⟩
+  have highTrace := regularReads (atOff := atOff) law regular high
+  rw [initial] at highTrace
+  have base := readFileAll_refines_spec fdCap pathCap openedFd highTrace release
+  have firstStep : CursorStep bytes.data.toList fd atOff 0 opened := initial ▸ law 0
+  obtain ⟨trace,_⟩ := low.startReplay law firstStep
+  have highAt : MachineReads fd 65536 (atOff 0) s₀ q₀ (atOff bytes.data.toList.length) := by
+    rw [initial]; exact highTrace.machineReads
+  have lowAt : MachineReads fd 3 (atOff 0) s₁ q₁ (atOff bytes.data.toList.length) := by
+    rw [initial]; exact trace
+  have both := ioBuf_chunk_confluence fdCap (cursor_finite_law (cursor := atOff) law) (Nat.zero_le _) highAt lowAt
+  have expected := both.2.2.2
+  rw [initial] at expected
   let r : BufReader := {fd,chunkSize := 3}
   let lines := (r.frame.chunk (delivered q₁)).lines
-  have readRun : Executes ((readLines fdCap r).observe q₁.length) opened s₁ (.ok lines) before₁ :=
-    lineKernel fdCap low r [] rfl rfl rfl
-  have bytesEq : lines.flatten = bytes.data.toList := by
-    simp [lines, Framing.flatten_lines, chunk_preserves, r, BufReader.pending, lowContents.1]
+  have lineRun : Executes ((readLines fdCap r).observe q₁.length) opened s₁ (.ok lines) (atOff bytes.data.toList.length) :=
+    linesMachineReads fdCap trace r [] rfl rfl rfl
+  have sameRun := lineRun.run.symm.trans expected
+  have sameLines : lines = (({} : Framing).chunk bytes.data.toList).lines := by
+    simpa using Ret.ok.inj (SimOutcome.done.inj (congrArg Prod.fst sameRun))
+  have dataEq : lines.flatten = bytes.data.toList := by
+    rw [sameLines, Framing.flatten_lines, chunk_preserves]
+    rfl
   let use := FsLib.andThen (readLines fdCap r) fun xs => pure (Ret.ok xs.flatten)
-  have used : Executes (use.observe q₁.length) opened s₁ (.ok bytes.data.toList) before₁ := by
-    rw [← List.append_nil s₁, ← bytesEq]
-    exact readRun.bind (.done _ _)
+  have used : Executes (use.observe q₁.length) opened s₁ (.ok bytes.data.toList) (atOff bytes.data.toList.length) := by
+    rw [← List.append_nil s₁]
+    conv => arg 4; rw [← dataEq]
+    exact lineRun.bind (.done _ _)
+  have released : stepSyscall (atOff bytes.data.toList.length) close₁ (.close fd) = (.ok (),closed) := release
+  refine ⟨base.1,Executes.run ?_,base.2⟩
   apply Executes.ask openedFd
-  exact used.bind (.ask closed₁ (.done _ _))
+  exact used.bind (.ask released (.done _ _))
 
 /-- Instantiate both sides on a concrete inode. Keep an unrelated descriptor
     open to exercise close restoration in addition to empty-table startup. -/
@@ -87,3 +118,5 @@ def main (args : List String) : IO Unit := do
   unless rejected do throw (IO.userError "POSIX checker accepted an entry with the wrong capabilities")
   for entry in ["base", "refined", "argvEcho"] do
     compileVerifiedExe [checked] ⟨["Gen","LiftIo",entry]⟩ .posix (System.FilePath.mk dir / entry)
+  let signals ← IO.ofExcept (parseLeanMod (← IO.FS.readFile "Test/Posix/Gen/SignalPoll.lean"))
+  compileVerifiedExe [signals] ⟨["Gen","SignalPoll","app"]⟩ .posix (System.FilePath.mk dir / "signalPoll")

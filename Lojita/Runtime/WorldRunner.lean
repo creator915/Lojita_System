@@ -76,6 +76,8 @@ private def resume (p : Prefix CoreCaps UInt32) (history : List (SysOp × Answer
 /-- Expand only when a finite observation is exhausted. Replaying a transcript
     is pure and validates the complete request before passing its reply onward. -/
 def runBytes (p : PosixProg CoreCaps UInt32) (args : List Bytes) : IO UInt32 := do
+  -- Keep SIGPIPE observable as EPIPE, then restore the inherited SIGINT policy
+  -- on the interpreter thread after native worker initialization.
   for signal in [0,1] do
     let setup ← invoke 33 signal
     if setup.error != 0 then throw (IO.userError s!"sigaction: errno {setup.error}")

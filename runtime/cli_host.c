@@ -7,6 +7,9 @@
 #include <limits.h>
 #include <netdb.h>
 #include <poll.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -248,49 +251,6 @@ const char *ct_lookup_env_n(const char *key, size_t key_len) {
  * §3 Standard streams, controlling terminal and reactive polling
  * -------------------------------------------------------------------------- */
 
-/* Refill only when empty. Byte reads and reactive polling consume the same prefix. */
-static uint8_t stdin_stash[8192];
-static size_t stdin_stash_pos = 0;
-static size_t stdin_stash_len = 0;
-static int stdin_eof = 0;
-
-static int stdin_fill_chunk(void) {
-    if (stdin_eof) return 0;
-    for (;;) {
-        ssize_t n = read(STDIN_FILENO, stdin_stash, sizeof(stdin_stash));
-        if (n > 0) {
-            stdin_stash_pos = 0;
-            stdin_stash_len = (size_t)n;
-            return 1;
-        }
-        if (n < 0 && errno == EINTR) continue;
-        stdin_eof = 1;
-        return 0;
-    }
-}
-
-static void stdin_consume(size_t count) {
-    stdin_stash_pos += count;
-    if (stdin_stash_pos == stdin_stash_len) {
-        stdin_stash_pos = 0;
-        stdin_stash_len = 0;
-    }
-}
-
-int ct_read_stdin_byte(int *out_got_byte, uint8_t *out_byte) {
-    *out_got_byte = 0;
-    *out_byte = 0;
-    if (stdin_stash_pos >= stdin_stash_len && !stdin_eof) {
-        stdin_fill_chunk();
-    }
-    if (stdin_stash_pos < stdin_stash_len) {
-        *out_byte = stdin_stash[stdin_stash_pos];
-        *out_got_byte = 1;
-        stdin_consume(1);
-    }
-    return 0;
-}
-
 int ct_is_tty(int fd) {
     return isatty(fd) ? 1 : 0;
 }
@@ -298,7 +258,6 @@ int ct_is_tty(int fd) {
 static int tty_initialized = 0;
 static int tty_rfd = -1;
 static int tty_wfd = -1;
-static int tty_eof = 0;
 static struct termios saved_termios;
 static int saved_termios_valid = 0;
 
@@ -412,145 +371,94 @@ int ct_write_tty_all(const uint8_t *buf, size_t len) {
     return ct_write_fd_all(tty_wfd, buf, len) == 0;
 }
 
-int ct_read_tty_byte(int *out_got_byte, uint8_t *out_byte) {
-    if (out_got_byte) *out_got_byte = 0;
-    if (out_byte) *out_byte = 0;
-    init_tty();
-    if (tty_rfd < 0 || tty_eof) return 0;
-    struct pollfd pfd = { .fd = tty_rfd, .events = POLLIN };
-    int pr = poll(&pfd, 1, 0);
-    if (pr > 0 && (pfd.revents & POLLIN)) {
-        uint8_t b = 0;
-        ssize_t n = read(tty_rfd, &b, 1);
-        if (n == 1) {
-            if (out_got_byte) *out_got_byte = 1;
-            if (out_byte) *out_byte = b;
+/* Only async-signal-safe transport lives here. Lean determines capabilities,
+ * event priority, EOF state, chunk sizes, and timing through POSIX ppoll. */
+static const int watched[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGWINCH};
+static struct sigaction previous[sizeof watched / sizeof *watched];
+/* One notification per distinct pending signal keeps the nonblocking pipe
+ * bounded to five bytes, even if the application is busy processing input. */
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "signals require lock-free host integers");
+static pthread_mutex_t signal_lock = PTHREAD_MUTEX_INITIALIZER;
+static int signal_input = -1;
+static _Atomic int signal_output = -1;
+static _Atomic unsigned active_handlers, queued_signals;
+
+static void enqueue_signal(int signo) {
+    int saved = errno;
+    atomic_fetch_add(&active_handlers, 1);
+    int fd = atomic_load(&signal_output);
+    unsigned bit = 1u << signo;
+    if (fd >= 0 && !(atomic_fetch_or(&queued_signals, bit) & bit)) {
+        unsigned char byte = (unsigned char)signo;
+        ssize_t n;
+        do { n = write(fd, &byte, 1); } while (n < 0 && errno == EINTR);
+    }
+    atomic_fetch_sub(&active_handlers, 1);
+    errno = saved;
+}
+
+/* A worker thread may still be returning from a signal handler after
+ * sigaction restores the original disposition. Wait before recycling its fd. */
+static void close_signals(int rd, int wr) {
+    atomic_store(&signal_output, -1);
+    while (atomic_load(&active_handlers)) sched_yield();
+    close(wr);
+    close(rd);
+    signal_input = -1;
+}
+
+static int above_stdio(int fd) {
+    if (fd > STDERR_FILENO) return fd;
+    int result = fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+    int saved = errno;
+    close(fd);
+    errno = saved;
+    return result;
+}
+
+static int begin_signals_locked(void) {
+    if (signal_input >= 0) { errno = EBUSY; return -1; }
+    int fds[2];
+    if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) < 0) return -1;
+    int rd = above_stdio(fds[0]), wr = above_stdio(fds[1]);
+    if (rd < 0 || wr < 0) {
+        if (rd >= 0) close(rd);
+        if (wr >= 0) close(wr);
+        return -1;
+    }
+    signal_input = rd;
+    atomic_store(&queued_signals, 0);
+    atomic_store(&signal_output, wr);
+    struct sigaction action = {0};
+    action.sa_handler = enqueue_signal;
+    sigemptyset(&action.sa_mask);
+    for (size_t i = 0; i < sizeof watched / sizeof *watched; i++) {
+        if (sigaction(watched[i], &action, &previous[i]) < 0) {
+            int saved = errno;
+            while (i > 0) { --i; (void)sigaction(watched[i], &previous[i], NULL); }
+            close_signals(rd, wr);
+            errno = saved;
+            return -1;
         }
     }
-    return 0;
+    return rd;
 }
 
-static volatile sig_atomic_t pending_sig = 0;
-static volatile sig_atomic_t pending_winch = 0;
-static int reactive_sigs_installed = 0;
-
-static void ct_sig_handler(int sig) {
-    if (sig == SIGWINCH) {
-        pending_winch = 1;
-    } else if (sig == SIGINT) {
-        pending_sig = 1;
-    } else if (sig == SIGTERM) {
-        pending_sig = 2;
-    } else if (sig == SIGHUP) {
-        pending_sig = 3;
-    } else if (sig == SIGQUIT) {
-        pending_sig = 4;
-    }
+static int begin_signals(void) {
+    pthread_mutex_lock(&signal_lock);
+    int fd = begin_signals_locked();
+    pthread_mutex_unlock(&signal_lock);
+    return fd;
 }
 
-static int take_pending_event(uint32_t mask, uint32_t *out_a, uint32_t *out_b) {
-    if ((mask & CT_POLL_SIG) && pending_sig != 0) {
-        uint32_t s = (uint32_t)pending_sig;
-        pending_sig = 0;
-        if (out_a) *out_a = s;
-        return 2;
+static void end_signals(void) {
+    pthread_mutex_lock(&signal_lock);
+    if (signal_input >= 0) {
+        for (size_t i = 0; i < sizeof watched / sizeof *watched; i++)
+            (void)sigaction(watched[i], &previous[i], NULL);
+        close_signals(signal_input, atomic_load(&signal_output));
     }
-    if ((mask & CT_POLL_TTY) && pending_winch != 0) {
-        pending_winch = 0;
-        ct_term_size(out_a, out_b);
-        return 3;
-    }
-    return 0;
-}
-
-enum { TTY_EVENT_MAX = 256, STDIN_EVENT_MAX = 4096 };
-
-static int copy_event_bytes(const uint8_t *src, size_t len, uint8_t **out_buf, size_t *out_len) {
-    uint8_t *buf = malloc(len);
-    if (!buf) return -1;
-    memcpy(buf, src, len);
-    *out_buf = buf;
-    *out_len = len;
-    return 0;
-}
-
-static int read_polled_channel(int fd, int is_tty, uint8_t **out_buf, size_t *out_len) {
-    uint8_t tmp[STDIN_EVENT_MAX];
-    ssize_t n = read(fd, tmp, is_tty ? TTY_EVENT_MAX : sizeof(tmp));
-    if (n > 0) {
-        if (copy_event_bytes(tmp, (size_t)n, out_buf, out_len) < 0) return -1;
-        return is_tty ? 4 : 6;
-    }
-    if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
-    if (is_tty) {
-        tty_eof = 1;
-        return 5;
-    }
-    stdin_eof = 1;
-    return 7;
-}
-
-int ct_poll_reactive_event(uint32_t poll_mask, uint32_t wait_ms,
-                           uint32_t *out_a, uint32_t *out_b,
-                           uint8_t **out_buf, size_t *out_len) {
-    if (!reactive_sigs_installed) {
-        struct sigaction sa = {0};
-        sa.sa_handler = ct_sig_handler;
-        sigemptyset(&sa.sa_mask);
-        (void)sigaction(SIGWINCH, &sa, NULL);
-        (void)sigaction(SIGINT, &sa, NULL);
-        (void)sigaction(SIGTERM, &sa, NULL);
-        (void)sigaction(SIGHUP, &sa, NULL);
-        (void)sigaction(SIGQUIT, &sa, NULL);
-        reactive_sigs_installed = 1;
-    }
-    if (out_a) *out_a = 0;
-    if (out_b) *out_b = 0;
-    *out_buf = NULL;
-    *out_len = 0;
-
-    int kind = take_pending_event(poll_mask, out_a, out_b);
-    if (kind) return kind;
-    if ((poll_mask & CT_POLL_STDIO) && stdin_stash_pos < stdin_stash_len) {
-        size_t len = stdin_stash_len - stdin_stash_pos;
-        if (len > STDIN_EVENT_MAX) len = STDIN_EVENT_MAX;
-        if (copy_event_bytes(stdin_stash + stdin_stash_pos, len, out_buf, out_len) < 0) return -1;
-        stdin_consume(len);
-        return 6;
-    }
-
-    struct pollfd pfds[2];
-    nfds_t nfds = 0;
-    if (poll_mask & CT_POLL_TTY) init_tty();
-    int poll_tty = (poll_mask & CT_POLL_TTY) && tty_rfd >= 0 && !tty_eof;
-    /* A simultaneous readiness notification dispatches the terminal first. */
-    if (poll_tty) {
-        pfds[nfds++] = (struct pollfd){ .fd = tty_rfd, .events = POLLIN };
-    }
-    if ((poll_mask & CT_POLL_STDIO) && !stdin_eof &&
-        !((poll_mask & CT_POLL_TTY) && same_chr_dev(STDIN_FILENO, tty_rfd))) {
-        pfds[nfds++] = (struct pollfd){ .fd = STDIN_FILENO, .events = POLLIN };
-    }
-
-    int64_t t0 = ct_raw_mono_ms();
-    if (nfds > 0) {
-        int ready = poll(pfds, nfds, (int)(wait_ms > 1000 ? 1000 : wait_ms));
-        kind = take_pending_event(poll_mask, out_a, out_b);
-        if (kind) return kind;
-        for (nfds_t i = 0; ready > 0 && i < nfds; ++i) {
-            if (pfds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
-                kind = read_polled_channel(pfds[i].fd, poll_tty && i == 0, out_buf, out_len);
-                if (kind) return kind;
-            }
-        }
-    } else {
-        ct_sleep_ms(wait_ms > 50 ? 50 : wait_ms);
-        kind = take_pending_event(poll_mask & CT_POLL_SIG, out_a, out_b);
-        if (kind) return kind;
-    }
-    int64_t dt = ct_raw_mono_ms() - t0;
-    if (out_a) *out_a = dt > 0 ? (uint32_t)dt : 0;
-    return 1;
+    pthread_mutex_unlock(&signal_lock);
 }
 
 /* --------------------------------------------------------------------------

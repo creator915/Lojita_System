@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -52,6 +53,68 @@ static void set_bit(tcflag_t *value, tcflag_t bit, int on) {
 }
 static void wake_poll(int sig) { (void)sig; }
 
+static int prepared;
+static sigset_t entry_mask;
+static struct sigaction entry_interrupt;
+
+static int thread_mask(int how, const sigset_t *set, sigset_t *old) {
+    int error = pthread_sigmask(how, set, old);
+    if (error) { errno = error; return -1; }
+    return 0;
+}
+
+/* Called by the verified ELF entry before Lean starts any runtime workers.
+   All workers inherit the blocked mask. Only the object program thread waits. */
+int lojita_posix_prepare_signals(void) {
+    sigset_t set;
+    sigemptyset(&set); sigaddset(&set, SIGINT); sigaddset(&set, SIGWINCH);
+    if (thread_mask(SIG_BLOCK, &set, &entry_mask) < 0 ||
+        sigaction(SIGINT, NULL, &entry_interrupt) < 0) return -1;
+    struct sigaction resize = {.sa_handler = wake_poll};
+    sigemptyset(&resize.sa_mask);
+    if (sigaction(SIGWINCH, &resize, NULL) < 0) return -1;
+    prepared = 1;
+    return 0;
+}
+
+static int enter_program(void) {
+    sigset_t one;
+    sigemptyset(&one); sigaddset(&one, SIGWINCH);
+    if (thread_mask(SIG_BLOCK, &one, NULL) < 0) return -1;
+    struct sigaction resize = {.sa_handler = wake_poll};
+    sigemptyset(&resize.sa_mask);
+    if (sigaction(SIGWINCH, &resize, NULL) < 0) return -1;
+    if (!prepared) return 0;
+    if (sigaction(SIGINT, &entry_interrupt, NULL) < 0) return -1;
+    sigemptyset(&one); sigaddset(&one, SIGINT);
+    return thread_mask(sigismember(&entry_mask,SIGINT) ? SIG_BLOCK : SIG_UNBLOCK, &one, NULL);
+}
+
+static int poll_signals(struct pollfd *fds, size_t n, const struct timespec *timeout, int catch) {
+    if (!catch) {
+        sigset_t mask;
+        if (thread_mask(SIG_SETMASK,NULL,&mask) < 0) return -1;
+        sigaddset(&mask,SIGWINCH);
+        return ppoll(fds,n,timeout,&mask);
+    }
+    sigset_t block, saved, wait_mask;
+    sigemptyset(&block); sigaddset(&block,SIGINT); sigaddset(&block,SIGWINCH);
+    if (thread_mask(SIG_BLOCK,&block,&saved) < 0) return -1;
+    struct sigaction wake = {.sa_handler = wake_poll}, previous;
+    sigemptyset(&wake.sa_mask);
+    int rc = sigaction(SIGINT,&wake,&previous), error = errno;
+    if (!rc) {
+        wait_mask = saved;
+        sigdelset(&wait_mask,SIGINT); sigdelset(&wait_mask,SIGWINCH);
+        rc = ppoll(fds,n,timeout,&wait_mask);
+        error = errno;
+        if (sigaction(SIGINT,&previous,NULL) < 0) { rc = -1; error = errno; }
+    }
+    if (thread_mask(SIG_SETMASK,&saved,NULL) < 0) return -1;
+    errno = error;
+    return rc;
+}
+
 /* Byte arrays containing path arguments include a trailing zero supplied by the
    trusted marshaller. No path traversal, retries or event loop run here.
    The wire layout uses the target Ubuntu amd64 little-endian ABI. */
@@ -94,14 +157,7 @@ LEAN_EXPORT lean_obj_res lojita_posix_call(uint32_t code, uint64_t a, uint64_t b
             memcpy(&fds[i].events, p + 8*i + 4, 2);
         }
         ts = (struct timespec){a / 1000, (a % 1000) * 1000000};
-        sigset_t mask;
-        if (sigprocmask(SIG_SETMASK, NULL, &mask) < 0) {
-            int e = errno;
-            free(fds);
-            return reply(e, 0, NULL);
-        }
-        if (c) sigdelset(&mask, SIGWINCH); else sigaddset(&mask, SIGWINCH);
-        int rc = ppoll(fds, n, b ? &ts : NULL, &mask);
+        int rc = poll_signals(fds,n,b ? &ts : NULL,c != 0);
         int e = rc < 0 ? errno : 0;
         lean_object *out = buffer(e ? 0 : 2*n);
         if (!e) for (size_t i = 0; i < n; ++i)
@@ -173,10 +229,10 @@ LEAN_EXPORT lean_obj_res lojita_posix_call(uint32_t code, uint64_t a, uint64_t b
         return reply(0, value != NULL, value ? copy_bytes(value, strlen(value)) : NULL);
     }
     case 33: {
-        struct sigaction action = {0};
-        action.sa_handler = a ? wake_poll : SIG_IGN;
+        if (a) return status(enter_program());
+        struct sigaction action = {.sa_handler = SIG_IGN};
         sigemptyset(&action.sa_mask);
-        return status(sigaction(a ? SIGWINCH : SIGPIPE, &action, NULL));
+        return status(sigaction(SIGPIPE,&action,NULL));
     }
     default: return reply(ENOSYS, 0, NULL);
     }

@@ -31,16 +31,31 @@ theorem syscall_tcsetattr_tcgetattr (m : Machine) (fd : Fd) (e : FdEntry)
     exact ⟨(e.ofd,accounted), Std.TreeMap.mem_toList_iff_getElem?_eq_some.mpr live, by simp [accounted,kind]⟩
   have either : 0 < targetCount (liveOfds m.proc m.kernel.ofds) (.pty pty false) +
         targetCount (liveOfds m.proc m.kernel.ofds) (.pty pty true) := by cases master <;> omega
-  have recorded : next.account.kernel.ptys[pty]? = some updated := by
-    simp [Machine.account, next, Machine.setPty, either]
+  let ds := liveOfds m.proc m.kernel.ofds
+  let lost (side : Bool) := targetCount ds (.pty pty side) = 0 &&
+    targetCount m.kernel.ofds (.pty pty side) > 0
+  let observed := if lost true then ptyHangup updated true
+    else if lost false then ptyHangup updated false else updated
+  have retained : targetCount ds (.pty pty true) + targetCount ds (.pty pty false) ≠ 0 := by
+    dsimp [ds]; omega
+  have recorded : next.account.kernel.ptys[pty]? = some observed := by
+    change (livePtys (m.kernel.ptys.insert pty updated) m.kernel.ofds ds)[pty]? = _
+    simp [livePtys,retained,observed,lost]
+    split <;> simp_all
+    split <;> simp_all
   have lookup' : next.account.lookup fd = .ok (e.ofd,accounted) := by
     have ef : next.account.fds[fd]? = some e := entry
     have df : next.account.kernel.ofds[e.ofd]? = some accounted := live
     simp [Machine.lookup,ef,df]; rfl
-  have query' : ttyOf next.account fd = .ok (pty,updated) := by
+  have query' : ttyOf next.account fd = .ok (pty,observed) := by
     simp [ttyOf,lookup',accounted,kind,recorded,Bind.bind,Except.bind,Pure.pure,Except.pure]
   have getRaw : dispatchSyscall next.account getSlice (.tcgetattr fd) = .ok (.ok attrs,next.account) := by
-    have recordedAttrs : updated.attrs = attrs := tcsetattr_tcgetattr_roundtrip tty attrs
+    have original : updated.attrs = attrs := tcsetattr_tcgetattr_roundtrip tty attrs
+    have recordedAttrs : observed.attrs = attrs := by
+      dsimp [observed]
+      split
+      · exact original
+      · split <;> exact original
     simp [dispatchSyscall,query',recordedAttrs,Functor.map,Except.map]
   have stillBacked : fdLinks next.account.proc next.account.kernel.ofds := by
     apply List.all_eq_true.mpr

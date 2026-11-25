@@ -21,3 +21,7 @@ import LojitaCtx.Io.HalfLine
 import LojitaCtx.Posix.Kernel.Frame
 import LojitaCtx.Posix.Kernel.TtyLaw
 import LojitaCtx.Io.WriteConfluence
+import LojitaCtx.Io.RegularCursor
+import LojitaCtx.Io.PipeCursor
+import LojitaCtx.Io.CanonicalRecords
+import LojitaCtx.Io.PipeWriteRefinement

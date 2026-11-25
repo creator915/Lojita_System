@@ -66,6 +66,7 @@ def fdWrite (m : Machine) (sl : StepSlice) (fd : Fd) (bs : Bytes) (atOff : Optio
   | .pty i master =>
     if atOff.isSome then throw .ESPIPE
     let some tty := m.kernel.ptys[i]? | throw .EBADF
+    if !master && tty.toMaster.readers == 0 then throw .EIO
     if sl.intrBefore && !bs.isEmpty then throw .EINTR
     let chunk := bs.take (max 1 sl.maxBytes)
     if master then

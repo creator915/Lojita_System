@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 
+extern int lojita_posix_prepare_signals(void);
 extern int __real_main(int argc, char **argv);
 extern lean_obj_res lean_internal_set_thread_stack_size(size_t bytes);
 
@@ -11,6 +12,7 @@ extern lean_obj_res lean_internal_set_thread_stack_size(size_t bytes);
    lean_run_main reads its environment. Apply the caller's stack size before
    initialization. Only the verified POSIX executable links this entry point. */
 int __wrap_main(int argc, char **argv) {
+    if (lojita_posix_prepare_signals() < 0) return 125;
     const char *setting = getenv("LEAN_STACK_SIZE_KB");
     if (setting && *setting >= '0' && *setting <= '9') {
         char *end;

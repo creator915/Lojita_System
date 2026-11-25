@@ -73,4 +73,22 @@ def hangup : ReactiveApp CliCaps EOFState where
       return .inl s
     | _ => return .inl s
 
+-- The synchronous first byte may have read ahead. Its suffix must be
+-- delivered on stdin even while the producer keeps its pipe open.
+def inputs : ReactiveApp CliCaps Unit where
+  init := do
+    discard <| setTTYRawW ttyInCli true
+    if let some b ← readStdinByteW stdioInCli then writeStdoutW stdioInCli [b]
+  onStep ev _ := do
+    match ev with
+    | ⟨_, .evStdinBytes bs⟩ => writeStdoutW stdioInCli bs
+    | ⟨_, .evTTYBytes bs⟩ => writeStderrW stdioInCli bs
+    | ⟨_, .evResize rows cols⟩ => writeStdoutStrW stdioInCli s!"{rows}x{cols}\n"
+    | ⟨_, .evSignal .sigINT⟩ => writeStdoutStrW stdioInCli "INT\n"
+    | ⟨_, .evSignal .sigQUIT⟩ => writeStdoutStrW stdioInCli "QUIT\n"
+    | ⟨_, .evSignal .sigHUP⟩ => writeStdoutStrW stdioInCli "HUP\n"
+    | ⟨_, .evSignal .sigTERM⟩ => return .inr 0
+    | _ => pure ()
+    return .inl ()
+
 end Gen.Gate2.Channels

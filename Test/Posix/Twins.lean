@@ -141,6 +141,32 @@ private def pageBoundary : Gate Unit := do
   error (.write w [65,66]) .EAGAIN
   check ((← write w [65]) == 1) "one byte fits at the end of a partial page"
 
+private def kernelWrite (m : Machine) (sl : StepSlice) (fd : Fd) (bs : Bytes) : Ret Nat × Machine :=
+  stepSyscall m sl (.write fd bs)
+
+private def shortWriteAll : Gate Unit := do
+  let (_,w) ← ok (.pipe2 false false)
+  discard <| write w [9,8]
+  let m ← get
+  let .ok (_,d) := m.lookup w | throw <| IO.userError "writer description"
+  let .pipe id true := d.target | throw <| IO.userError "writer target"
+  let input := (List.range 4099).map Nat.toUInt8
+  let writer : BufWriter := {fd := w, remaining := input, written := 5}
+  let intr : StepSlice := {intrBefore := true}
+  let two : StepSlice := {maxBytes := 2}
+  let three : StepSlice := {maxBytes := 3}
+  let finish : StepSlice := {maxBytes := 1}
+  let (.err .EINTR, retry) := kernelWrite m intr w input | throw <| IO.userError "expected EINTR"
+  let (.ok 2, first) := kernelWrite retry two w input | throw <| IO.userError "expected first short write"
+  let (.ok 3, _) := kernelWrite first three w (input.drop 2) | throw <| IO.userError "expected second short write"
+  let p := writeAll (Δ := [.fdIoCap]) (by simp) writer
+  let (.done (.ok (),final),z) := runPrefix (p.observe 4) m [intr,two,three,finish]
+    | throw <| IO.userError "writeAll did not finish on four kernel slices"
+  let some stream := z.kernel.pipes[id]? | throw <| IO.userError "completed writer lost pipe"
+  check (final.written == 4104 && final.remaining.isEmpty && stream.pendingBytes == [9,8] ++ input)
+    "writeAll duplicated or lost bytes during retry/short writes"
+  set z
+
 private def fileRead : Gate Unit := do
   let fd ← create "stationary"
   discard <| ok (.write fd (b "content"))
@@ -158,7 +184,8 @@ def test : IO Unit := do
   for (label,gate) in [("half-open line",halfLine),("relative symlink and ELOOP",links),
                        ("mkdirat and mkdirP",mkdirs),("unlink while open",unlinked),
                        ("shared offsets and readonly tree",offsets),("stationary file and EMFILE",fileRead),
-                       ("Linux page occupancy and atomic writes",pageBoundary)] do
+                       ("Linux page occupancy and atomic writes",pageBoundary),
+                       ("kernel writeAll across EINTR and short writes",shortWriteAll)] do
     discard <| gate.run {}
     IO.println s!"Twin gate passed: {label}"
 end TwinGates

@@ -44,8 +44,6 @@ const char *ct_get_arg(int idx);
 const char *ct_lookup_env_n(const char *key, size_t key_len);
 
 /* Standard streams */
-/* A successful pull sets out_got_byte even when the byte is zero. It stays zero at EOF. */
-int ct_read_stdin_byte(int *out_got_byte, uint8_t *out_byte);
 int ct_is_tty(int fd);
 int ct_write_fd_all(int fd, const uint8_t *buf, size_t len);
 
@@ -53,22 +51,7 @@ int ct_write_fd_all(int fd, const uint8_t *buf, size_t len);
 int ct_has_tty(void);
 int ct_set_tty_raw(int enable);
 void ct_term_size(uint32_t *out_rows, uint32_t *out_cols);
-int ct_read_tty_byte(int *out_got_byte, uint8_t *out_byte);
 int ct_write_tty_all(const uint8_t *buf, size_t len);
-
-#define CT_POLL_STDIO 1u
-#define CT_POLL_TTY   2u
-#define CT_POLL_SIG   4u
-#define CT_POLL_CLOCK 8u
-
-/* 1 = evTickMs (a = elapsed ms), 2 = evSignal (a = 1..4),
- * 3 = evResize (a = rows, b = cols), 4 = evTTYBytes (1..256 bytes),
- * 5 = evTTYEOF, 6 = evStdinBytes (1..4096 bytes), 7 = evStdinEOF.
- * Byte payloads belong to the caller and are released with ct_free_buf.
- * Other events leave *out_buf NULL and *out_len zero. Returns -1 on allocation failure. */
-int ct_poll_reactive_event(uint32_t poll_mask, uint32_t wait_ms,
-                           uint32_t *out_a, uint32_t *out_b,
-                           uint8_t **out_buf, size_t *out_len);
 
 /* Filesystem (1-to-1 with Context.World VirtualFs semantics) */
 int ct_fs_read_file(const char *path, size_t path_len, uint8_t **out_buf, size_t *out_len);
