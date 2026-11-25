@@ -223,10 +223,13 @@ def testT10LcnfAndAdaptiveCc : IO Unit := IO.FS.withTempDir fun dir => do
     "T10: expected deferredCompileGroupsExt to record postponed LCNF declarations"
 
   let cliMod ← mkObject "Gen.BigCli"
-    "open LojitaCtx.World\ndef app : CliApp [.stdioCap] := do\n  writeStdoutStrW .here s!\"{Gen.BigTable.lookupSum}\\n\"\n  return 0"
-    ["LojitaCtx.World", "Gen.BigTable"]
+    r#"open LojitaCtx.Posix
+def app : PosixMachine CoreCaps Unit UInt32 where
+  init := ()
+  step _ := .step (.write 1 (toString Gen.BigTable.lookupSum ++ "\n").toUTF8) (by decide) fun _ => .pure (.inr 0)"#
+    ["LojitaCtx.Posix.Program", "Gen.BigTable"]
   let outBin := dir / "big-cli"
-  let report ← compileVerifiedExeWithReport [bigTableMod, cliMod] (q "Gen.BigCli.app") .cli outBin
+  let report ← compileVerifiedExeWithReport [bigTableMod, cliMod] (q "Gen.BigCli.app") outBin
   ensure (report.any (fun (m, opt) => m == `Gen.BigTable && opt == "-O1"))
     s!"T10: expected Gen.BigTable (>= 128 KiB C) to downgrade to -O1, got {report}"
   ensure (report.any (fun (m, opt) => m == `Gen.BigCli && opt == "-O2"))

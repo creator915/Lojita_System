@@ -374,8 +374,8 @@ private def inspectMatchAlts (matchAltsStx : Syntax) : Nat × Bool := Id.run do
   return (max alts.size totalRows, hasWildcard)
 
 private def heavyDecideTypeNames : List String := [
-  "String", "ByteArray", "Array", "Bytes", "SimWorld",
-  "LojitaCtx.Terminal.Bytes", "LojitaCtx.World.SimWorld"
+  "String", "ByteArray", "Array", "Bytes",
+  "LojitaCtx.Terminal.Bytes", "LojitaCtx.Posix.Machine", "Machine"
 ]
 
 /-- Check if a command contains heavy types or large literals (> 64 bytes/elements) in its signature/statement,
@@ -515,7 +515,7 @@ def triageSyntax (root : Syntax) : Except SyntaxViolation Unit := do
   if let some decStx := sawDecideTactic then
     if commandHasHeavyDecideTarget root then
       throw (tabooViolation .heavyDecide decStx
-        "`by decide` used on String / ByteArray / Array / SimWorld or large literal (> 64 bytes/items)")
+        "`by decide` used on String / ByteArray / Array / Posix.Machine or large literal (> 64 bytes/items)")
 
 /-! ### Module Envelope Parsing, Rendering, Serialization & Surface Morphisms -/
 

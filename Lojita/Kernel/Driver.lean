@@ -77,25 +77,16 @@ private def coreCtx (env : Environment) (opts : Options := safeElabOptions) : Co
 private def importedImages (deps : Array Snapshot) : Array (Name × ModuleData) :=
   dedupImages (deps.flatMap (·.images))
 
-private def parentEnv (deps : Array Snapshot) (wrapper := false) (opts : Options := safeElabOptions) :
-    IO Environment := do
+private def parentEnv (deps : Array Snapshot) : IO Environment := do
   let r ← resident
+  if deps.isEmpty then return r.base
   let ids := deps.map (·.id)
-  if !wrapper && opts == safeElabOptions then
-    if deps.isEmpty then return r.base
-    if let some env := r.parents[ids]? then return env
-  let images := importedImages deps
-  let imports := contextImports ++ deps.map (fun d => { module := d.mod.modName.toLeanName }) ++
-    (if wrapper then #[{ module := `Lojita.WorldRunner }] else #[])
+  if let some env := r.parents[ids]? then return env
+  let imports := contextImports ++ deps.map (fun d => { module := d.mod.modName.toLeanName })
   let env ← withImportLock <| withImporting do
     unsafe enableInitializersExecution
-    let state ← if wrapper then
-        Prod.snd <$> (importModulesCore #[{ module := `Lojita.WorldRunner }]).run r.imports
-      else
-        pure r.imports
-    importResidentImages state images imports opts
-  if !wrapper && opts == safeElabOptions then
-    session.set <| some { r with parents := r.parents.insert ids env }
+    importResidentImages r.imports (importedImages deps) imports safeElabOptions
+  session.set <| some { r with parents := r.parents.insert ids env }
   return env
 
 private def comparisonEnv (images : Array (Name × ModuleData)) (mods : Array Name) : IO Environment := do
@@ -335,30 +326,29 @@ def eqIface (a b : LeanMod) (deps : List LeanMod := []) : IO Unit := do
   satisfies a b deps .subspec
   satisfies b a deps .subspec
 
-private def entryOwner (bundle : Bundle) (entry : QName) (mode : ExeMode) : IO Snapshot := do
+private def entryOwner (bundle : Bundle) (entry : QName) : IO Snapshot := do
   let n := entry.toLeanName
   let some (_, owner) := bundle.toList.find? (fun (_, s) => s.constants.contains n)
     | throw (IO.userError s!"ENTRY_MISSING: {entry}")
-  (checkEntryType owner n mode).run' |>.toIO' (coreCtx owner.env) { env := owner.env }
+  (checkEntryType owner n).run' |>.toIO' (coreCtx owner.env) { env := owner.env }
   return owner
 
-def checkVerifiedEntry (deps : List LeanMod) (entry : QName) (mode : ExeMode) : IO Unit :=
+def checkVerifiedEntry (deps : List LeanMod) (entry : QName) : IO Unit :=
   driverLock.atomically do
-    discard <| entryOwner (← checkBundle deps []) entry mode
+    discard <| entryOwner (← checkBundle deps []) entry
 
 /-- Stage 4: On-demand topological LCNF + IR compilation and adaptive `-O2`/`-O1` native linking.
     Daily `checkClosedModule`/`satisfies` never runs LCNF passes; codegen runs exclusively here! -/
-def compileVerifiedExeWithReport (deps : List LeanMod) (entry : QName) (mode : ExeMode)
+def compileVerifiedExeWithReport (deps : List LeanMod) (entry : QName)
     (outBin : System.FilePath) (ccTimeoutSec : Nat := 30) :
     IO (Array (Name × String)) := driverLock.atomically do
   let (bundle, topoSnaps) ← checkBundleOrdered deps []
-  let owner ← entryOwner bundle entry mode
+  let owner ← entryOwner bundle entry
   let r ← resident
   let lib := r.lib / ".."
   IO.FS.withTempDir fun dir => do
     let mut sources : Array System.FilePath := #[]
     let mut compiledImages : NameMap (Array (Name × ModuleData)) := {}
-    let mut compiledEnvs : NameMap Environment := {}
     for snap in topoSnaps do
       let modName := snap.env.mainModule
       let userDeps := snap.mod.imports.filterMap fun imp =>
@@ -385,19 +375,17 @@ def compileVerifiedExeWithReport (deps : List LeanMod) (entry : QName) (mode : E
       let md ← mkModuleData envForC
       let allImgs := dedupImages ((userDeps.toArray.flatMap fun dn => (compiledImages.find? dn).getD #[]).push (modName, md))
       compiledImages := compiledImages.insert modName allImgs
-      compiledEnvs := compiledEnvs.insert modName envForC
       sources := sources.push cPath
 
-    -- Emit `Main` wrapper calling `Lojita.WorldRunner.{runCliIO | runReactiveIO}`
+    -- Only the trusted wrapper imports the Linux interpreter.
     let ownerName := owner.env.mainModule
     let ownerImgs := (compiledImages.find? ownerName).getD owner.images
-    let wrapperImports := contextImports ++ #[{ module := ownerName }, { module := `Lojita.WorldRunner }]
+    let wrapperImports := contextImports ++ #[{ module := ownerName }, { module := `Lojita.Runtime.WorldRunner }]
     let mainBase ← withImportLock <| withImporting do
       unsafe enableInitializersExecution
-      let state ← Prod.snd <$> (importModulesCore #[{ module := `Lojita.WorldRunner }]).run r.imports
+      let state ← Prod.snd <$> (importModulesCore #[{ module := `Lojita.Runtime.WorldRunner }]).run r.imports
       importResidentImages state ownerImgs wrapperImports codeGenOptions
-    let runner := if mode == .cli then "runCliIO" else "runReactiveIO"
-    let wrapper := s!"def main : IO UInt32 := Lojita.WorldRunner.{runner} {entry}"
+    let wrapper := s!"def main (args : List String) : IO UInt32 := Lojita.Runtime.WorldRunner.processMain {entry} args"
     let cmd ← ioChecked (Parser.runParserCategory mainBase `command wrapper)
     let mainRes ← elabCommandsGuarded (mainBase.setMainModule `Main) wrapper #[cmd] false codeGenOptions
     let mainC := dir / "main.c"
@@ -412,14 +400,14 @@ def compileVerifiedExeWithReport (deps : List LeanMod) (entry : QName) (mode : E
 
     let stage := outBin.addExtension s!"{← IO.Process.getPID}.{← IO.monoNanosNow}.tmp"
     try
-      runCcBounded (#["-O2", "-static"] ++ objPaths ++ #[
+      runCcBounded (#["-O2", "-static", "-Wl,--wrap=main"] ++ objPaths ++ #[
         "-L", lib.toString,
         "-L", (toolchainRoot / "lib/lean").toString,
         "-L", (toolchainRoot / "lib").toString,
         "-Wl,--start-group",
-        "-llojita_Lojita", "-llojita_LojitaCtx", "-llean_cli_host",
+        "-llojita_Lojita", "-llojita_LojitaCtx", "-lposix_host",
         "-lStd", "-lInit", "-lleanrt", "-lcadical",
-        "-lc++", "-lc++abi", "-lunwind", "-lgmp", "-luv", "-lssl", "-lcrypto",
+        "-lc++", "-lc++abi", "-lunwind", "-lgmp", "-luv",
         "-lpthread", "-ldl", "-lrt", "-lm", "-lc",
         "-Wl,--end-group", "-Wl,--gc-sections",
         "-o", stage.toString
@@ -429,8 +417,8 @@ def compileVerifiedExeWithReport (deps : List LeanMod) (entry : QName) (mode : E
       if ← stage.pathExists then IO.FS.removeFile stage
     return report
 
-def compileVerifiedExe (deps : List LeanMod) (entry : QName) (mode : ExeMode)
+def compileVerifiedExe (deps : List LeanMod) (entry : QName)
     (outBin : System.FilePath) : IO Unit :=
-  discard <| compileVerifiedExeWithReport deps entry mode outBin
+  discard <| compileVerifiedExeWithReport deps entry outBin
 
 end Lojita.Kernel

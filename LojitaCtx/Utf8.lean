@@ -301,4 +301,49 @@ theorem fromBytes_toBytes (s : String) : fromBytes? (toBytes s) = some s := by
   cases s with
   | ofByteArray bs valid => simp [fromBytes?, toBytes, String.fromUTF8?, valid]
 
+private def isUtf8Cont (x : Nat) : Bool := 128 ≤ x && x < 192
+
+private def decodeUtf8LossyChars : List Nat → List Char
+  | [] => []
+  | b₁ :: rest =>
+    let replacement := fun _ : Unit => Char.ofNat 65533 :: decodeUtf8LossyChars rest
+    if b₁ < 128 then Char.ofNat b₁ :: decodeUtf8LossyChars rest
+    else
+      if 194 ≤ b₁ && b₁ < 224 then
+        match rest with
+        | [] => [Char.ofNat 65533]
+        | b₂ :: rs =>
+          if isUtf8Cont b₂ then Char.ofNat ((b₁ - 192) * 64 + (b₂ - 128)) :: decodeUtf8LossyChars rs
+          else replacement ()
+      else
+        if 224 ≤ b₁ && b₁ < 240 then
+          match rest with
+          | [] => [Char.ofNat 65533]
+          | [_] => replacement ()
+          | b₂ :: b₃ :: rs =>
+            let cp := (b₁ - 224) * 4096 + ((b₂ - 128) * 64 + (b₃ - 128))
+            let surrogate := 55296 ≤ cp && cp < 57344
+            if isUtf8Cont b₂ && (isUtf8Cont b₃ && (2048 ≤ cp && Bool.not surrogate)) then
+              Char.ofNat cp :: decodeUtf8LossyChars rs
+            else replacement ()
+        else
+          if 240 ≤ b₁ && b₁ < 245 then
+            match rest with
+            | [] => [Char.ofNat 65533]
+            | [_] => replacement ()
+            | [_, _] => replacement ()
+            | b₂ :: b₃ :: b₄ :: rs =>
+              let cp := (b₁ - 240) * 262144 + ((b₂ - 128) * 4096 + ((b₃ - 128) * 64 + (b₄ - 128)))
+              if
+                  isUtf8Cont b₂ &&
+                    (isUtf8Cont b₃ && (isUtf8Cont b₄ && (65536 ≤ cp && cp < 1114112))) then
+                Char.ofNat cp :: decodeUtf8LossyChars rs
+              else replacement ()
+          else replacement ()
+termination_by structural xs => xs
+
+/-- Replace each invalid leading byte, then resume at the following byte. -/
+def decodeLossy (bs : List UInt8) : String :=
+  String.ofList (decodeUtf8LossyChars (List.map UInt8.toNat bs))
+
 end LojitaCtx.Utf8
