@@ -15,6 +15,8 @@ export PATH="$HOME/.elan/bin:$HOME/.local/bin:$PATH"
 
 `./test-all.sh` 在白名单 PATH 上运行基础库、内核、Harness、提示词和会话测试。提示词中的多子包示例也会编译成真正的 CLI 并核对字节输出。`./test-live-e2e.sh` 使用已登录的 Codex 和本地 Docker。它对已安装的 gron 镜像核对两次真实运行，随后让托管模型独立完成字节流过滤器的规约、实现、构建与差分回放。[会话指南](docs/SESSIONS.md)
 
+POSIX IO 改动另用 `./test-io-all.sh` 运行五道门禁。G1 单独检查模型和定理的逻辑依赖、固定工具链的原生实现与编译替换，并列出完整闭包计数。新引入的依赖若超出已审查范围，门禁会给出声明路径。[IO 规格](lojita_io_handoff_spec.md) · [验收记录](docs/POSIX_IO_ACCEPTANCE.md)
+
 ## 模块边界
 
 | 层 | 职责 |
