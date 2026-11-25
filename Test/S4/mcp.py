@@ -1,5 +1,7 @@
 """Black-box, newline-framed MCP roundtrips against both native server modes."""
 import json
+import os
+import signal
 import select
 import statistics
 import subprocess
@@ -15,7 +17,7 @@ reference.write_text(f'(ref-target (local "{root}/Test/S4/mini-pandoc.py") (time
 
 
 class Client:
-    def __init__(self, mode, ctx=None, workspace=ws):
+    def __init__(self, mode, ctx=None, workspace=ws, env=None):
         self.ctx = ctx or scratch / mode
         self.ctx.mkdir(parents=True, exist_ok=True)
         self.seq = 0
@@ -23,7 +25,7 @@ class Client:
             [str(root / "lojita"), "mcp", "--mode", mode, "--repo", str(root),
              "--ctx-dir", str(self.ctx), "--workspace", str(workspace), "--ref-file", str(reference),
              "--narrow-log", str(log)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env,
         )
 
     def send(self, data):
@@ -69,6 +71,39 @@ def context_source(cli, name, source):
     assert cli.tool("read_context", module=name)["content"][0]["text"] == source
     assert cli.tool("read_context", module=name, start_line=2, end_line=4)["content"][0]["text"] == (
         "\n".join(source.split("\n")[1:4]))
+
+
+def checker_pid(server_pid):
+    tasks = Path(f"/proc/{server_pid}/task")
+    children = [int(pid) for f in tasks.glob("*/children") for pid in f.read_text().split()]
+    child, = children
+    return child
+
+
+# Stop a healthy, warm checker, then submit more than a pipe buffer. A deadline
+# must cover writing the request as well as waiting for its answer.
+with Client("node", scratch / "watchdog", env={**os.environ, "LOJITA_CHECK_TIMEOUT_MS": "4000"}) as cli:
+    simple = module("Gen.Guard.Root", "def value : Nat := 1")
+    cli.tool("check_lean", source=simple)
+    pid = checker_pid(cli.p.pid)
+    limits = Path(f"/proc/{pid}/limits").read_text().splitlines()
+    address = next(line.split()[3:5] for line in limits if line.startswith("Max address space"))
+    assert all(int(bound) <= 6 * 1024**3 for bound in address), address
+    os.kill(pid, signal.SIGSTOP)
+    result = cli.tool("check_agda", ok=False, source=simple + " " * 256_000)
+    assert result["structuredContent"]["certificate"]["kind"] == "CHECK_TIMEOUT", result
+    assert not Path(f"/proc/{pid}").exists()
+    cli.rpc("ping")
+    cli.tool("check_lean", source=simple)
+    replacement = checker_pid(cli.p.pid)
+    assert replacement != pid
+assert not Path(f"/proc/{replacement}").exists()
+
+# Exercise the RSS guard at a tiny budget without stressing the build host.
+with Client("node", scratch / "memory-guard", env={**os.environ, "LOJITA_CHECK_RSS_MIB": "1"}) as cli:
+    result = cli.tool("check_lean", ok=False, source=simple)
+    assert result["structuredContent"]["certificate"]["kind"] == "CHECK_MEMORY_LIMIT", result
+    cli.rpc("ping")
 
 
 unpublished = scratch / "unpublished"
