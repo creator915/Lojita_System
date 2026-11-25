@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")"
-status=0
-python3 Test/scripts/io-size.py || status=1
-lake build LojitaCtx || exit 1
-lake env lean Test/PosixPurity.lean || status=1
-exit "$status"
+release=$(lean --print-prefix)
+python3 Test/scripts/g1-release.py "$release"
+export LEAN_SYSROOT="$release" PATH="$release/bin:$PATH"
+python3 Test/scripts/io-size.py
+lake build LojitaCtx
+lake env lean --run Test/PosixPurity.lean
+Test/scripts/test-g1-regressions.sh
