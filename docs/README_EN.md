@@ -105,7 +105,7 @@ Software looks *"sprawling yet locally routine"* because its multi-system bounda
 > See **[Build, Configuration & Usage Guide (QUICKSTART.md)](./QUICKSTART.md)** for full Linux toolchain setup, `./build.sh`, AI backend configuration (`Code/AI.agda`), and v7 offline regression suites.
 
 - **Full Manifesto & Theoretical Whitepaper**: [docs/MANIFESTO.md](./MANIFESTO.md)
-- **Unified Theory Outline**: [THEORY_UNIFIED.md](./THEORY_UNIFIED.md) · [TYPED_COLLAGE_FUNCTORS.md](./TYPED_COLLAGE_FUNCTORS.md)
+- **Unified Theory Outline**: [THEORY_UNIFIED.md](./THEORY_UNIFIED.md) · [TYPED_COLLAGE_FUNCTORS.md](./TYPED_COLLAGE_FUNCTORS.md) · [CATEGORICAL_POINT_FINDING.md](./CATEGORICAL_POINT_FINDING.md)
 - **2D Functorial Lift & `: ⊥` Recovery (v7)**: [V7_2D_LIFT_RECOVERY.md](./V7_2D_LIFT_RECOVERY.md)
 - **Lean 4 Prism Dual-Kernel Backend**: [LEAN4_PRISM_BACKEND.md](./LEAN4_PRISM_BACKEND.md)
 - **WebOperad Canvas Workbench (0-JS UI)**: [WEB_OPERAD.md](./WEB_OPERAD.md)

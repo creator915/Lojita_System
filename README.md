@@ -126,7 +126,7 @@
 👉 **[阅读《Lojita System 架构宣言与理论白皮书》(docs/MANIFESTO.md)](./docs/MANIFESTO.md)**
 
 **专题技术文档导览：**
-- [范畴式编程与机器数学的统一理论纲要](./docs/THEORY_UNIFIED.md) · [类型化拼接范畴与保类型函子](./docs/TYPED_COLLAGE_FUNCTORS.md)
+- [范畴式编程与机器数学的统一理论纲要](./docs/THEORY_UNIFIED.md) · [类型化拼接范畴与保类型函子](./docs/TYPED_COLLAGE_FUNCTORS.md) · [范畴式找点、复函子数据库与 Roth 定理推演](./docs/CATEGORICAL_POINT_FINDING.md)
 - [Ownership.agda：线性逻辑类型化 Shell（`文件 = 资源 ⊗ !数据`）](./docs/OWNERSHIP.md)
 - [Lean 4 Prism 双核推出切片、求值着色与原生自举架构](./docs/LEAN4_PRISM_BACKEND.md)
 - [二维多对多函子化提升、`: ⊥` 反驳门禁与无辜子树零轮次复用规范](./docs/V7_2D_LIFT_RECOVERY.md)
